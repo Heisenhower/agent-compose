@@ -1027,10 +1027,10 @@ sandbox:
 
 当 `default: deny` 生效时，引擎会自动放行自身的端点：runtime LLM facade 与 guest 上报使用的遥测端点。这些是**引擎侧**条目，不是用户声明：项目无法声明、删除或覆盖它们；放行范围就是引擎交给 guest 的那个精确端点；每一次放行都会记录在引擎规则（`engine.llm-facade`、`engine.telemetry`）名下，使这条例外可见而非隐藏。
 
-该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver：
+该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
-- 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。
-- 在 Docker、Kubernetes 与 BoxLite 上，当声明要求 `default: deny` 时，引擎会**拒绝创建 sandbox**：这些 driver 无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。此时 sandbox 会以指明 driver 的错误启动失败，而不是在不受限的出网状态下静默运行。
+- 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制。
+- 在 Docker、Kubernetes 与 BoxLite 上，当声明要求 `default: deny` 时，引擎会**拒绝创建 sandbox**：这些 driver 无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。此时 sandbox 会以指明 driver 的错误启动失败，而不是在不受限的出网状态下静默运行；它们的能力报告带有 `strength=none`。
 - 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，也不会导致 sandbox 启动失败。
 
 ### `scheduler`

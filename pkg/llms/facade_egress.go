@@ -35,17 +35,19 @@ func FacadeEgressPolicy(token FacadeToken) egress.Policy {
 	bound := token.HasConnection()
 	rules := make([]egress.Rule, 0, 4)
 	if guestModel := strings.TrimSpace(token.GuestModel); guestModel != "" {
-		action := egress.Deny
-		if pinned != "" {
-			action = egress.Allow
-		}
-		rules = append(rules, egress.Rule{
+		rule := egress.Rule{
 			ID:     "llm.guest-model",
 			Names:  []string{guestModel},
-			Action: action,
+			Action: egress.Allow,
 			Target: pinned,
-			Reason: reasonModelNotAuthorized,
-		})
+		}
+		if pinned == "" {
+			// Reason explains a deny only; a result that allows this model must
+			// not carry the not-authorized reason into a decision record.
+			rule.Action = egress.Deny
+			rule.Reason = reasonModelNotAuthorized
+		}
+		rules = append(rules, rule)
 	}
 	if !bound && pinned != "" {
 		// A token with no connection pins one model: the pinned name is

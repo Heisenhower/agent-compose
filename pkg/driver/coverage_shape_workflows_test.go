@@ -34,6 +34,18 @@ func TestIntegrationRuntimeDriverWorkflow(t *testing.T) {
 	TestRuntimeDriverSupportsStoppedRuntimeRetention(t)
 	TestDriverDefaultsForK8s(t)
 	TestPrepareRuntimeMountManifestForK8sHasNoMounts(t)
+	TestNewSandboxNetworkPolicyNormalizesAndValidates(t)
+	TestSandboxNetworkPolicyFromDeclarationIsTheComposeSeam(t)
+	TestSandboxNetworkPolicyDenyByDefault(t)
+	TestSandboxNetworkPolicyPermittingEndpoints(t)
+	TestSandboxNetworkPolicyRejectsMalformedHost(t)
+	TestSandboxNetworkEnforcementFor(t)
+	TestRequireSandboxNetworkEnforcementFailsClosed(t)
+	TestRequireSandboxNetworkEnforcementRejectsMalformedPolicy(t)
+	TestDecideSandboxNetworkEgressUsesTheEgressModel(t)
+	TestSandboxNetworkEgressPolicyPermissiveIsAllowAll(t)
+	TestPlanMicrosandboxNetwork(t)
+	TestPlanMicrosandboxDenyPermitsEngineEndpointsAndBlocksOthers(t)
 }
 
 func TestE2ERuntimeDriverWorkflow(t *testing.T) {
@@ -53,6 +65,18 @@ func TestE2ERuntimeDriverWorkflow(t *testing.T) {
 	TestRuntimeDriverSupportsStoppedRuntimeRetention(t)
 	TestDriverDefaultsForK8s(t)
 	TestPrepareRuntimeMountManifestForK8sHasNoMounts(t)
+	TestNewSandboxNetworkPolicyNormalizesAndValidates(t)
+	TestSandboxNetworkPolicyFromDeclarationIsTheComposeSeam(t)
+	TestSandboxNetworkPolicyDenyByDefault(t)
+	TestSandboxNetworkPolicyPermittingEndpoints(t)
+	TestSandboxNetworkPolicyRejectsMalformedHost(t)
+	TestSandboxNetworkEnforcementFor(t)
+	TestRequireSandboxNetworkEnforcementFailsClosed(t)
+	TestRequireSandboxNetworkEnforcementRejectsMalformedPolicy(t)
+	TestDecideSandboxNetworkEgressUsesTheEgressModel(t)
+	TestSandboxNetworkEgressPolicyPermissiveIsAllowAll(t)
+	TestPlanMicrosandboxNetwork(t)
+	TestPlanMicrosandboxDenyPermitsEngineEndpointsAndBlocksOthers(t)
 }
 
 // The network policy and capability seam decides whether a declared policy is
