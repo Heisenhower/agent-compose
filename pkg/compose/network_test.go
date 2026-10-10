@@ -454,7 +454,16 @@ func TestEgressActionForSandboxNetworkDefaultFailsClosed(t *testing.T) {
 	if denied != egress.Deny {
 		t.Fatalf("deny mapped to %q, want %q", denied, egress.Deny)
 	}
-	for _, value := range []string{"", "sideways"} {
+	// An omitted default is not an unknown value: normalization maps it to
+	// allow-all, so it keeps the declared default instead of being rejected.
+	omitted, err := egressActionForSandboxNetworkDefault("")
+	if err != nil {
+		t.Fatalf("egressActionForSandboxNetworkDefault(\"\") error = %v", err)
+	}
+	if omitted != egress.Allow {
+		t.Fatalf("omitted default mapped to %q, want %q", omitted, egress.Allow)
+	}
+	for _, value := range []string{"permit", "sideways"} {
 		if _, err := egressActionForSandboxNetworkDefault(value); err == nil {
 			t.Fatalf("egressActionForSandboxNetworkDefault(%q) returned no error, want a rejection", value)
 		}
