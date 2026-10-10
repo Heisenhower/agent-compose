@@ -226,6 +226,7 @@ func (r driverRuntimeAdapter) Exec(ctx context.Context, session *domain.Sandbox,
 	}
 	defer finish()
 	result, err := r.runtime.Exec(execCtx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), execution.ToDriverExecSpec(marked))
+	reportMeasuredLowerLayerIsolationFacts(session.Summary.ID, vmState.Driver, result.SecurityFacts)
 	endSpan(err)
 	return execution.FromDriverExecResult(result), classifyExecTerminationError(err)
 }
@@ -244,6 +245,7 @@ func (r driverRuntimeAdapter) ExecStream(ctx context.Context, session *domain.Sa
 		}
 	}
 	result, err := r.runtime.ExecStream(execCtx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), execution.ToDriverExecSpec(marked), driverStream)
+	reportMeasuredLowerLayerIsolationFacts(session.Summary.ID, vmState.Driver, result.SecurityFacts)
 	endSpan(err)
 	return execution.FromDriverExecResult(result), classifyExecTerminationError(err)
 }
@@ -275,6 +277,8 @@ func (r driverRuntimeAdapter) OpenInteraction(ctx context.Context, session *doma
 		RuntimeInteraction: interaction,
 		finish:             finish,
 		done:               make(chan struct{}),
+		sandboxID:          session.Summary.ID,
+		driverName:         vmState.Driver,
 	}
 	go tracked.finishWhenContextEnds(execCtx)
 	return tracked, nil
