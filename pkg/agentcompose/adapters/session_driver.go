@@ -31,6 +31,19 @@ type SandboxDriver struct {
 	recorder     *telemetry.Recorder
 }
 
+// SandboxDriverDeps is the required collaborator set for a SandboxDriver.
+// Bundling it keeps the constructor within the repository's argument limit
+// without turning the capability snapshot into an optional collaborator:
+// StartSandboxVM gates on that snapshot before creating runtime state, so every
+// caller must pass the snapshot it collected instead of defaulting to none.
+type SandboxDriverDeps struct {
+	Config       *appconfig.Config
+	Store        *sandboxstore.Store
+	ConfigDB     *configstore.ConfigStore
+	Runtimes     RuntimeProvider
+	Capabilities capmatrix.Snapshot
+}
+
 // SandboxDriverOption customizes the driver's optional collaborators.
 type SandboxDriverOption func(*SandboxDriver)
 
@@ -41,8 +54,14 @@ func WithSandboxDriverRecorder(recorder *telemetry.Recorder) SandboxDriverOption
 	return func(driver *SandboxDriver) { driver.recorder = recorder }
 }
 
-func NewSandboxDriver(config *appconfig.Config, store *sandboxstore.Store, configDB *configstore.ConfigStore, runtimes RuntimeProvider, capabilities capmatrix.Snapshot, opts ...SandboxDriverOption) *SandboxDriver {
-	driver := &SandboxDriver{Config: config, Store: store, ConfigDB: configDB, Runtimes: runtimes, Capabilities: capabilities}
+func NewSandboxDriver(deps SandboxDriverDeps, opts ...SandboxDriverOption) *SandboxDriver {
+	driver := &SandboxDriver{
+		Config:       deps.Config,
+		Store:        deps.Store,
+		ConfigDB:     deps.ConfigDB,
+		Runtimes:     deps.Runtimes,
+		Capabilities: deps.Capabilities,
+	}
 	for _, option := range opts {
 		option(driver)
 	}

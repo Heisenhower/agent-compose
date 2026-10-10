@@ -12,5 +12,11 @@ import (
 // the fail-closed pre-flight is satisfied without tightening anything. Tests
 // that need a real decision build a snapshot explicitly.
 func newTestSandboxDriver(config *appconfig.Config, store *sandboxstore.Store, configDB *configstore.ConfigStore, runtimes RuntimeProvider) *SandboxDriver {
-	return NewSandboxDriver(config, store, configDB, runtimes, capmatrix.Snapshot{})
+	return NewSandboxDriver(SandboxDriverDeps{
+		Config:       config,
+		Store:        store,
+		ConfigDB:     configDB,
+		Runtimes:     runtimes,
+		Capabilities: capmatrix.Snapshot{},
+	})
 }

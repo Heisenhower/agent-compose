@@ -54,7 +54,12 @@ func isolationTestDriver(t *testing.T, runtime SandboxRuntime) (*SandboxDriver, 
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
-	driver := NewSandboxDriver(config, store, nil, fakeRuntimeProvider{runtime: runtime}, testEngineCapabilitySnapshot(t))
+	driver := NewSandboxDriver(SandboxDriverDeps{
+		Config:       config,
+		Store:        store,
+		Runtimes:     fakeRuntimeProvider{runtime: runtime},
+		Capabilities: testEngineCapabilitySnapshot(t),
+	})
 	return driver, store, session
 }
 

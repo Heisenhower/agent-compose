@@ -416,11 +416,13 @@ func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {
 
 func NewSandboxDriver(di do.Injector) (*adapters.SandboxDriver, error) {
 	return adapters.NewSandboxDriver(
-		do.MustInvoke[*appconfig.Config](di),
-		do.MustInvoke[*sandboxstore.Store](di),
-		do.MustInvoke[*configstore.ConfigStore](di),
-		do.MustInvoke[adapters.RuntimeProvider](di),
-		do.MustInvoke[capmatrix.Snapshot](di),
+		adapters.SandboxDriverDeps{
+			Config:       do.MustInvoke[*appconfig.Config](di),
+			Store:        do.MustInvoke[*sandboxstore.Store](di),
+			ConfigDB:     do.MustInvoke[*configstore.ConfigStore](di),
+			Runtimes:     do.MustInvoke[adapters.RuntimeProvider](di),
+			Capabilities: do.MustInvoke[capmatrix.Snapshot](di),
+		},
 		adapters.WithSandboxDriverRecorder(do.MustInvoke[*telemetry.Recorder](di)),
 	), nil
 }
