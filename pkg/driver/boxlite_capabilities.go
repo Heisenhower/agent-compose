@@ -11,7 +11,6 @@ func boxliteRuntimeCapabilityFacts() RuntimeCapabilityFacts {
 			NonRootUser:    "the driver leaves BoxliteCommand.user nil, so the guest command runs as root; the C surface exposes a per-command user override the driver does not set",
 			UserNamespaces: "the bound C option surface has no user-namespace option; isolation comes from the VM boundary instead",
 		},
-		Egress:                "the driver calls boxlite_options_set_network_enabled and binds no boxlite_options_add_network_allow rule",
 		CredentialPlaceholder: "the C surface exposes boxlite_options_add_secret but the driver binds no secret",
 		CheckpointReason:      reasonUnsupported,
 		CheckpointObserved:    "the boxlite C option surface exposes no checkpoint or restore call",

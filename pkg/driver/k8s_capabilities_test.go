@@ -4,8 +4,11 @@ package driver
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/chaitin/agent-compose/pkg/egress"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -48,14 +51,42 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 		t.Fatal("pod now uses the host network; the egress_policy declaration is stale")
 	}
 
-	policies, err := clientset.NetworkingV1().NetworkPolicies(runtime.namespaceFor(VMState{})).List(context.Background(), metav1.ListOptions{})
+	// A declared default-deny policy is refused before createPod, because a
+	// NetworkPolicy deny would also cut the engine's own LLM facade and
+	// telemetry endpoints and the CNI cannot be assumed to enforce it. The
+	// declaration must therefore report no egress enforcement for k8s.
+	egressCapability := capabilityDimensionForTest(t, facts, dimensionEgressPolicy)
+	if egressCapability.Enforced || egressCapability.Mechanism != reasonNotConfigured {
+		t.Fatalf("egress_policy declaration = %+v, want not enforced via %q", egressCapability, reasonNotConfigured)
+	}
+	if !strings.Contains(egressCapability.Observed, string(SandboxEgressStrengthNone)) {
+		t.Fatalf("egress_policy observed = %q, want strength %q", egressCapability.Observed, SandboxEgressStrengthNone)
+	}
+	if !strings.Contains(egressCapability.Observed, "refused before any Pod is created") {
+		t.Fatalf("egress_policy observed = %q, want it to state that a declared default-deny policy is refused", egressCapability.Observed)
+	}
+
+	// The refusal is the observable behavior: EnsureSandbox must return the
+	// machine-consumable reason and create neither a Pod nor a NetworkPolicy.
+	denyRuntime, denyClientset := newTestK8sRuntime()
+	denySandbox := testSandbox(t, "sandbox-egress-deny")
+	denySandbox.NetworkPolicy = &SandboxNetworkPolicy{Default: egress.Deny}
+	if _, err := denyRuntime.EnsureSandbox(context.Background(), denySandbox, VMState{}, ProxyState{}); !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+		t.Fatalf("EnsureSandbox() error = %v, want ErrSandboxNetworkEnforcementUnavailable", err)
+	}
+	namespace := denyRuntime.namespaceFor(VMState{})
+	policies, err := denyClientset.NetworkingV1().NetworkPolicies(namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list NetworkPolicies: %v", err)
 	}
 	if len(policies.Items) != 0 {
-		t.Fatalf("createPod now creates NetworkPolicies %+v; the egress_policy declaration is stale", policies.Items)
+		t.Fatalf("a refused default-deny sandbox created NetworkPolicies %+v, want none", policies.Items)
 	}
-	if egress := capabilityDimensionForTest(t, facts, dimensionEgressPolicy); egress.Enforced {
-		t.Fatalf("egress_policy declaration = %+v, want not enforced", egress)
+	pods, err := denyClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list Pods: %v", err)
+	}
+	if len(pods.Items) != 0 {
+		t.Fatalf("a refused default-deny sandbox created Pods %+v, want none", pods.Items)
 	}
 }

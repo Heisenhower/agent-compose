@@ -405,6 +405,7 @@ func NewRuntimeProvider(di do.Injector) (adapters.RuntimeProvider, error) {
 	return adapters.NewRuntimeProvider(
 		do.MustInvoke[*appconfig.Config](di),
 		do.MustInvoke[*sandboxstore.Store](di),
+		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
 		adapters.WithRuntimeRecorder(do.MustInvoke[*telemetry.Recorder](di)),
 	)
 }

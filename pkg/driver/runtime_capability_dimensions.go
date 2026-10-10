@@ -26,6 +26,7 @@ const (
 	mechanismSDKSandboxOptions       = "sdk_sandbox_options"
 	mechanismStoppedContainerRuntime = "stopped_container_retention"
 	mechanismStoppedMicroVMRuntime   = "stopped_microvm_retention"
+	mechanismSDKNetworkPolicy        = "sdk_network_policy"
 	// mechanismRuntimeLLMFacadeToken is the engine-wide mechanism that replaces
 	// a declared LLM provider credential with a run-scoped facade token before
 	// the guest can read it. It lives in pkg/llms, not in a driver, so every

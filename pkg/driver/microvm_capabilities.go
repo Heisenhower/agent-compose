@@ -5,7 +5,6 @@ package driver
 type microVMObserved struct {
 	ResourceLimits        string
 	SecurityContext       securityContextObserved
-	Egress                string
 	CredentialPlaceholder string
 	// CheckpointReason and CheckpointObserved describe the driver's own
 	// checkpoint/restore surface. One microVM SDK exposes one and the other does
@@ -39,12 +38,7 @@ func microVMRuntimeCapabilityFacts(driver string, observed microVMObserved) Runt
 		UserNamespaces: reasonUnsupported,
 	}, observed.SecurityContext)...)
 	dimensions = append(dimensions,
-		RuntimeCapabilityDimensionFacts{
-			Dimension:       dimensionEgressPolicy,
-			Mechanism:       reasonNotConfigured,
-			Observed:        observed.Egress,
-			DefaultBehavior: "outbound access from the guest is unrestricted",
-		},
+		egressPolicyFacts(driver),
 		credentialPlaceholderFacts(observed.CredentialPlaceholder),
 		stoppedRuntimeRetentionFacts(driver, mechanismStoppedMicroVMRuntime, ""),
 		RuntimeCapabilityDimensionFacts{
