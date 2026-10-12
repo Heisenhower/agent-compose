@@ -84,3 +84,43 @@ Transparent TCP capture and policy DNS (which is what makes a
 proxy-environment-ignoring process obey), request-level L7 rules, per-binary
 scoping, and credential rewriting at the proxy. Each is a separate step on the
 same boundary, and none of them changes the decision path above.
+
+## Delivered, and what it changed
+
+The first slice is implemented and verified on the Docker driver:
+
+- `pkg/agentcompose/proxy` serves the proxy and decides every request;
+  `SandboxEgressProxy` (`pkg/agentcompose/adapters`) issues the credential, builds
+  the environment, answers the proxy's authentication, and reads the policy;
+  `driverRuntimeAdapter.driverSandbox` is the single seam that attaches both the
+  environment and the `MediatedByForwardProxy` fact; `HTTP_LISTEN` serves it.
+- The engine's own refusals were extended past the address set: the control-plane
+  ports `2379`, `2380`, `6443`, `10250`, `10255` are refused under their own rule
+  with the role named, and an IPv6-only destination is refused because the
+  canonical endpoint identifier cannot express it.
+- `allow[].allowed_ips` was added with it, because a name without an address
+  constraint is exactly the indirection the proxy would otherwise make
+  trustworthy. The constraint travels in the normalized spec, the proto messages
+  and the driver-boundary policy, and a mechanism that cannot apply it must now
+  say so rather than apply the destinations alone.
+- `EGRESS_UNENFORCEABLE_POLICY` defaults to `warn`, so a declaration the platform
+  cannot deliver is reported instead of becoming an availability failure.
+
+Evidence: `verify-forward-proxy.sh` (9/9) and `verify-allowed-ips.sh` (5/5) on the
+Docker driver, plus `verify-warn-default.sh` (13/13) for the fallback.
+
+## Still open
+
+- **Admission-time verdict.** `config`, `up` and `apply` report what was
+  *declared*, not what will be *enforced*: nothing tells the operator at admission
+  time that an agent's declaration will fall back to the unenforced path. The
+  pieces exist (`SandboxNetworkEnforcementFor`, `SandboxEgressForwardProxyEnforcement`),
+  so this is a reporting surface, not a new decision.
+- **Per-sandbox policy record and drift.** The proxy reads the current declaration
+  per request, and `egress.Policy.Generation()` already stamps every decision, but
+  no store records the generation a sandbox was created under, so drift between
+  the declaration a sandbox started with and the one in force is not visible.
+- **`ReportNetworkPolicy` has no production caller.** The auditable account of a
+  declaration (allowances, engine auto-allows, inspectability) exists and is
+  tested but is not rendered on any surface a user can read; `DeclaredAllowance`
+  should also carry the address ranges once it is.
