@@ -61,6 +61,23 @@ test starts an isolated host daemon, creates a Docker sandbox through the public
 API, verifies the unified Jupyter endpoint, then stops and resumes the sandbox
 with deliberately stale persisted port state to verify inspect-based recovery.
 
+The declared-network-policy execution matrix is opt-in because it needs a local
+Docker Engine, outbound network access, and a guest image with `curl`. It starts
+an isolated host daemon whose proxy listener is reachable from a sandbox, applies
+a project that declares `policy.network`, and asserts the enforcement a driver
+must show: a declared allowance succeeds, an unlisted host and the metadata
+address are refused by the engine, a declaration the engine cannot enforce
+carries no proxy, an allow list without a declared default restricts nothing, and
+an edit reaches a sandbox that is already running. Run it with:
+
+```bash
+task test:e2e:network-policy
+```
+
+Set `AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE` to a guest image with `curl`, and
+`AGENT_COMPOSE_E2E_NETWORK_POLICY_HOST_ADDRESS` when the address a sandbox uses
+to reach the host is not the Docker bridge gateway.
+
 The real host-daemon Docker file-workspace restart/resume E2E is also opt-in. It
 requires a reachable local Docker Engine, the Docker CLI, and a compatible local
 guest image. Build the default image and run it with:

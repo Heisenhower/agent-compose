@@ -332,6 +332,22 @@ tasks:
           GOCACHE={{.GO_BUILD_CACHE_DIR}} \
           {{.GO_TOOLCHAIN_ENV}} go test ./test/e2e -run '^TestE2EGracefulSandboxStopHostDaemon$' -count=1 -timeout 25m -v
 
+  test:e2e:network-policy:
+    desc: Run the opt-in host-daemon Docker declared-network-policy execution matrix E2E test
+    dir: '{{.TASKFILE_DIR}}'
+    deps: ['build:agent-compose']
+    cmds:
+      - |
+        image="${AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE:-agent-compose-guest:latest}"
+        if ! docker image inspect "$image" >/dev/null 2>&1; then
+          echo "Network-policy guest image $image is unavailable; run 'task image:agent-compose-guest' or set AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE" >&2
+          exit 1
+        fi
+        AGENT_COMPOSE_E2E_BINARY="$PWD/build/agent-compose" \
+          AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE="$image" \
+          GOCACHE={{.GO_BUILD_CACHE_DIR}} \
+          {{.GO_TOOLCHAIN_ENV}} go test ./test/e2e -run '^TestE2EDockerNetworkPolicyExecutionMatrix$' -count=1 -timeout 30m -v
+
   test:e2e:docker-workspace-resume:
     desc: Run the opt-in host-daemon Docker file-workspace restart/resume E2E test
     dir: '{{.TASKFILE_DIR}}'
