@@ -1,0 +1,149 @@
+# agent-compose project policy library example
+
+Languages: English | [中文](README.zh-CN.md)
+
+This example shows the project-level `policies` library: one policy block per
+audience, selected by name from each agent, plus one agent that declares its
+policy inline. It runs on the Docker runtime driver.
+
+`config`, `up`, and `ls` exercise only the control plane and do not require a
+model or API key.
+
+## Prerequisites
+
+- The `agent-compose` daemon is running.
+- Docker is required only when starting a real agent sandbox.
+- `agent-compose-guest:latest` exists locally before a real run.
+
+## Compose file
+
+```yaml
+name: docker-policy-library
+
+policies:
+  locked-down:
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+  keep-runtime:
+    stopped_runtime_policy: retain
+
+agents:
+  reviewer:
+    provider: codex
+    image: agent-compose-guest:latest
+    policy: locked-down
+    driver:
+      docker: {}
+
+  builder:
+    provider: codex
+    image: agent-compose-guest:latest
+    policy: keep-runtime
+    driver:
+      docker: {}
+
+  adhoc:
+    provider: codex
+    image: agent-compose-guest:latest
+    policy:
+      network:
+        default: allow-all
+    driver:
+      docker: {}
+```
+
+## How selection works
+
+- `policy: <name>` selects a `policies` entry. The name is resolved while the
+  project is normalized, so every agent carries its effective policy block.
+- Repeating a library block inline normalizes to the same specification and the
+  same spec hash. Moving a shared block into `policies` is behavior-neutral.
+- An undefined name is an error. It is never treated as "no policy", because an
+  undeclared policy means unrestricted egress.
+- Every library entry is validated even when no agent selects it, and an entry
+  cannot name another entry.
+- The library is authoring convenience and is not part of the normalized
+  specification: `config` shows each agent's effective `policy` block.
+
+## Validate and apply
+
+From this directory:
+
+```bash
+agent-compose config
+agent-compose up
+agent-compose ls
+```
+
+From the repository root without installing the binary:
+
+```bash
+go run ./cmd/agent-compose --file examples/agent-compose/docker-policy-library/agent-compose.yml config
+go run ./cmd/agent-compose --file examples/agent-compose/docker-policy-library/agent-compose.yml up
+```
+
+Representative normalized output: the `policies` library is resolved away, and
+each agent carries the block it selected.
+
+```yaml
+name: docker-policy-library
+agents:
+    - name: adhoc
+      enabled: true
+      provider: codex
+      image: agent-compose-guest:latest
+      driver:
+        name: docker
+        docker: {}
+      policy:
+        stopped_runtime_policy: remove
+        network:
+            default: allow-all
+    - name: builder
+      enabled: true
+      provider: codex
+      image: agent-compose-guest:latest
+      driver:
+        name: docker
+        docker: {}
+      policy:
+        stopped_runtime_policy: retain
+    - name: reviewer
+      enabled: true
+      provider: codex
+      image: agent-compose-guest:latest
+      driver:
+        name: docker
+        docker: {}
+      policy:
+        stopped_runtime_policy: remove
+        network:
+            default: deny
+            allow:
+                - host: api.github.com
+                  port: 443
+                  protocol: https
+```
+
+## Docker driver and `default: deny`
+
+`reviewer` declares `default: deny`. The Docker driver cannot express the
+declared allowances while keeping the engine's own LLM facade and telemetry
+endpoint reachable, so the engine **refuses to create** that sandbox with an
+error naming the driver instead of silently running it with unrestricted egress.
+`config` and `up` succeed because they do not create a sandbox; a real `run` of
+`reviewer` fails closed.
+
+To try a real run, use `builder` or `adhoc`, or change `locked-down` to
+`default: allow-all` (the declaration is still validated, hashed, and stored,
+but it never denies traffic).
+
+## Clean up
+
+```bash
+agent-compose down
+```
