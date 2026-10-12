@@ -575,6 +575,10 @@ type SandboxVMInfo struct {
 	// boundary resolves the policy, so it is the only layer that can report it,
 	// and the caller persists it beside the rest of the runtime state.
 	EgressPolicy SandboxEgressPolicy
+	// RuntimeCreated reports that the driver created this runtime rather than
+	// reusing one, which is what makes EgressPolicy the configuration the running
+	// runtime actually has.
+	RuntimeCreated bool
 }
 
 type ExecSpec struct {

@@ -174,7 +174,7 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 		return err
 	}
 	runtimeStarted = true
-	if err := d.recordEgressRuntimePolicy(session, &vmState, previousEgressPolicy, info.EgressPolicy, freshRuntime); err != nil {
+	if err := d.recordEgressRuntimePolicy(session, &vmState, previousEgressPolicy, info.EgressPolicy, info.RuntimeCreated); err != nil {
 		return err
 	}
 
@@ -207,19 +207,32 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 // away: a sandbox that started with an open declaration keeps its egress until
 // its runtime is recreated, and hiding that would make the engine's account of
 // it less true the longer it ran.
-func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmState *domain.VMState, previousRecord, current domain.SandboxEgressPolicy, freshRuntime bool) error {
-	// The runtime keeps the policy it was created with, so its record survives a
-	// start that reuses it; only a created runtime replaces it.
+func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmState *domain.VMState, previousRecord, current domain.SandboxEgressPolicy, runtimeCreated bool) error {
+	// The record describes the runtime, and the start path only *ensures* one:
+	// a retained runtime is started again with the configuration it was created
+	// with. The driver is therefore the only layer that can say whether the
+	// policy resolved now is the one the running runtime has, and it says so
+	// through SandboxVMInfo.RuntimeCreated. Without that fact the record keeps
+	// the policy the runtime has rather than the one the engine would install,
+	// which is the direction that cannot claim enforcement that is not there.
 	vmState.EgressPolicy = previousRecord
 	if !current.Recorded() {
 		return nil
 	}
-	if freshRuntime {
+	previous := egressRuntimePolicyFromRecord(previousRecord)
+	if !previous.Recorded() || runtimeCreated {
+		// Either nothing was recorded before, or the driver built a runtime
+		// under the policy resolved now.
 		vmState.EgressPolicy = current
 		return nil
 	}
-	previous := egressRuntimePolicyFromRecord(previousRecord)
-	drift, changed := egress.RuntimePolicyDriftBetween(previous, egressRuntimePolicyFromRecord(current))
+	currentPolicy := egressRuntimePolicyFromRecord(current)
+	if previous.Application == egress.ApplicationMediated && currentPolicy.Application == egress.ApplicationMediated {
+		// A mediated runtime is decided by the declaration in force on every
+		// request, so the generation it is decided by is the current one.
+		vmState.EgressPolicy = current
+	}
+	drift, changed := egress.RuntimePolicyDriftBetween(previous, currentPolicy)
 	if !changed {
 		return nil
 	}
@@ -229,7 +242,7 @@ func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmSta
 		"previous_generation", uint64(drift.Previous),
 		"current_generation", uint64(drift.Current),
 		"previous_application", string(previous.Application),
-		"current_application", string(egressRuntimePolicyFromRecord(current).Application),
+		"current_application", string(currentPolicy.Application),
 	}
 	if drift.DecidedByCurrentPolicy {
 		slog.Info("sandbox egress policy differs from the one its runtime was created with", attributes...)

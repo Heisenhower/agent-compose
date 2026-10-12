@@ -72,6 +72,13 @@ func TestSandboxDriverRecordsTheEgressPolicyItsRuntimeWasCreatedWith(t *testing.
 		// runtime, not what the running one has.
 		EgressPolicy: domain.SandboxEgressPolicy{Generation: 9001, Applied: string(egress.ApplicationMediated)},
 	})
+	provider.infos = append(provider.infos, domain.SandboxVMInfo{
+		BoxID: "container-1",
+		// A mediated runtime is decided by the policy in force on every request,
+		// so its record follows the declaration: the generation it is decided by
+		// is the current one.
+		EgressPolicy: domain.SandboxEgressPolicy{Generation: 9002, Applied: string(egress.ApplicationMediated)},
+	})
 	driver := newTestSandboxDriver(config, store, nil, provider)
 
 	if err := driver.StartSandboxVM(ctx, session); err != nil {
@@ -94,6 +101,31 @@ func TestSandboxDriverRecordsTheEgressPolicyItsRuntimeWasCreatedWith(t *testing.
 	}
 	if vmState.EgressPolicy != created {
 		t.Fatalf("recorded egress policy after restarting an existing runtime = %+v, want it unchanged at %+v so the declaration that does not reach this sandbox stays visible", vmState.EgressPolicy, created)
+	}
+
+	// A mediated runtime is the exception: the proxy reads the policy per
+	// request, so the declaration it is decided by is the current one even when
+	// the runtime itself was not recreated.
+	mediatedSession, err := store.CreateSandbox(ctx, "mediated", "", driverpkg.RuntimeDriverBoxlite, "guest:latest", "", domain.SandboxTypeManual, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	mediatedCreated := domain.SandboxEgressPolicy{Generation: 555, Applied: string(egress.ApplicationMediated)}
+	edited := domain.SandboxEgressPolicy{Generation: 556, Applied: string(egress.ApplicationMediated)}
+	provider.infos = []domain.SandboxVMInfo{{EgressPolicy: mediatedCreated}, {BoxID: "container-2", EgressPolicy: edited}}
+	provider.calls = 0
+	if err := driver.StartSandboxVM(ctx, mediatedSession); err != nil {
+		t.Fatalf("mediated StartSandboxVM returned error: %v", err)
+	}
+	if err := driver.StartSandboxVM(ctx, mediatedSession); err != nil {
+		t.Fatalf("mediated restart returned error: %v", err)
+	}
+	vmState, err = store.GetVMState(mediatedSession.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetVMState returned error: %v", err)
+	}
+	if vmState.EgressPolicy != edited {
+		t.Fatalf("recorded egress policy for a mediated runtime = %+v, want the current one (%+v)", vmState.EgressPolicy, edited)
 	}
 }
 

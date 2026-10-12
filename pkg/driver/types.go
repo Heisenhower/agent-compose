@@ -170,6 +170,13 @@ type SandboxVMInfo struct {
 	BoxID      string
 	JupyterURL string
 	ProxyState *ProxyState
+	// RuntimeCreated reports that this call created the runtime rather than
+	// reusing one that already existed. The engine asks a start to *ensure* a
+	// runtime, so this is the only fact that distinguishes "built under the
+	// configuration resolved now" from "started again with the one it already
+	// had". A driver that does not report it leaves the engine unable to tell,
+	// and callers must treat false as unknown rather than as reuse.
+	RuntimeCreated bool
 }
 
 type SandboxRuntime interface {

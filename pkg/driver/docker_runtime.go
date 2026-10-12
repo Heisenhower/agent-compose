@@ -254,7 +254,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 		return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, err)
 	}
 	if !jupyterEnabled(proxyState) {
-		return SandboxVMInfo{BoxID: containerInfo.ID, ProxyState: &proxyState}, nil
+		return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, ProxyState: &proxyState}, nil
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, r.config.JupyterReadyTimeout)
@@ -262,7 +262,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 	cancel()
 	if readyErr != nil {
 		if logText := readSandboxJupyterLog(sandbox); jupyterLogIndicatesReady(logText) {
-			return SandboxVMInfo{BoxID: containerInfo.ID, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
+			return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
 		}
 		if logText := readSandboxJupyterLog(sandbox); logText != "" {
 			return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, fmt.Errorf("%w\nGuest log:\n%s", readyErr, logText))
@@ -273,7 +273,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 		return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, readyErr)
 	}
 
-	return SandboxVMInfo{BoxID: containerInfo.ID, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
+	return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
 }
 
 func (r *dockerRuntime) IsSandboxAlive(ctx context.Context, sandbox *Sandbox, vmState VMState) (bool, error) {
