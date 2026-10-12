@@ -57,7 +57,7 @@ func TestExampleFilesContract(t *testing.T) {
 			for _, readme := range []string{"README.md", "README.zh-CN.md"} {
 				assertExampleFileExists(t, filepath.Join(dir, readme))
 			}
-			_, normalized, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{
+			_, normalized, _, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{
 				ComposeFile: filepath.Join(dir, "agent-compose.yml"),
 			})
 			if err != nil {

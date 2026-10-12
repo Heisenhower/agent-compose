@@ -96,7 +96,10 @@ func resolveComposeAgentNameFromProject(project *agentcomposev2.Project, ref str
 }
 
 func resolveComposeProject(cli cliOptions) (string, *compose.NormalizedProjectSpec, string, error) {
-	composePath, normalized, err := loadNormalizedCompose(cli)
+	// The deprecation is reported by the commands that read and apply the local
+	// file (up, config). Commands that only resolve a project reference act on the
+	// project the daemon already stores, which normalizes the block to `policy`.
+	composePath, normalized, _, err := loadNormalizedCompose(cli)
 	if err != nil {
 		return "", nil, "", err
 	}
