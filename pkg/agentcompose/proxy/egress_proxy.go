@@ -78,7 +78,25 @@ const (
 	EgressRulePolicyUnavailable = "engine.policy-unavailable"
 	// EgressRuleUnresolvedAddress denies when the destination does not resolve.
 	EgressRuleUnresolvedAddress = "engine.unresolved-address"
+	// EgressRuleBlockedPort denies a control-plane port the engine never
+	// forwards to, whatever the policy says. A sandbox that could reach a
+	// cluster's etcd or kubelet through the proxy would have a path to the
+	// credentials and the workloads of the platform hosting it, so the
+	// declaration cannot buy that path back.
+	EgressRuleBlockedPort = "engine.blocked-port"
 )
+
+// blockedEnginePorts is the set of control-plane ports the proxy refuses
+// unconditionally, with the reason recorded in the decision. They are named by
+// role rather than by address because the address is often dynamic, which is
+// exactly why an allow list cannot be trusted to exclude them.
+var blockedEnginePorts = map[int]string{
+	2379:  "etcd client",
+	2380:  "etcd peer",
+	6443:  "Kubernetes API server",
+	10250: "kubelet API",
+	10255: "kubelet read-only API",
+}
 
 // EgressProxy is the daemon-side forward proxy a sandbox's outbound traffic
 // passes through. It authenticates the sandbox, decides the destination against
@@ -187,6 +205,15 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}})
 		p.logger.WarnContext(r.Context(), "egress proxy could not resolve a destination",
 			"sandbox_id", sandboxID, "host", destination.host, "error", err)
+		return
+	}
+	if role, blocked := blockedEnginePorts[destination.port]; blocked {
+		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: egress.Result{
+			Action:     egress.Deny,
+			RuleID:     EgressRuleBlockedPort,
+			Reason:     fmt.Sprintf("port %d is the %s control-plane port, which the engine never forwards to", destination.port, role),
+			Generation: policy.Generation(),
+		}})
 		return
 	}
 	if blocked := firstBlockedAddress(addresses); blocked != nil {

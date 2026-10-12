@@ -335,6 +335,75 @@ func TestEgressProxyRefusesBlockedAddresses(t *testing.T) {
 	}
 }
 
+// TestEgressProxyRefusesControlPlanePorts is the other unconditional deny: the
+// policy allows everything, including the exact destination, and the proxy must
+// still refuse a control-plane port. A declaration cannot buy a path to the
+// platform's etcd or kubelet.
+func TestEgressProxyRefusesControlPlanePorts(t *testing.T) {
+	for port, role := range blockedEnginePorts {
+		t.Run(fmt.Sprintf("%d_%s", port, strings.ReplaceAll(role, " ", "_")), func(t *testing.T) {
+			destination := fmt.Sprintf("kube.internal:%d", port)
+			policies := &proxyTestPolicies{policies: []egress.Policy{egress.NewPolicy(egress.Allow)}}
+			proxyServer, recorder := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+				options.LookupIP = func(context.Context, string) ([]net.IP, error) {
+					return []net.IP{net.ParseIP("203.0.113.10")}, nil
+				}
+			})
+			server := httptest.NewServer(proxyServer)
+			defer server.Close()
+
+			connection := dialProxy(t, server)
+			defer func() { _ = connection.Close() }()
+			writeConnect(t, connection, destination, testSandboxID, testCredential)
+			response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+			if err != nil {
+				t.Fatalf("reading the deny response: %v", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusForbidden {
+				t.Fatalf("CONNECT status = %d, want 403 even though the policy allows %s", response.StatusCode, destination)
+			}
+			if rule := response.Header.Get("X-Agent-Compose-Egress-Rule"); rule != EgressRuleBlockedPort {
+				t.Fatalf("deny rule = %q, want %q", rule, EgressRuleBlockedPort)
+			}
+			if reason := response.Header.Get("X-Agent-Compose-Egress-Reason"); !strings.Contains(reason, role) {
+				t.Fatalf("deny reason = %q, want it to name the %s role", reason, role)
+			}
+			records := recorder.collected()
+			if len(records) != 1 || records[0].Allowed() || records[0].Result.RuleID != EgressRuleBlockedPort {
+				t.Fatalf("records = %+v, want one %s deny", records, EgressRuleBlockedPort)
+			}
+		})
+	}
+}
+
+func TestEgressProxyStillForwardsAnUnblockedPort(t *testing.T) {
+	// The same host and policy, on a port no engine rule reserves, must be
+	// decided by the policy rather than swallowed by the port rule.
+	policies := &proxyTestPolicies{policies: []egress.Policy{egress.NewPolicy(egress.Allow)}}
+	proxyServer, _ := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.LookupIP = func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("203.0.113.10")}, nil
+		}
+	})
+	// A dial that fails still proves the decision was an allow: the request
+	// reached the forwarding step instead of the port rule.
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	writeConnect(t, connection, "kube.internal:6444", testSandboxID, testCredential)
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if rule := response.Header.Get("X-Agent-Compose-Egress-Rule"); rule == EgressRuleBlockedPort {
+		t.Fatalf("port 6444 was refused by the control-plane rule")
+	}
+}
+
 func TestEgressProxyRequiresASandboxCredential(t *testing.T) {
 	policies := &proxyTestPolicies{}
 	proxyServer, recorder := newTestEgressProxy(t, policies)
