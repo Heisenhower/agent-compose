@@ -63,6 +63,21 @@ func (d driverSandboxNetworkPolicy) inputs(ctx context.Context, session *domain.
 // sandbox declared no network policy (D3: undeclared is not deny). A declared
 // policy always yields a non-nil policy, permissive ones included, so a caller
 // can tell "undeclared" from "declared allow" rather than guessing.
+// effectivePolicy compiles the policy this sandbox's declaration resolves to:
+// the same compilation the forward proxy decides with, so a generation a
+// decision records and the generation recorded for a runtime are comparable.
+func (d driverSandboxNetworkPolicy) effectivePolicy(ctx context.Context, session *domain.Sandbox) (egress.Policy, error) {
+	declaration, engineEndpoints, err := d.inputs(ctx, session)
+	if err != nil {
+		return egress.Policy{}, err
+	}
+	policy, err := egress.EffectiveNetworkPolicy(declaration, engineEndpoints)
+	if err != nil {
+		return egress.Policy{}, fmt.Errorf("compile the egress policy for sandbox %s: %w", session.Summary.ID, err)
+	}
+	return policy, nil
+}
+
 func (d driverSandboxNetworkPolicy) policy(ctx context.Context, session *domain.Sandbox) (*driverpkg.SandboxNetworkPolicy, error) {
 	declaration, engineEndpoints, err := d.inputs(ctx, session)
 	if err != nil {

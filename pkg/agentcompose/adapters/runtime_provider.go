@@ -8,6 +8,7 @@ import (
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/egress"
 	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/sandboxes"
@@ -222,15 +223,16 @@ func (p *runtimeProvider) ForSession(session *domain.Sandbox) (SandboxRuntime, e
 // sandbox handed to the driver without the policy would create a Pod or
 // container before the enforcement gate ever saw the declaration. Every such
 // call site must use this helper rather than execution.ToDriverSandbox directly.
-func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain.Sandbox) (*driverpkg.Sandbox, error) {
+func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain.Sandbox) (*driverpkg.Sandbox, domain.SandboxEgressPolicy, error) {
 	driverSandbox := execution.ToDriverSandbox(session)
 	// The driver-boundary policy is derived from the project's normalized
 	// declaration, not from the domain session, and only a declared policy sets
 	// it. An undeclared sandbox keeps a nil policy and today's behavior (D3).
 	policy, err := r.networkPolicies.policy(ctx, session)
 	if err != nil {
-		return nil, err
+		return nil, domain.SandboxEgressPolicy{}, err
 	}
+	mediated := false
 	if driverSandbox != nil {
 		driverSandbox.NetworkPolicy = policy
 		// A declaration that denies by default is only really enforced where the
@@ -240,21 +242,57 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 		if policy != nil && policy.DenyByDefault() {
 			env, err := r.egressProxy.Enable(ctx, session)
 			if err != nil {
-				return nil, err
+				return nil, domain.SandboxEgressPolicy{}, err
 			}
 			if len(env) > 0 {
 				policy.MediatedByForwardProxy = true
 				driverSandbox.EnvItems = append(driverSandbox.EnvItems, env...)
+				mediated = true
 			}
 		}
 	}
-	return driverSandbox, nil
+	// Record what this creation is about to install. The record is the only way
+	// a later start can tell which policy the runtime that is running was built
+	// for, because a declaration read at creation cannot be recovered from the
+	// declaration that is in force then.
+	record, err := r.egressRuntimePolicy(ctx, session, policy, mediated)
+	if err != nil {
+		return nil, domain.SandboxEgressPolicy{}, err
+	}
+	return driverSandbox, record, nil
+}
+
+// egressRuntimePolicy describes the effective policy this creation installs for
+// a sandbox: the generation the proxy will decide against, and how the policy
+// reaches the runtime. The generation comes from the same compilation the proxy
+// uses (policyForSession), so a decision the proxy records carries a generation
+// that can be compared with this one.
+func (r driverRuntimeAdapter) egressRuntimePolicy(ctx context.Context, session *domain.Sandbox, policy *driverpkg.SandboxNetworkPolicy, mediated bool) (domain.SandboxEgressPolicy, error) {
+	effective, err := r.networkPolicies.effectivePolicy(ctx, session)
+	if err != nil {
+		return domain.SandboxEgressPolicy{}, err
+	}
+	application := egress.ApplicationOpen
+	switch {
+	case mediated:
+		application = egress.ApplicationMediated
+	case policy != nil && policy.DenyByDefault():
+		// The declaration denies by default and the engine is not in the traffic
+		// path, so whatever the driver does with it is what the runtime gets. A
+		// driver that applies nothing leaves the sandbox unrestricted.
+		if driverpkg.SandboxNetworkEnforcementFor(session.Summary.Driver).Strength == driverpkg.SandboxEgressStrengthNone {
+			application = egress.ApplicationUnenforced
+		} else {
+			application = egress.ApplicationDriverApplied
+		}
+	}
+	return sandboxEgressPolicyRecord(egress.RuntimePolicy{Generation: effective.Generation(), Application: application}), nil
 }
 
 func (r driverRuntimeAdapter) EnsureSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, proxyState domain.ProxyState) (domain.SandboxVMInfo, error) {
 	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxEnsure, session, vmState.Driver)
 	startedAt := time.Now()
-	driverSandbox, err := r.driverSandbox(ctx, session)
+	driverSandbox, egressPolicy, err := r.driverSandbox(ctx, session)
 	if err != nil {
 		endSpan(err)
 		return domain.SandboxVMInfo{}, err
@@ -265,7 +303,9 @@ func (r driverRuntimeAdapter) EnsureSandbox(ctx context.Context, session *domain
 	if err != nil {
 		return domain.SandboxVMInfo{}, err
 	}
-	return execution.FromDriverSandboxVMInfo(info), nil
+	domainInfo := execution.FromDriverSandboxVMInfo(info)
+	domainInfo.EgressPolicy = egressPolicy
+	return domainInfo, nil
 }
 
 func (r driverRuntimeAdapter) StopSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState) (bool, error) {
@@ -391,7 +431,7 @@ func (r guestFileRuntimeAdapter) ReadGuestFile(ctx context.Context, session *dom
 	if !ok {
 		return nil, domain.ClassifyError(domain.ErrUnsupported, "runtime does not support reading guest files directly", nil)
 	}
-	driverSandbox, err := r.driverSandbox(ctx, session)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +445,7 @@ func (r guestFileRuntimeAdapter) ReadGuestDir(ctx context.Context, session *doma
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support reading guest directories directly", nil)
 	}
-	driverSandbox, err := r.driverSandbox(ctx, session)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
 	if err != nil {
 		return err
 	}
@@ -419,7 +459,7 @@ func (r guestFileRuntimeAdapter) WriteGuestFile(ctx context.Context, session *do
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support writing guest files directly", nil)
 	}
-	driverSandbox, err := r.driverSandbox(ctx, session)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
 	if err != nil {
 		return err
 	}
@@ -433,7 +473,7 @@ func (r guestFileRuntimeAdapter) WriteGuestDir(ctx context.Context, session *dom
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support writing guest directories directly", nil)
 	}
-	driverSandbox, err := r.driverSandbox(ctx, session)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
 	if err != nil {
 		return err
 	}

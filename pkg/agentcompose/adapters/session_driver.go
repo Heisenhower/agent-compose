@@ -10,6 +10,7 @@ import (
 	"github.com/chaitin/agent-compose/pkg/capmatrix"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/egress"
 	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/sandboxes"
@@ -114,6 +115,11 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 	if err != nil {
 		return err
 	}
+	// The driver-boundary VMState is an explicit projection, so preparing the
+	// start replaces vmState with a value that does not carry the egress record.
+	// It is a fact about the runtime, not about the driver's view of it, so it is
+	// held here and written back below.
+	previousEgressPolicy := vmState.EgressPolicy
 	runtimeStarted := false
 	freshRuntime := vmState.StartedAt.IsZero() || sandboxes.RuntimeReleaseIntentional(session)
 	if freshRuntime && d.ConfigDB != nil {
@@ -168,6 +174,9 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 		return err
 	}
 	runtimeStarted = true
+	if err := d.recordEgressRuntimePolicy(session, &vmState, previousEgressPolicy, info.EgressPolicy, freshRuntime); err != nil {
+		return err
+	}
 
 	if err := d.saveSandboxStartInfo(session, vmState, proxyState, info); err != nil {
 		return err
@@ -185,6 +194,48 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 		}
 		return errors.Join(fmt.Errorf("mark sandbox runtime owned: %w", err), rollbackErr)
 	}
+	return nil
+}
+
+// recordEgressRuntimePolicy keeps the sandbox's record of the egress policy its
+// runtime was created under, and reports when the policy now in force is not the
+// one that created the runtime that is running.
+//
+// The record describes the *runtime*, so it is replaced only when the runtime is
+// created, which is the one moment the engine knows what was installed. On a
+// start that reuses a runtime, the difference is reported instead of recorded
+// away: a sandbox that started with an open declaration keeps its egress until
+// its runtime is recreated, and hiding that would make the engine's account of
+// it less true the longer it ran.
+func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmState *domain.VMState, previousRecord, current domain.SandboxEgressPolicy, freshRuntime bool) error {
+	// The runtime keeps the policy it was created with, so its record survives a
+	// start that reuses it; only a created runtime replaces it.
+	vmState.EgressPolicy = previousRecord
+	if !current.Recorded() {
+		return nil
+	}
+	if freshRuntime {
+		vmState.EgressPolicy = current
+		return nil
+	}
+	previous := egressRuntimePolicyFromRecord(previousRecord)
+	drift, changed := egress.RuntimePolicyDriftBetween(previous, egressRuntimePolicyFromRecord(current))
+	if !changed {
+		return nil
+	}
+	attributes := []any{
+		"sandbox_id", session.Summary.ID,
+		"driver", vmState.Driver,
+		"previous_generation", uint64(drift.Previous),
+		"current_generation", uint64(drift.Current),
+		"previous_application", string(previous.Application),
+		"current_application", string(egressRuntimePolicyFromRecord(current).Application),
+	}
+	if drift.DecidedByCurrentPolicy {
+		slog.Info("sandbox egress policy differs from the one its runtime was created with", attributes...)
+		return nil
+	}
+	slog.Warn("sandbox egress is not decided by the policy now in force", append(attributes, "reason", drift.Summary)...)
 	return nil
 }
 

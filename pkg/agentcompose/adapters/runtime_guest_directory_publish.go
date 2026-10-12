@@ -16,7 +16,7 @@ func (r guestFileRuntimeAdapter) PublishGuestDirectory(ctx context.Context, sand
 	if !ok {
 		return fmt.Errorf("runtime does not support guest directory publication")
 	}
-	driverSandbox, err := r.driverSandbox(ctx, sandbox)
+	driverSandbox, _, err := r.driverSandbox(ctx, sandbox)
 	if err != nil {
 		return err
 	}
@@ -30,7 +30,7 @@ func (r guestFileRuntimeAdapter) EnsureGuestSymlink(ctx context.Context, sandbox
 	if !ok {
 		return fmt.Errorf("runtime does not support guest symlink projection")
 	}
-	driverSandbox, err := r.driverSandbox(ctx, sandbox)
+	driverSandbox, _, err := r.driverSandbox(ctx, sandbox)
 	if err != nil {
 		return err
 	}

@@ -264,7 +264,7 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 			networkPolicies: driverSandboxNetworkPolicy{config: networkPolicyTestConfig(), declarations: stubNetworkDeclarationResolver{declaration: denyDeclaration()}},
 			egressProxy:     egressProxyTestMediation(store, egressProxyTestSandboxes{session: session}, denyDeclaration()),
 		}
-		driverSandbox, err := adapter.driverSandbox(context.Background(), session)
+		driverSandbox, record, err := adapter.driverSandbox(context.Background(), session)
 		if err != nil {
 			t.Fatalf("driverSandbox() error = %v", err)
 		}
@@ -273,6 +273,9 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		}
 		if envValues(driverSandbox.EnvItems)["HTTPS_PROXY"] == "" {
 			t.Fatalf("environment = %v, want the proxy", envValues(driverSandbox.EnvItems))
+		}
+		if record.Applied != string(egress.ApplicationMediated) {
+			t.Fatalf("record = %+v, want the runtime recorded as mediated so a later start knows its traffic is decided per request", record)
 		}
 		// The seat is real: the driver's own gate must not warn or refuse.
 		if err := driverpkg.RequireSandboxNetworkEnforcement(driverpkg.RuntimeDriverDocker, session.Summary.ID, driverSandbox.NetworkPolicy, appconfig.EgressUnenforceableRefuse); err != nil {
@@ -290,7 +293,7 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 				stubNetworkDeclarationResolver{declaration: denyDeclaration()},
 			),
 		}
-		driverSandbox, err := adapter.driverSandbox(context.Background(), session)
+		driverSandbox, record, err := adapter.driverSandbox(context.Background(), session)
 		if err != nil {
 			t.Fatalf("driverSandbox() error = %v", err)
 		}
@@ -300,6 +303,27 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		if len(driverSandbox.EnvItems) != 0 {
 			t.Fatalf("environment = %v, want none", envValues(driverSandbox.EnvItems))
 		}
+		// The declaration denies by default and nothing applied it, which is a
+		// different fact from "no declaration" and must not be recorded as one.
+		if record.Applied != string(egress.ApplicationUnenforced) {
+			t.Fatalf("record = %+v, want the runtime recorded as declared but unenforced", record)
+		}
+	})
+
+	t.Run("a driver that applies the declaration records that it did", func(t *testing.T) {
+		applying := networkPolicyTestSession()
+		applying.Summary.Driver = driverpkg.RuntimeDriverMicrosandbox
+		adapter := driverRuntimeAdapter{
+			networkPolicies: driverSandboxNetworkPolicy{config: networkPolicyTestConfig(), declarations: stubNetworkDeclarationResolver{declaration: denyDeclaration()}},
+			egressProxy:     NewSandboxEgressProxy(nil, nil, nil, stubNetworkDeclarationResolver{declaration: denyDeclaration()}),
+		}
+		_, record, err := adapter.driverSandbox(context.Background(), applying)
+		if err != nil {
+			t.Fatalf("driverSandbox() error = %v", err)
+		}
+		if record.Applied != string(egress.ApplicationDriverApplied) {
+			t.Fatalf("record = %+v, want the runtime recorded as driver-applied so a retained runtime is reported as keeping it", record)
+		}
 	})
 
 	t.Run("undeclared sandbox is untouched", func(t *testing.T) {
@@ -308,7 +332,7 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 			networkPolicies: driverSandboxNetworkPolicy{config: networkPolicyTestConfig(), declarations: stubNetworkDeclarationResolver{}},
 			egressProxy:     egressProxyTestMediation(store, egressProxyTestSandboxes{session: session}, nil),
 		}
-		driverSandbox, err := adapter.driverSandbox(context.Background(), session)
+		driverSandbox, record, err := adapter.driverSandbox(context.Background(), session)
 		if err != nil {
 			t.Fatalf("driverSandbox() error = %v", err)
 		}
@@ -317,6 +341,11 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		}
 		if len(driverSandbox.EnvItems) != 0 || len(store.tokens) != 0 {
 			t.Fatalf("an undeclared sandbox was given a proxy: env=%v credentials=%d", envValues(driverSandbox.EnvItems), len(store.tokens))
+		}
+		// An open policy is still recorded: it is the fact that makes a
+		// declaration added later visible as a change this runtime does not have.
+		if record.Applied != string(egress.ApplicationOpen) || record.Generation == 0 {
+			t.Fatalf("record = %+v, want an open policy recorded with its generation", record)
 		}
 	})
 }

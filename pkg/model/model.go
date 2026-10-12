@@ -533,6 +533,27 @@ type VMState struct {
 	BootstrapRef     string    `json:"bootstrap_ref,omitempty"`
 	K8sContext       string    `json:"k8s_context,omitempty"`
 	K8sNamespace     string    `json:"k8s_namespace,omitempty"`
+	// EgressPolicy is what the engine knew about this sandbox's outbound network
+	// policy when it created the runtime that is running now. It is recorded at
+	// creation because the answer cannot be recovered afterwards: a runtime
+	// created before a declaration existed keeps the egress it started with, and
+	// only this record can say which policy that was.
+	EgressPolicy SandboxEgressPolicy `json:"egress_policy,omitempty"`
+}
+
+// SandboxEgressPolicy is the persisted form of the egress fact recorded for a
+// sandbox runtime: the generation of the policy in force when it was created and
+// the mechanism that applied it (see the egress package's Application values).
+// An empty Applied means no record, which is what a runtime created before this
+// was recorded reports.
+type SandboxEgressPolicy struct {
+	Generation uint64 `json:"generation,omitempty"`
+	Applied    string `json:"applied,omitempty"`
+}
+
+// Recorded reports whether this runtime has an egress record at all.
+func (p SandboxEgressPolicy) Recorded() bool {
+	return p.Applied != ""
 }
 
 type ProxyState struct {
@@ -550,6 +571,10 @@ type SandboxVMInfo struct {
 	BoxID      string
 	JupyterURL string
 	ProxyState *ProxyState
+	// EgressPolicy is the egress fact the runtime was created with. The driver
+	// boundary resolves the policy, so it is the only layer that can report it,
+	// and the caller persists it beside the rest of the runtime state.
+	EgressPolicy SandboxEgressPolicy
 }
 
 type ExecSpec struct {

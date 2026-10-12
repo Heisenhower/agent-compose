@@ -172,15 +172,13 @@ func (p SandboxEgressProxy) EgressProxyPolicy(ctx context.Context, sandboxID str
 	if err != nil {
 		return egress.Policy{}, fmt.Errorf("load sandbox %s for the egress decision: %w", sandboxID, err)
 	}
-	declaration, engineEndpoints, err := p.networkPolicies.inputs(ctx, session)
-	if err != nil {
-		return egress.Policy{}, err
-	}
-	policy, err := egress.EffectiveNetworkPolicy(declaration, engineEndpoints)
-	if err != nil {
-		return egress.Policy{}, fmt.Errorf("compile the egress policy for sandbox %s: %w", sandboxID, err)
-	}
-	return policy, nil
+	return p.policyForSession(ctx, session)
+}
+
+// policyForSession compiles the policy the proxy would decide this sandbox's
+// traffic with, given a session it already holds.
+func (p SandboxEgressProxy) policyForSession(ctx context.Context, session *domain.Sandbox) (egress.Policy, error) {
+	return p.networkPolicies.effectivePolicy(ctx, session)
 }
 
 // egressProxyAddress is the host:port the sandbox must use to reach the proxy:
