@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/chaitin/agent-compose/pkg/compose"
+	config "github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
@@ -104,7 +105,7 @@ func TestSandboxNetworkPolicyFromUndeclaredComposeBlock(t *testing.T) {
 	if policy.DenyByDefault() {
 		t.Fatalf("undeclared block produced a deny policy: %+v", policy)
 	}
-	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, &policy); err != nil {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &policy, config.EgressUnenforceableRefuse); err != nil {
 		t.Fatalf("undeclared block was refused on docker: %v", err)
 	}
 }

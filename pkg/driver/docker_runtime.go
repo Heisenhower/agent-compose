@@ -196,7 +196,7 @@ func (w *dockerExecWriter) Write(p []byte) (int, error) {
 }
 
 func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
-	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, sandbox.NetworkPolicy); err != nil {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, sandbox.Summary.ID, sandbox.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
 		return SandboxVMInfo{}, err
 	}
 	if _, err := workspaceRuntimeMountSpec(r.config, sandbox, RuntimeDriverDocker); err != nil {

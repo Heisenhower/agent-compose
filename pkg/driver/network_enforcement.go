@@ -3,11 +3,15 @@ package driver
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+
+	config "github.com/chaitin/agent-compose/pkg/config"
 )
 
 // This file owns the honest strength of sandbox egress enforcement per driver
-// and the fail-closed gate that keeps a declared default-deny policy from
-// silently degrading to unrestricted egress.
+// and the gate that keeps a declared default-deny policy from silently
+// degrading to unrestricted egress: it either reports the degradation or, when
+// the deployment configures it, refuses the sandbox.
 //
 // The strength is a driver-local descriptor rather than a pkg/capmatrix type
 // because pkg/driver cannot import pkg/capmatrix (pkg/llms imports pkg/driver).
@@ -73,7 +77,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "a declared default-deny policy is refused before any Pod is created, because a per-sandbox egress NetworkPolicy would also deny the engine's own LLM facade and telemetry endpoints (NetworkPolicy is L3/L4 and cannot match DNS names, so the declared allowances and those endpoints are not expressible), and the engine cannot verify that the cluster CNI enforces NetworkPolicy",
+			Notes:                  "no egress filter is installed for this sandbox: a per-sandbox egress NetworkPolicy cannot express the declared DNS-named allowances or keep the engine's own LLM facade and telemetry endpoints reachable (NetworkPolicy is L3/L4 and cannot match DNS names), and the engine cannot verify that the cluster CNI would enforce it at all",
 		}
 	case RuntimeDriverDocker:
 		// NetworkMode=none is a real outer deny, but it also severs the
@@ -89,7 +93,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "a declared default-deny policy is refused before any container is created, because NetworkMode=none would also deny the engine's own LLM facade and telemetry endpoints, leaving a healthy-looking sandbox that can never call its model; applying the declared allowances and preserving those endpoints needs a per-sandbox netns plus the deferred connect(2)/L7 mediator, and the base compose grants neither NET_ADMIN nor root",
+			Notes:                  "no egress filter is installed for this sandbox: NetworkMode=none is a real outer deny but it would also deny the engine's own LLM facade and telemetry endpoints, leaving a healthy-looking sandbox that can never call its model, and applying the declared allowances while preserving those endpoints needs a per-sandbox netns or an egress proxy plus the deferred connect(2)/L7 mediator, which the base compose grants neither NET_ADMIN nor root for",
 		}
 	case RuntimeDriverBoxlite:
 		return SandboxNetworkEnforcement{
@@ -99,7 +103,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "the driver sets network_enabled unconditionally and binds neither boxlite_options_add_network_allow nor boxlite_options_set_network_disabled; a declared deny policy fails closed until the FFI binding is verified on a real KVM host",
+			Notes:                  "the driver sets network_enabled unconditionally and binds neither boxlite_options_add_network_allow nor boxlite_options_set_network_disabled, so a declared deny policy is not applied until the FFI binding is verified on a real KVM host",
 		}
 	default:
 		return SandboxNetworkEnforcement{
@@ -126,7 +130,7 @@ func egressPolicyFacts(driver string) RuntimeCapabilityDimensionFacts {
 	facts := RuntimeCapabilityDimensionFacts{
 		Dimension:       dimensionEgressPolicy,
 		Observed:        fmt.Sprintf("strength=%s; %s", enforcement.Strength, enforcement.Notes),
-		DefaultBehavior: "an undeclared network policy is not deny, so egress stays unrestricted (D3); when a sandbox declares default: deny the engine auto-allows its own runtime LLM facade and telemetry endpoints as non-overridable engine-side rules, and a driver that cannot apply the declaration refuses to start instead of running the sandbox with unrestricted egress",
+		DefaultBehavior: "an undeclared network policy is not deny, so egress stays unrestricted (D3); when a sandbox declares default: deny the engine auto-allows its own runtime LLM facade and telemetry endpoints as non-overridable engine-side rules, and on a driver that cannot apply the declaration the sandbox reports the declaration as unenforced and runs, unless the deployment sets EGRESS_UNENFORCEABLE_POLICY=refuse, in which case the sandbox is refused instead",
 	}
 	if enforcement.Strength == SandboxEgressStrengthNone {
 		facts.Mechanism = reasonNotConfigured
@@ -137,11 +141,17 @@ func egressPolicyFacts(driver string) RuntimeCapabilityDimensionFacts {
 	return facts
 }
 
-// RequireSandboxNetworkEnforcement fails closed when a sandbox declares
-// default-deny egress on a driver that cannot apply any part of it. A nil or
-// permissive policy returns nil: an undeclared policy keeps today's behavior
-// (D3), so this gate never tightens a sandbox that did not ask for it.
-func RequireSandboxNetworkEnforcement(driver string, policy *SandboxNetworkPolicy) error {
+// RequireSandboxNetworkEnforcement applies the configured policy to a sandbox
+// that declares default-deny egress on a driver that cannot apply any part of
+// it. A nil or permissive policy returns nil: an undeclared policy keeps today's
+// behavior (D3), so this gate never tightens a sandbox that did not ask for it.
+//
+// A restriction the driver cannot deliver must not become an availability
+// failure, so the default (warn) starts the sandbox and reports that the
+// declaration is unenforced; refuse is opt-in for deployments that require the
+// declaration to be real. Either way the sandbox is never presented as
+// constrained when it is not.
+func RequireSandboxNetworkEnforcement(driver, sandboxID string, policy *SandboxNetworkPolicy, mode config.EgressUnenforceablePolicy) error {
 	if policy == nil {
 		return nil
 	}
@@ -152,8 +162,18 @@ func RequireSandboxNetworkEnforcement(driver string, policy *SandboxNetworkPolic
 		return nil
 	}
 	enforcement := SandboxNetworkEnforcementFor(driver)
-	if enforcement.Strength == SandboxEgressStrengthNone {
+	if enforcement.Strength != SandboxEgressStrengthNone {
+		return nil
+	}
+	if mode == config.EgressUnenforceableRefuse {
 		return fmt.Errorf("%w: driver %q cannot enforce the declared default-deny network policy; refusing to start the sandbox with unrestricted egress (%s)", ErrSandboxNetworkEnforcementUnavailable, enforcement.Driver, enforcement.Notes)
 	}
+	slog.Warn("declared network policy is not enforced",
+		"sandbox_id", sandboxID,
+		"driver", enforcement.Driver,
+		"declared_default", "deny",
+		"egress", "unrestricted",
+		"reason", enforcement.Notes,
+	)
 	return nil
 }

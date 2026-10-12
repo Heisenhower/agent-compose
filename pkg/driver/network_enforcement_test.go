@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	config "github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
@@ -77,10 +78,10 @@ func denyPolicyForTest(t *testing.T) SandboxNetworkPolicy {
 	}
 }
 
-// TestRequireSandboxNetworkEnforcementFailsClosed is the failure path: a
-// default-deny policy on a driver with no enforcement surface must abort sandbox
+// TestRequireSandboxNetworkEnforcementRefuseModeAborts is the opt-in failure
+// path: a deployment that requires the declaration to be real aborts sandbox
 // creation instead of starting it with open egress.
-func TestRequireSandboxNetworkEnforcementFailsClosed(t *testing.T) {
+func TestRequireSandboxNetworkEnforcementRefuseModeAborts(t *testing.T) {
 	deny := denyPolicyForTest(t)
 	tests := []struct {
 		name    string
@@ -88,10 +89,10 @@ func TestRequireSandboxNetworkEnforcementFailsClosed(t *testing.T) {
 		policy  *SandboxNetworkPolicy
 		wantErr bool
 	}{
-		{name: "boxlite denies and fails closed", driver: RuntimeDriverBoxlite, policy: &deny, wantErr: true},
-		{name: "unknown driver fails closed", driver: "mystery", policy: &deny, wantErr: true},
-		{name: "docker fails closed because it cannot keep the engine endpoints reachable", driver: RuntimeDriverDocker, policy: &deny, wantErr: true},
-		{name: "k8s fails closed because it cannot keep the engine endpoints reachable", driver: RuntimeDriverK8s, policy: &deny, wantErr: true},
+		{name: "boxlite denies and is refused", driver: RuntimeDriverBoxlite, policy: &deny, wantErr: true},
+		{name: "unknown driver is refused", driver: "mystery", policy: &deny, wantErr: true},
+		{name: "docker is refused because it cannot keep the engine endpoints reachable", driver: RuntimeDriverDocker, policy: &deny, wantErr: true},
+		{name: "k8s is refused because it cannot keep the engine endpoints reachable", driver: RuntimeDriverK8s, policy: &deny, wantErr: true},
 		{name: "microsandbox enforces an allow list", driver: RuntimeDriverMicrosandbox, policy: &deny},
 		{name: "undeclared policy is unchanged", driver: RuntimeDriverBoxlite, policy: nil},
 		{
@@ -102,10 +103,10 @@ func TestRequireSandboxNetworkEnforcementFailsClosed(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := RequireSandboxNetworkEnforcement(test.driver, test.policy)
+			err := RequireSandboxNetworkEnforcement(test.driver, "sandbox-1", test.policy, config.EgressUnenforceableRefuse)
 			if test.wantErr {
 				if err == nil {
-					t.Fatal("RequireSandboxNetworkEnforcement() error = nil, want a fail-closed error")
+					t.Fatal("RequireSandboxNetworkEnforcement() error = nil, want a refusal error")
 				}
 				if !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
 					t.Fatalf("error = %v, want ErrSandboxNetworkEnforcementUnavailable", err)
@@ -124,7 +125,7 @@ func TestRequireSandboxNetworkEnforcementRejectsMalformedPolicy(t *testing.T) {
 		Default: egress.Deny,
 		Allow:   []egress.Endpoint{{Host: "bad host", Port: 443}},
 	}
-	err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, &policy)
+	err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &policy, config.EgressUnenforceableRefuse)
 	if err == nil {
 		t.Fatal("RequireSandboxNetworkEnforcement() error = nil, want a validation error")
 	}
@@ -194,4 +195,35 @@ func TestSandboxNetworkEgressPolicyPermissiveIsAllowAll(t *testing.T) {
 	if result.Action != egress.Allow {
 		t.Fatalf("Action = %q, want %q", result.Action, egress.Allow)
 	}
+}
+
+// TestRequireSandboxNetworkEnforcementWarnsByDefault is the default path: a
+// restriction the driver cannot deliver must not make the agent unrunnable, so
+// the sandbox starts and the unenforced declaration is reported instead.
+func TestRequireSandboxNetworkEnforcementWarnsByDefault(t *testing.T) {
+	deny := denyPolicyForTest(t)
+	for _, driver := range []string{RuntimeDriverDocker, RuntimeDriverK8s, RuntimeDriverBoxlite, "mystery"} {
+		t.Run(driver, func(t *testing.T) {
+			if err := RequireSandboxNetworkEnforcement(driver, "sandbox-1", &deny, config.EgressUnenforceableWarn); err != nil {
+				t.Fatalf("RequireSandboxNetworkEnforcement(warn) error = %v, want nil: an unenforceable declaration must not make the agent unrunnable", err)
+			}
+		})
+	}
+	// An unset mode is what a deployment that never heard of the setting gets,
+	// and it must behave like warn rather than refusing.
+	t.Run("empty mode behaves as warn", func(t *testing.T) {
+		if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &deny, ""); err != nil {
+			t.Fatalf("RequireSandboxNetworkEnforcement(empty mode) error = %v, want nil", err)
+		}
+	})
+	t.Run("warn mode still rejects a malformed policy", func(t *testing.T) {
+		malformed := SandboxNetworkPolicy{Default: egress.Deny, Allow: []egress.Endpoint{{Host: "bad host", Port: 443}}}
+		err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &malformed, config.EgressUnenforceableWarn)
+		if err == nil {
+			t.Fatal("RequireSandboxNetworkEnforcement(warn) error = nil, want a validation error")
+		}
+		if errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+			t.Fatalf("error = %v, want a validation error, not the enforcement-unavailable sentinel", err)
+		}
+	})
 }

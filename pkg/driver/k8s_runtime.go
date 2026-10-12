@@ -218,7 +218,7 @@ func (r *k8sRuntime) client(contextName string) (kubernetes.Interface, *rest.Con
 }
 
 func (r *k8sRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
-	if err := RequireSandboxNetworkEnforcement(RuntimeDriverK8s, sandbox.NetworkPolicy); err != nil {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverK8s, sandbox.Summary.ID, sandbox.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
 		return SandboxVMInfo{}, err
 	}
 	if _, err := sandboxWorkspaceMount(sandbox, RuntimeDriverK8s); err != nil {

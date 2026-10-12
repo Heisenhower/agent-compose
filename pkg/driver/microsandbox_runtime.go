@@ -369,7 +369,7 @@ func (c *microsandboxExecCollector) appendChunk(chunk ExecChunk) {
 }
 
 func (r *microsandboxRuntime) EnsureSandbox(ctx context.Context, session *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
-	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, session.NetworkPolicy); err != nil {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, session.Summary.ID, session.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
 		return SandboxVMInfo{}, err
 	}
 	if _, err := sandboxWorkspaceMount(session, RuntimeDriverMicrosandbox); err != nil {

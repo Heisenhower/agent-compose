@@ -62,7 +62,7 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 	if !strings.Contains(egressCapability.Observed, string(SandboxEgressStrengthNone)) {
 		t.Fatalf("egress_policy observed = %q, want strength %q", egressCapability.Observed, SandboxEgressStrengthNone)
 	}
-	if !strings.Contains(egressCapability.Observed, "refused before any Pod is created") {
+	if !strings.Contains(egressCapability.Observed, "no egress filter is installed for this sandbox") {
 		t.Fatalf("egress_policy observed = %q, want it to state that a declared default-deny policy is refused", egressCapability.Observed)
 	}
 

@@ -88,7 +88,7 @@ func TestDockerCapabilitiesMatchHostConfig(t *testing.T) {
 	if !strings.Contains(egressCapability.Observed, string(SandboxEgressStrengthNone)) {
 		t.Fatalf("egress_policy Observed = %q, want it to report strength=%s", egressCapability.Observed, SandboxEgressStrengthNone)
 	}
-	if !strings.Contains(egressCapability.Observed, "refused before any container is created") {
+	if !strings.Contains(egressCapability.Observed, "no egress filter is installed for this sandbox") {
 		t.Fatalf("egress_policy Observed = %q, want it to state that a declared default-deny policy is refused", egressCapability.Observed)
 	}
 	if !strings.Contains(egressCapability.Observed, "LLM facade") {

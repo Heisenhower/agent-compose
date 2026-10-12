@@ -168,16 +168,28 @@ func TestEnsureSandboxDeclaredDenyFiresTheEnforcementGate(t *testing.T) {
 	}
 	policy := runtime.sandbox.NetworkPolicy
 
-	for _, driver := range []string{driverpkg.RuntimeDriverDocker, driverpkg.RuntimeDriverBoxlite, driverpkg.RuntimeDriverK8s} {
-		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, policy); err == nil {
-			t.Fatalf("RequireSandboxNetworkEnforcement(%q) = nil, want a fail-closed refusal", driver)
-		} else if !errors.Is(err, driverpkg.ErrSandboxNetworkEnforcementUnavailable) {
-			t.Fatalf("RequireSandboxNetworkEnforcement(%q) error = %v, want ErrSandboxNetworkEnforcementUnavailable", driver, err)
+	unenforcing := []string{driverpkg.RuntimeDriverDocker, driverpkg.RuntimeDriverBoxlite, driverpkg.RuntimeDriverK8s}
+	// The default: a restriction the driver cannot deliver must not make the
+	// agent unrunnable, so the declaration is reported and the sandbox runs.
+	for _, driver := range unenforcing {
+		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, "sandbox-1", policy, appconfig.EgressUnenforceableWarn); err != nil {
+			t.Fatalf("RequireSandboxNetworkEnforcement(%q, warn) error = %v, want nil", driver, err)
+		}
+	}
+	// Opt-in: the same declaration refuses the sandbox instead of running it
+	// wider than declared.
+	for _, driver := range unenforcing {
+		err := driverpkg.RequireSandboxNetworkEnforcement(driver, "sandbox-1", policy, appconfig.EgressUnenforceableRefuse)
+		if err == nil {
+			t.Fatalf("RequireSandboxNetworkEnforcement(%q, refuse) = nil, want a refusal", driver)
+		}
+		if !errors.Is(err, driverpkg.ErrSandboxNetworkEnforcementUnavailable) {
+			t.Fatalf("RequireSandboxNetworkEnforcement(%q, refuse) error = %v, want ErrSandboxNetworkEnforcementUnavailable", driver, err)
 		}
 	}
 	for _, driver := range []string{driverpkg.RuntimeDriverMicrosandbox} {
-		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, policy); err != nil {
-			t.Fatalf("RequireSandboxNetworkEnforcement(%q) error = %v, want nil so the driver engages", driver, err)
+		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, "sandbox-1", policy, appconfig.EgressUnenforceableRefuse); err != nil {
+			t.Fatalf("RequireSandboxNetworkEnforcement(%q, refuse) error = %v, want nil so the driver engages", driver, err)
 		}
 	}
 }
@@ -201,7 +213,7 @@ func TestEnsureSandboxUndeclaredLeavesGateInert(t *testing.T) {
 		t.Fatalf("NetworkPolicy = %+v, want nil for an undeclared policy", runtime.sandbox.NetworkPolicy)
 	}
 	for _, driver := range []string{driverpkg.RuntimeDriverDocker, driverpkg.RuntimeDriverBoxlite, driverpkg.RuntimeDriverK8s, driverpkg.RuntimeDriverMicrosandbox} {
-		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, runtime.sandbox.NetworkPolicy); err != nil {
+		if err := driverpkg.RequireSandboxNetworkEnforcement(driver, "sandbox-1", runtime.sandbox.NetworkPolicy, appconfig.EgressUnenforceableRefuse); err != nil {
 			t.Fatalf("RequireSandboxNetworkEnforcement(%q, nil) = %v, want nil", driver, err)
 		}
 	}
@@ -229,8 +241,8 @@ func TestEnsureSandboxNetworkDeclarationFailureFailsClosed(t *testing.T) {
 }
 
 // guestFileNetworkRuntime records the driver-boundary sandbox every guest-file
-// entry point receives and applies the same fail-closed gate the k8s driver
-// applies from inside its own EnsureSandbox.
+// entry point receives and applies the same gate the k8s driver applies from
+// inside its own EnsureSandbox, in the refuse mode so a bypass is observable.
 type guestFileNetworkRuntime struct {
 	capturingNetworkRuntime
 	sandboxes []*driverpkg.Sandbox
@@ -238,7 +250,7 @@ type guestFileNetworkRuntime struct {
 
 func (r *guestFileNetworkRuntime) gate(sandbox *driverpkg.Sandbox) error {
 	r.sandboxes = append(r.sandboxes, sandbox)
-	return driverpkg.RequireSandboxNetworkEnforcement(driverpkg.RuntimeDriverK8s, sandbox.NetworkPolicy)
+	return driverpkg.RequireSandboxNetworkEnforcement(driverpkg.RuntimeDriverK8s, sandbox.Summary.ID, sandbox.NetworkPolicy, appconfig.EgressUnenforceableRefuse)
 }
 
 func (r *guestFileNetworkRuntime) ReadGuestFile(_ context.Context, sandbox *driverpkg.Sandbox, _ driverpkg.VMState, _ string) ([]byte, error) {

@@ -268,10 +268,19 @@ The invariant to hold instead:
    emits a record per decision, and already handles DNS-rebinding protection.
    Sandboxes then join an internal network that can reach only the proxy, which
    is also where L7 inspection belongs.
-4. **Operator choice for the residual case.** A deployment setting
-   (`EGRESS_UNENFORCEABLE_POLICY`) selects `warn` or `refuse`. `warn` records the
-   declaration, runs the sandbox, and reports it as unenforced in `config`/`up`
-   output and in every inspection surface: a declaration that is not enforced must
-   never be presented as a control. `refuse` stays available for deployments that
-   require the constraint to be real, and refuses at admission rather than at
-   sandbox creation.
+4. **Operator choice for the residual case — decided: warn by default.**
+   `EGRESS_UNENFORCEABLE_POLICY` selects `warn` (the default) or `refuse`. `warn`
+   runs the sandbox and reports the declaration as unenforced: the daemon logs
+   `declared network policy is not enforced` with the sandbox, driver, and reason
+   when the sandbox is created, and the driver's capability report states the same
+   limit, so a declaration that is not enforced is never presented as a control.
+   `refuse` stays available for deployments that require the constraint to be
+   real; it fails the sandbox rather than running it wider than declared, and
+   because it fires at creation it is a backstop, not an admission check — a
+   deployment that requires the constraint should treat such a project as invalid
+   before it runs.
+
+   Still missing from the reporting half: an admission-time verdict in
+   `config`/`up` (which needs the daemon's effective driver, so it belongs with
+   the proxy work rather than a client-side guess), and a per-sandbox record of
+   which policy generation was applied and whether it was enforced.
