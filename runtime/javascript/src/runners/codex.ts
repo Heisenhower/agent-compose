@@ -45,6 +45,27 @@ function webSearchQuery(item: Record<string, unknown>): string {
   return "";
 }
 
+function reconnectEvent(message: string): Extract<AgentEvent, { kind: "retry" }> | null {
+  const match = /^Reconnecting\.\.\.\s+(\d+)\/(\d+)(?:\s|$)/.exec(message);
+  if (!match) {
+    return null;
+  }
+  const reason = /high demand|overload|capacity|\b503\b/i.test(message)
+    ? "overloaded"
+    : /rate.?limit|\b429\b/i.test(message)
+      ? "rate_limit"
+      : /network|connection|transport|timed?\s*out|disconnect/i.test(message)
+        ? "network"
+        : "other";
+  return {
+    kind: "retry",
+    reason,
+    attempt: Number(match[1]),
+    maxAttempts: Number(match[2]),
+    message,
+  };
+}
+
 export class CodexRunner {
   private readonly itemState = new Map<string, string | CodexItemState>();
 
@@ -276,9 +297,16 @@ export class CodexRunner {
       throw new Error(message);
     }
     if (event.type === "error") {
+      const message = String(event.message || "codex stream error");
+      // Codex reports its own reconnect attempts as error events while the
+      // streamed turn is still running; let the SDK finish or report turn.failed.
+      const retry = reconnectEvent(message);
+      if (retry) {
+        this.emit(retry);
+        return;
+      }
       // A fatal stream error carries no `item`, so the guard below used to drop
       // it silently and the turn just ended with no explanation.
-      const message = String(event.message || "codex stream error");
       this.emit({ kind: "error", severity: "fatal", message });
       throw new Error(message);
     }

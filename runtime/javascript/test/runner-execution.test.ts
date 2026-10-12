@@ -289,6 +289,51 @@ describe("runner execution", () => {
     });
   });
 
+  it.each([
+    ["Reconnecting... 1/3 (We're currently experiencing high demand, which may cause temporary errors.)", "overloaded"],
+    ["Reconnecting... 1/3 (unexpected status 429 Too Many Requests)", "rate_limit"],
+    ["Reconnecting... 1/3 (connection timed out)", "network"],
+    ["Reconnecting... 1/3", "other"],
+  ])("keeps consuming Codex events after %s", async (reconnectMessage, reason) => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      const emitted: Array<Record<string, unknown>> = [];
+      codexState.events = [
+        { type: "error", message: reconnectMessage },
+        { type: "item.completed", item: { id: "a1", type: "agent_message", text: "recovered" } },
+      ];
+
+      const result = await new CodexRunner({
+        ...runnerOptions(root),
+        onEvent: (event) => emitted.push(event),
+      }).runPrompt("prompt");
+
+      expect(result.finalText).toBe("recovered");
+      expect(emitted).toContainEqual({
+        kind: "retry",
+        reason,
+        attempt: 1,
+        maxAttempts: 3,
+        message: reconnectMessage,
+      });
+      expect(emitted.some((event) => event.kind === "error")).toBe(false);
+    });
+  });
+
+  it("still fails when a Codex turn fails after reconnecting", async () => {
+    const { CodexRunner } = await import("../src/runners/codex.js");
+    await withTempSession(async (root) => {
+      codexState.events = [
+        { type: "error", message: "Reconnecting... 3/3 (connection timed out)" },
+        { type: "turn.failed", error: { message: "reconnect attempts exhausted" } },
+      ];
+
+      await expect(new CodexRunner(runnerOptions(root)).runPrompt("prompt")).rejects.toThrow(
+        "reconnect attempts exhausted",
+      );
+    });
+  });
+
   it("resumes a stored Codex thread when the system context fingerprint matches", async () => {
     const { CodexRunner } = await import("../src/runners/codex.js");
     await withTempSession(async (root) => {
