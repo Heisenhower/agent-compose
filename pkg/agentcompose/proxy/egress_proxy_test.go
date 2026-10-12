@@ -32,14 +32,21 @@ type proxyTestAuthorizer struct {
 	sandboxID  string
 	credential string
 	err        error
+	// ignoreClaimed models an authorizer that resolves a credential without
+	// checking the sandbox name the caller presented, so the proxy's own
+	// identity cross-check stays covered.
+	ignoreClaimed bool
 }
 
-func (a proxyTestAuthorizer) AuthorizeEgressProxy(_ context.Context, credential string) (string, error) {
+func (a proxyTestAuthorizer) AuthorizeEgressProxy(_ context.Context, claimed, credential string) (string, error) {
 	if a.err != nil {
 		return "", a.err
 	}
 	if credential != a.credential {
 		return "", errors.New("unknown credential")
+	}
+	if !a.ignoreClaimed && claimed != "" && claimed != a.sandboxID {
+		return "", errors.New("credential belongs to another sandbox")
 	}
 	return a.sandboxID, nil
 }
@@ -340,7 +347,7 @@ func TestEgressProxyRequiresASandboxCredential(t *testing.T) {
 	}{
 		{name: "no credential", wantCode: http.StatusProxyAuthRequired},
 		{name: "unknown credential", auth: true, user: testSandboxID, secret: "ac_cred_wrong", wantCode: http.StatusProxyAuthRequired},
-		{name: "credential for another sandbox", auth: true, user: "sandbox-2", secret: testCredential, wantCode: http.StatusForbidden},
+		{name: "credential presented as another sandbox", auth: true, user: "sandbox-2", secret: testCredential, wantCode: http.StatusProxyAuthRequired},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -371,6 +378,32 @@ func TestEgressProxyRequiresASandboxCredential(t *testing.T) {
 	}
 	if len(recorder.collected()) != 0 {
 		t.Fatal("an unauthenticated request produced a decision record")
+	}
+}
+
+// TestEgressProxyRejectsAnIdentityMismatch is the second layer: even an
+// authorizer that resolves a credential without checking the presented name
+// cannot make the proxy decide for a sandbox the credential does not belong to.
+func TestEgressProxyRejectsAnIdentityMismatch(t *testing.T) {
+	policies := &proxyTestPolicies{}
+	proxyServer, _ := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.Authorizer = proxyTestAuthorizer{sandboxID: testSandboxID, credential: testCredential, ignoreClaimed: true}
+	})
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	writeConnect(t, connection, "allowed.example:443", "sandbox-2", testCredential)
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 for a credential presented as another sandbox", response.StatusCode)
+	}
+	if policies.callCount() != 0 {
+		t.Fatalf("policy reads = %d, want 0: an unidentified caller is never decided", policies.callCount())
 	}
 }
 

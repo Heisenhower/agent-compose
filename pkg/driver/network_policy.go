@@ -42,6 +42,16 @@ type SandboxNetworkPolicy struct {
 	// DenyDomains are exact domain names the driver refuses to resolve. The
 	// compose declaration does not carry them yet, so they are engine-supplied.
 	DenyDomains []string
+	// MediatedByForwardProxy reports that the engine, not the driver, decides
+	// this sandbox's egress: the guest was given the engine's forward proxy as
+	// its egress path, so the declaration is enforced on a driver that has no
+	// enforcement surface of its own.
+	//
+	// It is set by the caller that actually routed the guest through the proxy,
+	// in the same step that added the proxy environment, so a driver can never
+	// believe in a mediation the engine did not wire. A driver reads it only to
+	// report enforcement honestly and to skip the unenforced-declaration gate.
+	MediatedByForwardProxy bool
 }
 
 // NewSandboxNetworkPolicy normalizes and validates a boundary policy. It returns

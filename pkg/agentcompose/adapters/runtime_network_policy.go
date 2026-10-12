@@ -29,20 +29,22 @@ type driverSandboxNetworkPolicy struct {
 	declarations SandboxNetworkDeclarationResolver
 }
 
-// policy returns the driver-boundary policy for session, or nil when the
-// sandbox declared no network policy (D3: undeclared is not deny). A declared
-// policy always yields a non-nil policy, permissive ones included, so a caller
-// can tell "undeclared" from "declared allow" rather than guessing.
-func (d driverSandboxNetworkPolicy) policy(ctx context.Context, session *domain.Sandbox) (*driverpkg.SandboxNetworkPolicy, error) {
+// inputs resolves the declaration a sandbox's project made and the engine-owned
+// endpoints that must stay reachable under it. It is the single place both
+// consumers start from — the driver-boundary policy and the policy the engine's
+// forward proxy decides with — so the two can never disagree about what was
+// declared or which endpoints the engine owns. A nil declaration means the
+// sandbox declared no network policy (D3).
+func (d driverSandboxNetworkPolicy) inputs(ctx context.Context, session *domain.Sandbox) (*egress.NetworkDeclaration, []egress.EngineEndpoint, error) {
 	if d.declarations == nil || session == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	declaration, err := d.declarations.ResolveNetworkDeclaration(ctx, session)
 	if err != nil {
-		return nil, fmt.Errorf("resolve sandbox network declaration for %s: %w", session.Summary.ID, err)
+		return nil, nil, fmt.Errorf("resolve sandbox network declaration for %s: %w", session.Summary.ID, err)
 	}
 	if declaration == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	// The engine-owned endpoints come from the same addresses the engine hands
 	// this sandbox, never a daemon-global or invented endpoint.
@@ -52,7 +54,22 @@ func (d driverSandboxNetworkPolicy) policy(ctx context.Context, session *domain.
 	}
 	engineEndpoints, err := egress.EngineEndpoints(llms.GuestRuntimeBaseURL(d.config, session), telemetryEndpoint)
 	if err != nil {
-		return nil, fmt.Errorf("derive sandbox engine network endpoints for %s: %w", session.Summary.ID, err)
+		return nil, nil, fmt.Errorf("derive sandbox engine network endpoints for %s: %w", session.Summary.ID, err)
+	}
+	return declaration, engineEndpoints, nil
+}
+
+// policy returns the driver-boundary policy for session, or nil when the
+// sandbox declared no network policy (D3: undeclared is not deny). A declared
+// policy always yields a non-nil policy, permissive ones included, so a caller
+// can tell "undeclared" from "declared allow" rather than guessing.
+func (d driverSandboxNetworkPolicy) policy(ctx context.Context, session *domain.Sandbox) (*driverpkg.SandboxNetworkPolicy, error) {
+	declaration, engineEndpoints, err := d.inputs(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	if declaration == nil {
+		return nil, nil
 	}
 	// The compose declaration carries no deny domains yet, so the engine
 	// supplies none rather than inventing an exemption list.

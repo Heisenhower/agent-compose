@@ -51,7 +51,7 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 		t.Fatal("pod now uses the host network; the egress_policy declaration is stale")
 	}
 
-	// A declared default-deny policy is refused before createPod, because a
+	// A declared default-deny policy is not applied by this driver, because a
 	// NetworkPolicy deny would also cut the engine's own LLM facade and
 	// telemetry endpoints and the CNI cannot be assumed to enforce it. The
 	// declaration must therefore report no egress enforcement for k8s.
@@ -62,8 +62,8 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 	if !strings.Contains(egressCapability.Observed, string(SandboxEgressStrengthNone)) {
 		t.Fatalf("egress_policy observed = %q, want strength %q", egressCapability.Observed, SandboxEgressStrengthNone)
 	}
-	if !strings.Contains(egressCapability.Observed, "no egress filter is installed for this sandbox") {
-		t.Fatalf("egress_policy observed = %q, want it to state that a declared default-deny policy is refused", egressCapability.Observed)
+	if !strings.Contains(egressCapability.Observed, "no egress filter is installed by this driver") {
+		t.Fatalf("egress_policy observed = %q, want it to state that this driver installs no egress filter", egressCapability.Observed)
 	}
 
 	// The refusal is the observable behavior: EnsureSandbox must return the

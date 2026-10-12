@@ -64,6 +64,7 @@ func RegisterDependencies(di do.Injector) {
 	do.Provide(di, NewTelemetryProvider)
 	do.Provide(di, NewTelemetryRecorder)
 	do.Provide(di, NewRuntimeProvider)
+	do.Provide(di, NewEgressProxy)
 	do.Provide(di, NewLLMClient)
 	do.Provide(di, NewProjectOctoBusTargetResolver)
 	do.Provide(di, NewCapabilityProvider)
@@ -402,12 +403,42 @@ func NewVolumeManager(di do.Injector) (*volumes.Manager, error) {
 }
 
 func NewRuntimeProvider(di do.Injector) (adapters.RuntimeProvider, error) {
+	config := do.MustInvoke[*appconfig.Config](di)
+	sandboxStore := do.MustInvoke[*sandboxstore.Store](di)
+	targets := do.MustInvoke[*runs.SandboxRunTargetResolver](di)
 	return adapters.NewRuntimeProvider(
-		do.MustInvoke[*appconfig.Config](di),
-		do.MustInvoke[*sandboxstore.Store](di),
-		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
+		config,
+		sandboxStore,
+		targets,
 		adapters.WithRuntimeRecorder(do.MustInvoke[*telemetry.Recorder](di)),
+		adapters.WithSandboxEgressProxy(adapters.NewSandboxEgressProxy(
+			config,
+			do.MustInvoke[*configstore.ConfigStore](di),
+			sandboxStore,
+			targets,
+		)),
 	)
+}
+
+// NewEgressProxy builds the daemon's forward proxy: the enforcement point that
+// makes a declared sandbox network policy real on a driver that has no
+// enforcement surface of its own. The mediation is both its authorizer (which
+// sandbox does this credential belong to) and its policy source (what does that
+// sandbox's project declare now).
+func NewEgressProxy(di do.Injector) (*proxy.EgressProxy, error) {
+	config := do.MustInvoke[*appconfig.Config](di)
+	sandboxStore := do.MustInvoke[*sandboxstore.Store](di)
+	mediation := adapters.NewSandboxEgressProxy(
+		config,
+		do.MustInvoke[*configstore.ConfigStore](di),
+		sandboxStore,
+		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
+	)
+	return proxy.NewEgressProxy(proxy.EgressProxyOptions{
+		Authorizer: mediation,
+		Policies:   mediation,
+		Logger:     do.MustInvoke[*slog.Logger](di),
+	})
 }
 
 func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {

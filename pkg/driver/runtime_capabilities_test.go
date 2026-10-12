@@ -72,7 +72,8 @@ func TestDockerCapabilitiesMatchHostConfig(t *testing.T) {
 		t.Fatalf("gpu_and_devices declaration = %+v, want not enforced", devices)
 	}
 
-	// A declared default-deny policy is refused at the top of EnsureSandbox
+	// A declared default-deny policy is not applied by this driver, and the
+	// report says so instead of implying a filter exists
 	// (RequireSandboxNetworkEnforcement), so the driver never selects Docker's
 	// "none" network: that is a real outer deny, but it would also sever the
 	// engine's own LLM facade and telemetry endpoints and leave a
@@ -88,11 +89,11 @@ func TestDockerCapabilitiesMatchHostConfig(t *testing.T) {
 	if !strings.Contains(egressCapability.Observed, string(SandboxEgressStrengthNone)) {
 		t.Fatalf("egress_policy Observed = %q, want it to report strength=%s", egressCapability.Observed, SandboxEgressStrengthNone)
 	}
-	if !strings.Contains(egressCapability.Observed, "no egress filter is installed for this sandbox") {
-		t.Fatalf("egress_policy Observed = %q, want it to state that a declared default-deny policy is refused", egressCapability.Observed)
+	if !strings.Contains(egressCapability.Observed, "no egress filter is installed by this driver") {
+		t.Fatalf("egress_policy Observed = %q, want it to state that this driver installs no egress filter", egressCapability.Observed)
 	}
 	if !strings.Contains(egressCapability.Observed, "LLM facade") {
-		t.Fatalf("egress_policy Observed = %q, want it to name the engine endpoints the refusal protects", egressCapability.Observed)
+		t.Fatalf("egress_policy Observed = %q, want it to name the engine endpoints the filter would have to keep reachable", egressCapability.Observed)
 	}
 }
 

@@ -65,6 +65,10 @@ type runtimeProvider struct {
 	config   *appconfig.Config
 	recorder *telemetry.Recorder
 	runtimes map[string]SandboxRuntime
+	// egressProxy mediates a declaring sandbox's egress through the engine's
+	// forward proxy. Its zero value is inert: no credential store, no sandbox
+	// loader, no mediation, and the unenforced-declaration gate still applies.
+	egressProxy SandboxEgressProxy
 }
 
 type driverRuntimeAdapter struct {
@@ -76,6 +80,11 @@ type driverRuntimeAdapter struct {
 	// adapter built without a resolver resolves no declaration and leaves
 	// NetworkPolicy nil (D3).
 	networkPolicies driverSandboxNetworkPolicy
+	// egressProxy, when available, routes a declaring sandbox's HTTP traffic
+	// through the engine's own forward proxy and marks the driver-boundary
+	// policy as mediated, so the driver reports enforcement instead of warning
+	// that the declaration is unenforced.
+	egressProxy SandboxEgressProxy
 }
 
 // guestFileRuntimeAdapter adds the no-shared-filesystem capabilities only to
@@ -104,6 +113,18 @@ type RuntimeProviderOption func(*runtimeProvider)
 // them. A nil recorder leaves the runtimes untraced.
 func WithRuntimeRecorder(recorder *telemetry.Recorder) RuntimeProviderOption {
 	return func(provider *runtimeProvider) { provider.recorder = recorder }
+}
+
+// WithSandboxEgressProxy attaches the engine-side egress proxy mediation: a
+// sandbox that declares deny semantics is handed the proxy as its egress path
+// and the driver-boundary policy records that the engine, not the driver,
+// decides its connections. Without it, a sandbox whose driver cannot apply the
+// declaration stays on the unenforced-declaration path.
+func WithSandboxEgressProxy(mediation SandboxEgressProxy) RuntimeProviderOption {
+	return func(provider *runtimeProvider) {
+		mediation.config = provider.config
+		provider.egressProxy = mediation
+	}
 }
 
 func NewRuntimeProvider(config *appconfig.Config, proxyStateGetter ProxyStateGetter, networkDeclarations SandboxNetworkDeclarationResolver, opts ...RuntimeProviderOption) (RuntimeProvider, error) {
@@ -146,12 +167,15 @@ func NewRuntimeProvider(config *appconfig.Config, proxyStateGetter ProxyStateGet
 	}
 	executions := newSandboxExecutions()
 	networkPolicies := driverSandboxNetworkPolicy{config: config, declarations: networkDeclarations}
+	// The mediation decides with the same resolved declaration and engine
+	// endpoints as the driver-boundary policy, so both read one seam.
+	provider.egressProxy.networkPolicies = networkPolicies
 	provider.runtimes = map[string]SandboxRuntime{
-		driverpkg.RuntimeDriverBoxlite:      driverRuntimeAdapter{runtime: boxliteRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies},
-		driverpkg.RuntimeDriverDocker:       driverRuntimeAdapter{runtime: dockerRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies},
-		driverpkg.RuntimeDriverMicrosandbox: driverRuntimeAdapter{runtime: microsandboxRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies},
+		driverpkg.RuntimeDriverBoxlite:      driverRuntimeAdapter{runtime: boxliteRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
+		driverpkg.RuntimeDriverDocker:       driverRuntimeAdapter{runtime: dockerRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
+		driverpkg.RuntimeDriverMicrosandbox: driverRuntimeAdapter{runtime: microsandboxRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
 		driverpkg.RuntimeDriverK8s: guestFileRuntimeAdapter{driverRuntimeAdapter{
-			runtime: k8sRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies,
+			runtime: k8sRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy,
 		}},
 	}
 	return provider, nil
@@ -209,6 +233,20 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 	}
 	if driverSandbox != nil {
 		driverSandbox.NetworkPolicy = policy
+		// A declaration that denies by default is only really enforced where the
+		// engine is in the traffic path. Routing the guest through the forward
+		// proxy is what puts it there, and the same step records the mediation
+		// on the policy so no driver can believe in one the engine did not wire.
+		if policy != nil && policy.DenyByDefault() {
+			env, err := r.egressProxy.Enable(ctx, session)
+			if err != nil {
+				return nil, err
+			}
+			if len(env) > 0 {
+				policy.MediatedByForwardProxy = true
+				driverSandbox.EnvItems = append(driverSandbox.EnvItems, env...)
+			}
+		}
 	}
 	return driverSandbox, nil
 }

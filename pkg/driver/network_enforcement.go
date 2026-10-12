@@ -29,6 +29,10 @@ const (
 	// SandboxEgressStrengthAllowList means the driver applies default deny plus
 	// the ordered allowance list, including the engine-owned endpoints.
 	SandboxEgressStrengthAllowList SandboxEgressStrength = "allowlist"
+	// mechanismForwardProxy names the engine-side mediation: the daemon decides
+	// every connection in its own forward proxy, so the strength does not come
+	// from a driver feature.
+	mechanismForwardProxy = "forward_proxy"
 )
 
 // SandboxNetworkEnforcement describes one runtime driver's egress enforcement.
@@ -77,7 +81,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "no egress filter is installed for this sandbox: a per-sandbox egress NetworkPolicy cannot express the declared DNS-named allowances or keep the engine's own LLM facade and telemetry endpoints reachable (NetworkPolicy is L3/L4 and cannot match DNS names), and the engine cannot verify that the cluster CNI would enforce it at all",
+			Notes:                  "no egress filter is installed by this driver: a per-sandbox egress NetworkPolicy cannot express the declared DNS-named allowances or keep the engine's own LLM facade and telemetry endpoints reachable (NetworkPolicy is L3/L4 and cannot match DNS names), and the engine cannot verify that the cluster CNI would enforce it at all; the engine's forward proxy enforces the declaration instead when the sandbox can reach the daemon",
 		}
 	case RuntimeDriverDocker:
 		// NetworkMode=none is a real outer deny, but it also severs the
@@ -93,7 +97,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "no egress filter is installed for this sandbox: NetworkMode=none is a real outer deny but it would also deny the engine's own LLM facade and telemetry endpoints, leaving a healthy-looking sandbox that can never call its model, and applying the declared allowances while preserving those endpoints needs a per-sandbox netns or an egress proxy plus the deferred connect(2)/L7 mediator, which the base compose grants neither NET_ADMIN nor root for",
+			Notes:                  "no egress filter is installed by this driver: NetworkMode=none is a real outer deny but it would also deny the engine's own LLM facade and telemetry endpoints, leaving a healthy-looking sandbox that can never call its model, and the base compose grants neither NET_ADMIN nor root for a per-sandbox netns; the engine's forward proxy enforces the declaration instead when the sandbox can reach the daemon",
 		}
 	case RuntimeDriverBoxlite:
 		return SandboxNetworkEnforcement{
@@ -103,7 +107,7 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    false,
 			AppliesEngineEndpoints: false,
 			AppliesDenyDomains:     false,
-			Notes:                  "the driver sets network_enabled unconditionally and binds neither boxlite_options_add_network_allow nor boxlite_options_set_network_disabled, so a declared deny policy is not applied until the FFI binding is verified on a real KVM host",
+			Notes:                  "the driver sets network_enabled unconditionally and binds neither boxlite_options_add_network_allow nor boxlite_options_set_network_disabled, so a declared deny policy is not applied by the driver until the FFI binding is verified on a real KVM host; the engine's forward proxy enforces the declaration instead when the sandbox can reach the daemon",
 		}
 	default:
 		return SandboxNetworkEnforcement{
@@ -112,6 +116,28 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			Mechanism: reasonUnsupported,
 			Notes:     "the driver has no egress enforcement surface",
 		}
+	}
+}
+
+// SandboxEgressForwardProxyEnforcement is the enforcement a sandbox gains from
+// the engine's own forward proxy rather than from its driver. The decision is
+// the engine's and it applies the declared allowances and the engine-owned
+// endpoints, so the strength is an allowlist on every driver whose guest reaches
+// the daemon.
+//
+// The limit is the transport: a process that ignores the proxy environment dials
+// the internet directly and is not decided, until transparent capture puts every
+// connection through the proxy. The note says so rather than implying the
+// declaration covers traffic the proxy never saw.
+func SandboxEgressForwardProxyEnforcement(driver string) SandboxNetworkEnforcement {
+	return SandboxNetworkEnforcement{
+		Driver:                 resolveRuntimeDriver(driver),
+		Strength:               SandboxEgressStrengthAllowList,
+		Mechanism:              mechanismForwardProxy,
+		AppliesAllowEntries:    true,
+		AppliesEngineEndpoints: true,
+		AppliesDenyDomains:     false,
+		Notes:                  "the engine's forward proxy decides every connection the sandbox routes through it: the declared allowances and the engine-owned endpoints are applied in the daemon, the guest is given the proxy as its egress path, and a change to the declaration reaches a running sandbox because the policy is read per request; a process that ignores the proxy environment is not decided until transparent capture is in place",
 	}
 }
 
@@ -162,6 +188,11 @@ func RequireSandboxNetworkEnforcement(driver, sandboxID string, policy *SandboxN
 		return nil
 	}
 	enforcement := SandboxNetworkEnforcementFor(driver)
+	if policy.MediatedByForwardProxy {
+		// The engine is in the traffic path, so the declaration is enforced
+		// whatever the driver provides on its own.
+		enforcement = SandboxEgressForwardProxyEnforcement(driver)
+	}
 	if enforcement.Strength != SandboxEgressStrengthNone {
 		return nil
 	}

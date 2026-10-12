@@ -17,11 +17,13 @@ import (
 	"github.com/chaitin/agent-compose/pkg/egress"
 )
 
-// EgressProxyAuthorizer resolves the sandbox a proxy credential belongs to. A
+// EgressProxyAuthorizer resolves the sandbox a proxy credential belongs to. It
+// receives the sandbox name the caller claimed so an implementation can verify
+// the credential against that identity rather than trusting either half alone. A
 // credential that names no sandbox (unknown, revoked, expired, malformed) is an
 // error: the proxy never decides for an unidentified caller.
 type EgressProxyAuthorizer interface {
-	AuthorizeEgressProxy(ctx context.Context, credential string) (sandboxID string, err error)
+	AuthorizeEgressProxy(ctx context.Context, claimedSandboxID, credential string) (sandboxID string, err error)
 }
 
 // EgressProxyPolicySource returns the egress policy that currently governs one
@@ -223,7 +225,7 @@ func (p *EgressProxy) authenticate(w http.ResponseWriter, r *http.Request) (stri
 		http.Error(w, "agent-compose egress proxy: a sandbox credential is required", http.StatusProxyAuthRequired)
 		return "", false
 	}
-	sandboxID, err := p.authorizer.AuthorizeEgressProxy(r.Context(), credential)
+	sandboxID, err := p.authorizer.AuthorizeEgressProxy(r.Context(), claimed, credential)
 	if err != nil || strings.TrimSpace(sandboxID) == "" {
 		w.Header().Set("Proxy-Authenticate", `Basic realm="agent-compose-egress"`)
 		http.Error(w, "agent-compose egress proxy: the sandbox credential is not valid", http.StatusProxyAuthRequired)
