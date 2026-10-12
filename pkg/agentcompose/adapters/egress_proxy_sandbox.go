@@ -104,6 +104,15 @@ func (p SandboxEgressProxy) MediatesDriver(driver string) bool {
 // environment and no error when this deployment cannot offer a reachable proxy,
 // because a sandbox that cannot use the proxy must keep running rather than be
 // given a proxy address it cannot reach.
+//
+// A credential is minted per call rather than reused. The store keeps only the
+// credential's hash, which is what makes a leaked store entry useless, so an
+// issued credential cannot be read back to hand out again; and a start that
+// reuses a runtime keeps the environment it was created with, so revoking this
+// sandbox's older credentials here could cut off the one that runtime is
+// actually presenting. Each credential is scoped to this sandbox and revoked
+// with it, so what accumulates is one entry per start, not access to anything
+// another sandbox can use.
 func (p SandboxEgressProxy) Enable(ctx context.Context, session *domain.Sandbox) ([]driverpkg.SandboxEnvVar, error) {
 	if !p.available(session) {
 		return nil, nil
@@ -185,6 +194,14 @@ func (p SandboxEgressProxy) policyForSession(ctx context.Context, session *domai
 // the same guest-reachable address the engine hands the sandbox for its runtime
 // LLM facade, because that is the address the engine already knows works from
 // inside the sandbox. An empty result means no proxy is reachable.
+//
+// The guest-reachable address must not be a loopback or unspecified one. Every
+// sandbox this daemon runs is a container, a microVM, or a Pod with its own
+// network namespace, so the host's loopback is its own loopback: handing it to
+// the guest would set a proxy address that cannot work, skip the unenforced
+// gate, and report a mediation that does not exist. An operator that needs the
+// proxy has to give the daemon an address the sandbox can actually dial
+// (AGENT_COMPOSE_RUNTIME_BASE_URL), which is also what the LLM facade needs.
 func egressProxyAddress(config *appconfig.Config, session *domain.Sandbox) string {
 	base := strings.TrimSpace(llms.GuestRuntimeBaseURL(config, session))
 	if base == "" {
@@ -194,7 +211,24 @@ func egressProxyAddress(config *appconfig.Config, session *domain.Sandbox) strin
 	if err != nil || parsed.Host == "" {
 		return ""
 	}
+	if egressProxyHostIsGuestLocal(parsed.Hostname()) {
+		return ""
+	}
 	return parsed.Host
+}
+
+// egressProxyHostIsGuestLocal reports whether a host names the guest's own
+// loopback rather than the host the daemon runs on.
+func egressProxyHostIsGuestLocal(host string) bool {
+	host = strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if host == "" || host == "localhost" {
+		return true
+	}
+	address := net.ParseIP(host)
+	if address == nil {
+		return false
+	}
+	return address.IsLoopback() || address.IsUnspecified()
 }
 
 // egressProxyBypass lists the hosts the guest must not send through the proxy:

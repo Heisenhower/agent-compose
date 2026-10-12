@@ -2,6 +2,8 @@ package adapters
 
 import (
 	"context"
+	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,7 +102,7 @@ func TestSandboxEgressProxyEnableIssuesAReachableCredential(t *testing.T) {
 	if !strings.HasPrefix(proxy, "http://sandbox-1:ac_llm_") {
 		t.Fatalf("HTTPS_PROXY = %q, want the sandbox and its credential", proxy)
 	}
-	if !strings.Contains(proxy, "@127.0.0.1:7410") {
+	if !strings.Contains(proxy, "@"+strings.TrimPrefix(networkPolicyTestBaseURL, "http://")) {
 		t.Fatalf("HTTPS_PROXY = %q, want the guest-reachable address", proxy)
 	}
 	for _, name := range []string{"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy"} {
@@ -229,7 +231,15 @@ func TestSandboxEgressProxyPolicyFollowsTheDeclaration(t *testing.T) {
 	if denied.Allowed() {
 		t.Fatalf("undeclared destination was allowed: %+v", denied)
 	}
-	engineEndpoint := egress.Decide(policy, egress.NetworkRequest("sandbox-1", egress.Endpoint{Host: "127.0.0.1", Port: 7410, Protocol: egress.ProtocolHTTP}))
+	engineHost, enginePort, err := net.SplitHostPort(strings.TrimPrefix(networkPolicyTestBaseURL, "http://"))
+	if err != nil {
+		t.Fatalf("test base URL %q has no usable address: %v", networkPolicyTestBaseURL, err)
+	}
+	enginePortNumber, err := strconv.Atoi(enginePort)
+	if err != nil {
+		t.Fatalf("test base URL %q has no usable port: %v", networkPolicyTestBaseURL, err)
+	}
+	engineEndpoint := egress.Decide(policy, egress.NetworkRequest("sandbox-1", egress.Endpoint{Host: engineHost, Port: enginePortNumber, Protocol: egress.ProtocolHTTP}))
 	if !engineEndpoint.Allowed() {
 		t.Fatalf("engine endpoint was denied under a declared policy: %+v", engineEndpoint)
 	}
@@ -307,6 +317,64 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		// different fact from "no declaration" and must not be recorded as one.
 		if record.Applied != string(egress.ApplicationUnenforced) {
 			t.Fatalf("record = %+v, want the runtime recorded as declared but unenforced", record)
+		}
+	})
+
+	t.Run("a loopback proxy address is not reachable from a sandbox", func(t *testing.T) {
+		// The daemon may be told to hand guests a loopback address (an explicit
+		// AGENT_COMPOSE_RUNTIME_BASE_URL, or a listen address on 127.0.0.1 for a
+		// driver without the docker reachability rule). The guest runs in its own
+		// network namespace, so that address reaches the guest itself: claiming
+		// mediation there would set a proxy the guest cannot use and skip the
+		// gate that keeps an unenforced declaration visible.
+		// An IPv6 loopback is left out of this table because deriving the engine
+		// endpoints from it fails earlier, for reasons this test does not own.
+		for _, address := range []string{"http://127.0.0.1:7410", "http://localhost:7410", "http://0.0.0.0:7410"} {
+			config := networkPolicyTestConfig()
+			config.RuntimeBaseURL = address
+			adapter := driverRuntimeAdapter{
+				networkPolicies: driverSandboxNetworkPolicy{config: config, declarations: stubNetworkDeclarationResolver{declaration: denyDeclaration()}},
+				egressProxy: NewSandboxEgressProxy(
+					config,
+					newEgressProxyTestStore(),
+					egressProxyTestSandboxes{session: session},
+					stubNetworkDeclarationResolver{declaration: denyDeclaration()},
+				),
+			}
+			driverSandbox, _, err := adapter.driverSandbox(context.Background(), session)
+			if err != nil {
+				t.Fatalf("driverSandbox() error = %v", err)
+			}
+			if driverSandbox.NetworkPolicy == nil || driverSandbox.NetworkPolicy.MediatedByForwardProxy {
+				t.Fatalf("address %q: policy = %+v, want an unmediated policy", address, driverSandbox.NetworkPolicy)
+			}
+			if len(driverSandbox.EnvItems) != 0 {
+				t.Fatalf("address %q: environment = %v, want none", address, envValues(driverSandbox.EnvItems))
+			}
+		}
+	})
+
+	t.Run("a loopback listen leaves a VM driver unenforced too", func(t *testing.T) {
+		boxlite := networkPolicyTestSession()
+		boxlite.Summary.Driver = driverpkg.RuntimeDriverBoxlite
+		adapter := driverRuntimeAdapter{
+			networkPolicies: driverSandboxNetworkPolicy{config: &appconfig.Config{HttpListen: "127.0.0.1:7410"}, declarations: stubNetworkDeclarationResolver{declaration: denyDeclaration()}},
+			egressProxy: NewSandboxEgressProxy(
+				&appconfig.Config{HttpListen: "127.0.0.1:7410"},
+				newEgressProxyTestStore(),
+				egressProxyTestSandboxes{session: boxlite},
+				stubNetworkDeclarationResolver{declaration: denyDeclaration()},
+			),
+		}
+		driverSandbox, _, err := adapter.driverSandbox(context.Background(), boxlite)
+		if err != nil {
+			t.Fatalf("driverSandbox() error = %v", err)
+		}
+		if driverSandbox.NetworkPolicy == nil || driverSandbox.NetworkPolicy.MediatedByForwardProxy {
+			t.Fatalf("policy = %+v, want an unmediated policy", driverSandbox.NetworkPolicy)
+		}
+		if len(driverSandbox.EnvItems) != 0 {
+			t.Fatalf("environment = %v, want none", envValues(driverSandbox.EnvItems))
 		}
 	})
 

@@ -55,9 +55,19 @@ func (s stubNetworkDeclarationResolver) ResolveNetworkDeclaration(context.Contex
 	return s.declaration, s.err
 }
 
+// networkPolicyTestBaseURL is the guest-reachable address the network-policy
+// tests configure. Both the proxy address and the engine endpoints are derived
+// from it, so the tests read it instead of hardcoding either.
+const networkPolicyTestBaseURL = "http://172.16.0.1:7410"
+
 func networkPolicyTestConfig() *appconfig.Config {
 	return &appconfig.Config{
-		RuntimeBaseURL: "http://127.0.0.1:7410",
+		// The guest-reachable address of a deployment whose proxy the tests
+		// treat as available. A loopback address is deliberately not used here:
+		// no sandbox this daemon runs shares the host's network namespace, so a
+		// loopback base URL is the unenforced case, which the mediation test
+		// covers explicitly.
+		RuntimeBaseURL: networkPolicyTestBaseURL,
 		AgentTelemetry: appconfig.AgentTelemetryConfig{
 			Endpoint: "http://127.0.0.1:4318",
 		},
