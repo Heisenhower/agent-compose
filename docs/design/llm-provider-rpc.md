@@ -50,7 +50,9 @@ GetDefaultModel, SetDefaultModel and ClearDefaultModel manage the reference the
 daemon uses for runs that declare no model. SetDefaultModel requires an existing
 enabled connection; the model may be a literal the connection does not enumerate,
 so the write only ensures a model identity and never invents a binding. An
-unknown provider is NotFound, a disabled one is FailedPrecondition, and an empty
+unknown provider is NotFound, a disabled one is FailedPrecondition, a run-scoped
+declared connection id is InvalidArgument — it carries one sandbox's own
+credential and must not become the daemon default — and an empty
 provider_id or model_id is InvalidArgument without replacing the stored
 reference.
 
@@ -59,8 +61,9 @@ the in-memory probe cache, so a connection the daemon has not probed reports
 none; nothing about probing is persisted and the field never changes routing. A
 verdict the probe's deadline cut short is not cached, because it says nothing
 about the endpoint: caching it would answer the next trigger with an undecided
-report instead of probing. The startup sweep shares one deadline, stops when it
-ends, and logs how many connections it could not reach.
+report instead of probing. The startup sweep runs in the background under one
+deadline, so it delays nothing that starts after it; it stops when the deadline
+ends, logs how many connections it could not reach, and shutdown waits for it.
 
 Protocol selects the default upstream credential presentation: Bearer for the
 OpenAI protocols and x-api-key for Anthropic Messages. A gateway can serve the
@@ -128,6 +131,13 @@ reference whose connection no longer exists is treated as absent so the
 environment fallback takes its turn instead of leaving the daemon with a default
 it cannot serve. This is why nothing was renamed: the table keeps holding the
 effective default, and only its owner set widened.
+
+Deleting a connection, or disabling it through UpdateProvider, removes a
+reference that names it. That is not the projection's preservation rule: an
+operator action on the connection is deliberate, and keeping the row would make
+GetDefaultModel report a default that resolution ignores. A projection still
+preserves a reference whose connection it disabled, so re-adding the entry to
+models.json restores the stored choice.
 
 API keys follow the existing provider storage contract: application-level
 plaintext in data.db, never returned by the management RPCs. The existing daemon
