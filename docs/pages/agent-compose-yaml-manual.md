@@ -83,6 +83,16 @@ volumes:
       purpose: agent-cache
     options: {}
 
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
 agents:
   reviewer:
     enabled: true
@@ -136,6 +146,7 @@ agents:
         read_only: false
     workspace:
       name: source
+    policy: locked-down
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -211,6 +222,7 @@ SECRET_VALUE:
 | `mcp_servers` | map | No | Named MCP servers that agents may reference. |
 | `octobus_servers` | map | No | Named project-scoped OctoBus servers selected by qualified `capset_ids`. |
 | `volumes` | map | No | Persistent volumes managed or referenced by the project. |
+| `policies` | map | No | Named policy blocks that agents select by name instead of repeating. |
 | `agents` | map | No | Agent definitions keyed by agent name. |
 
 ### `name`
@@ -487,6 +499,34 @@ volumes:
 | `options` | map[string]string | Empty | Driver options. For `k8s`, supported keys are `size` (default `1Gi`), `storage_class`, `access_mode` (default `ReadWriteOnce`), and `namespace` (default `K8S_NAMESPACE`/`default`). PVCs use the daemon's Kubernetes cluster. |
 
 The volume map key must be a stable identifier. Agents mount project volumes through `agents.<name>.volumes`.
+
+## `policies`: project policies
+
+`policies` is the project's policy library. An entry is a policy block, exactly like the one an agent can declare inline, and an agent selects it by writing the name:
+
+```yaml
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
+agents:
+  reviewer:
+    provider: codex
+    policy: locked-down
+```
+
+A name is resolved when the project is normalized, the same way an agent `mcp_servers` reference is resolved: every agent ends up carrying its effective policy block. `policy: locked-down` and repeating that block inline normalize to the same specification and the same spec hash, so moving a shared block into `policies` changes nothing the engine enforces.
+
+- A project policy defines a block; it cannot name another policy, so there are no chains to resolve.
+- Every entry is validated even when no agent selects it, so a broken definition fails the project instead of waiting for the first agent that references it.
+- An undefined name is an error and never falls back to an undeclared policy, which would leave egress unrestricted.
+- The library is an authoring convenience and is not part of the normalized specification: `agent-compose config` shows each agent's effective `policy` block rather than the name it selected.
 
 ## `agents.<name>`
 
@@ -987,6 +1027,19 @@ Inline workspaces accept the same `mode` and `read_only` fields as top-level def
 ### `policy`: declared runtime policies
 
 `policy` groups everything this agent declares about how its sandboxes behave at runtime: the stopped-runtime lifecycle and the outbound network policy. Later runtime policies belong in this same block rather than in new top-level agent keys.
+
+An agent either declares that block inline or selects a project `policies` entry by name:
+
+```yaml
+policy: locked-down        # a project policy, defined under `policies`
+```
+
+```yaml
+policy:                    # or the block itself
+  stopped_runtime_policy: retain
+```
+
+The fields below describe a policy block, whichever shape declares it. A name that no project policy defines is an error; it is never treated as no policy at all.
 
 > **`sandbox` is the deprecated spelling of `policy`.** It is still accepted so projects written before the rename keep working, and both keys accept the same fields, but new and edited projects should use `policy`. Declaring both in one agent is an error rather than a silent choice between two blocks that could disagree.
 

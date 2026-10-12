@@ -82,6 +82,16 @@ volumes:
       purpose: agent-cache
     options: {}
 
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
 agents:
   reviewer:
     enabled: true
@@ -135,6 +145,7 @@ agents:
         read_only: false
     workspace:
       name: source
+    policy: locked-down
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -210,6 +221,7 @@ SECRET_VALUE:
 | `mcp_servers` | map | 否 | 可由 Agent 按名称引用的 MCP Server 定义。 |
 | `octobus_servers` | map | 否 | 由 qualified `capset_ids` 选择的具名项目级 OctoBus Server。 |
 | `volumes` | map | 否 | 项目管理或引用的持久 Volume。 |
+| `policies` | map | 否 | 具名策略块；Agent 按名称引用，无需重复声明。 |
 | `agents` | map | 否 | Agent 定义；map key 是 Agent 名。 |
 
 ### `name`
@@ -486,6 +498,34 @@ volumes:
 | `options` | map[string]string | 空 | Driver 选项。`k8s` 支持 `size`（默认 `1Gi`）、`storage_class`、`access_mode`（默认 `ReadWriteOnce`）和 `namespace`（默认 `K8S_NAMESPACE`/`default`）。PVC 使用 daemon 所在的 Kubernetes 集群。 |
 
 Volume map key 必须符合稳定标识符格式。Agent 通过 `agents.<name>.volumes` 挂载项目 Volume。
+
+## `policies`：项目级策略
+
+`policies` 是项目级的策略库。每个条目就是一个策略块，与 Agent 内联声明的块完全相同，Agent 通过写名称来引用：
+
+```yaml
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
+agents:
+  reviewer:
+    provider: codex
+    policy: locked-down
+```
+
+名称在项目规范化时解析，与 Agent 的 `mcp_servers` 引用一致：每个 Agent 最终都携带自己的有效策略块。`policy: locked-down` 与把该块原样内联，会规范化成完全相同的配置和相同的 spec hash，因此把共享块搬进 `policies` 不会改变引擎实际执行的内容。
+
+- 项目级策略定义的是块本身，不能再引用另一个策略，因此不存在需要解析的引用链。
+- 即使没有任何 Agent 引用，每个条目也会被校验，坏定义会直接让项目失败，而不是等到第一个引用它的 Agent。
+- 引用未定义的名称会报错，绝不会退化成"没有策略"——未声明的策略意味着出网不受限制。
+- 策略库只是编写便利，不属于规范化配置的一部分：`agent-compose config` 展示的是每个 Agent 的有效 `policy` 块，而不是它引用的名称。
 
 ## `agents.<name>`
 
@@ -971,6 +1011,19 @@ workspace:
 ### `policy`：运行时策略声明
 
 `policy` 集中声明该 Agent 的 sandbox 在运行时的行为：已停止 runtime 的生命周期，以及出网策略。后续新增的运行时策略应继续放进这个块，而不是新增顶层 agent 字段。
+
+Agent 可以内联声明这个块，也可以按名称引用项目级 `policies` 条目：
+
+```yaml
+policy: locked-down        # 引用 `policies` 中的项目级策略
+```
+
+```yaml
+policy:                    # 或直接内联策略块
+  stopped_runtime_policy: retain
+```
+
+下文描述的都是策略块本身的字段，两种写法通用。引用了项目级策略中不存在的名称会报错，绝不会被当成"没有策略"。
 
 > **`sandbox` 是 `policy` 的弃用拼写。** 为了兼容重命名之前编写的项目，`sandbox` 仍然可用，两个 key 接受完全相同的字段；但新建或修改项目请使用 `policy`。同一 agent 同时声明两者会直接报错，而不是在两个可能互相矛盾的块之间静默选择。
 
