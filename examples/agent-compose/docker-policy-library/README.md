@@ -69,6 +69,34 @@ agents:
 - The library is authoring convenience and is not part of the normalized
   specification: `config` shows each agent's effective `policy` block.
 
+## The library and an agent's own policy
+
+The library is a catalog; an agent's `policy` is a selection from it or a block
+of its own. The two never compose:
+
+| Agent declaration | Effective policy |
+| --- | --- |
+| `policy: locked-down` | Exactly the `locked-down` entry. |
+| `policy: {…}` inline | Exactly the inline block. |
+| no `policy` key | No policy: unrestricted egress, `remove` on stop. |
+
+- One key, one shape: a name is a scalar and a block is a mapping, so an agent
+  cannot state both. There is exactly one effective policy per agent.
+- A library entry does not merge into an agent that declares its own block. It
+  takes effect only where an agent names it, so `adhoc` above is unaffected by
+  `locked-down`.
+- Nothing is inherited. There is no project-wide default policy today: an agent
+  that declares no `policy` has none, which is what an undeclared policy has
+  always meant.
+- "One policy for most agents, one exception" needs no composition rule: the
+  exception writes its own block and the rest name the entry.
+
+Merging the two would produce a third block that appears nowhere in the file,
+and a reader could no longer tell what a sandbox enforces by reading one
+declaration. If a shared default is wanted later, it should be an explicit key
+with a stated rule (agent overrides the default, or the tighter of the two
+wins), not an implicit merge.
+
 ## Validate and apply
 
 From this directory:

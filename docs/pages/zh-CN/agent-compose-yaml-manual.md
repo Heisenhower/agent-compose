@@ -91,6 +91,8 @@ policies:
         - host: api.github.com
           port: 443
           protocol: https
+  keep-runtime:
+    stopped_runtime_policy: retain
 
 agents:
   reviewer:
@@ -131,7 +133,9 @@ agents:
       - engineering
       - internal/code-review
     skills:
-      - ./skills/review
+      - name: review
+        provider: file
+        path: ./skills/review
       - name: release-check
         provider: git
         url: https://github.com/example/agent-skills.git
@@ -145,7 +149,7 @@ agents:
         read_only: false
     workspace:
       name: source
-    policy: locked-down
+    policy: locked-down           # 引用 `policies` 中的条目；不会与其合并
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -157,6 +161,13 @@ agents:
     jupyter:
       enabled: false
       guest_port: 8888
+
+  # 策略库是目录而不是默认值：这个 Agent 自行声明策略块，不会合并任何库条目。
+  spot-checker:
+    provider: codex
+    policy:
+      network:
+        default: allow-all
 
 ```
 
@@ -521,6 +532,16 @@ agents:
 ```
 
 名称在项目规范化时解析，与 Agent 的 `mcp_servers` 引用一致：每个 Agent 最终都携带自己的有效策略块。`policy: locked-down` 与把该块原样内联，会规范化成完全相同的配置和相同的 spec hash，因此把共享块搬进 `policies` 不会改变引擎实际执行的内容。
+
+策略库是目录，Agent 的声明是从中做一次选择，或写自己的块。二者不叠加：
+
+| Agent 声明 | 生效策略 |
+| --- | --- |
+| `policy: locked-down` | 就是 `locked-down` 这一条。 |
+| `policy: {…}` 内联 | 就是内联的这个块。 |
+| 不写 `policy` | 没有策略：出网不受限，停止时 `remove`。 |
+
+同一个 key 只有一种形状——名称是 scalar，块是 mapping——所以一个 Agent 不可能同时写两者，每个 Agent 恰好只有一个生效策略。库条目不会合并进自行声明块的 Agent，没有任何隐式继承，目前也不存在项目级默认策略。因此"大部分 Agent 用同一条策略、个别例外"不需要组合规则：例外自己写块，其余引用条目即可。合并两个块会产生一个文件里根本没写过的第三种块，读者也无法只读一处声明就知道 sandbox 到底执行什么。
 
 - 项目级策略定义的是块本身，不能再引用另一个策略，因此不存在需要解析的引用链。
 - 即使没有任何 Agent 引用，每个条目也会被校验，坏定义会直接让项目失败，而不是等到第一个引用它的 Agent。

@@ -92,6 +92,8 @@ policies:
         - host: api.github.com
           port: 443
           protocol: https
+  keep-runtime:
+    stopped_runtime_policy: retain
 
 agents:
   reviewer:
@@ -132,7 +134,9 @@ agents:
       - engineering
       - internal/code-review
     skills:
-      - ./skills/review
+      - name: review
+        provider: file
+        path: ./skills/review
       - name: release-check
         provider: git
         url: https://github.com/example/agent-skills.git
@@ -146,7 +150,7 @@ agents:
         read_only: false
     workspace:
       name: source
-    policy: locked-down
+    policy: locked-down           # selected from `policies`; never merged with it
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -158,6 +162,14 @@ agents:
     jupyter:
       enabled: false
       guest_port: 8888
+
+  # The library is a catalog, not a default: this agent declares its own block
+  # instead of naming an entry, and no entry is merged into it.
+  spot-checker:
+    provider: codex
+    policy:
+      network:
+        default: allow-all
 
 ```
 
@@ -522,6 +534,16 @@ agents:
 ```
 
 A name is resolved when the project is normalized, the same way an agent `mcp_servers` reference is resolved: every agent ends up carrying its effective policy block. `policy: locked-down` and repeating that block inline normalize to the same specification and the same spec hash, so moving a shared block into `policies` changes nothing the engine enforces.
+
+The library is a catalog, and an agent declaration is a selection from it or a block of its own. The two never compose:
+
+| Agent declaration | Effective policy |
+| --- | --- |
+| `policy: locked-down` | Exactly the `locked-down` entry. |
+| `policy: {…}` inline | Exactly the inline block. |
+| no `policy` key | No policy: unrestricted egress, `remove` on stop. |
+
+One key has one shape — a name is a scalar and a block is a mapping — so an agent cannot state both, and every agent has exactly one effective policy. A library entry is not merged into an agent that declares its own block, nothing is inherited, and there is no project-wide default today. "One policy for most agents, one exception" therefore needs no composition rule: the exception declares its own block and the rest name the entry. Merging two blocks would produce a third block that appears nowhere in the file, and a reader could no longer tell what a sandbox enforces from one declaration.
 
 - A project policy defines a block; it cannot name another policy, so there are no chains to resolve.
 - Every entry is validated even when no agent selects it, so a broken definition fails the project instead of waiting for the first agent that references it.
