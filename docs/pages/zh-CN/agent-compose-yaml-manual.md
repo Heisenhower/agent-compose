@@ -1109,7 +1109,7 @@ policy:
 该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
 - 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制。
-- 在 Docker、Kubernetes 与 BoxLite 上，当声明要求 `default: deny` 时，引擎会**拒绝创建 sandbox**：这些 driver 无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。此时 sandbox 会以指明 driver 的错误启动失败，而不是在不受限的出网状态下静默运行；它们的能力报告带有 `strength=none`。
+- 在 Docker、Kubernetes 与 BoxLite 上，当声明要求 `default: deny` 时，引擎会**拒绝创建 sandbox**：这些 driver 无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。此时 sandbox 会以指明 driver 的错误启动失败，而不是在不受限的出网状态下静默运行；它们的能力报告带有 `strength=none`。这个拒绝是过渡期的立场，而不是一项能力：它把一条限制变成了启动失败，而且发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），而不是在项目被接受时。在这些 driver 改为真正执行声明之前，它们上面的 `default: deny` 意味着 agent 无法运行；需要 agent 能运行的项目必须选择能力报告显示出所需强度的 driver。
 - 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，也不会导致 sandbox 启动失败。
 
 **声明何时生效。** driver 是在创建 sandbox 时应用网络配置的，因此每次启动都会从当前 Agent 定义读取声明：

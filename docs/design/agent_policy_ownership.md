@@ -212,3 +212,66 @@ answerable.
    and a YAML-shape round trip for the selection; enforcement is unchanged.
 4. Add a project-wide default only if a project-level default is actually wanted,
    and choose override or intersection by the ownership rule above.
+
+## An unenforceable declaration must not make an agent unrunnable
+
+The interim behavior is wrong and must not become the end state. When a project
+declares `default: deny` and the selected driver has no enforcement surface, the
+engine refuses to create the sandbox (`ErrSandboxNetworkEnforcementUnavailable`,
+raised inside each driver's `EnsureSandbox`). That conflates two different
+things: "the platform cannot deliver this restriction" and "this agent must not
+run".
+
+It is the wrong trade-off for four reasons:
+
+- it turns a *restriction* into an availability failure, at the worst moment: the
+  refusal happens when a sandbox is created — during a run or inside a scheduler
+  tick — not when the project is accepted;
+- it does not offer the *stronger* restriction that is always safe to apply.
+  Running with less access than declared cannot violate the declaration, so
+  "deny everything except the engine's own endpoints" is a legitimate fallback
+  where "run unrestricted" and "refuse" are the only two options today;
+- it pushes authors to delete the declaration to unblock a pipeline, which loses
+  the record of intent and the report — a worse outcome than a recorded,
+  reported, unenforced declaration;
+- it is inconsistent with the codebase's own precedent. A driver incompatibility
+  (`stopped_runtime_policy: retain` on k8s) is rejected at normalization time in
+  `pkg/compose/normalize.go`, where the author can fix it, not when a sandbox is
+  created.
+
+The invariant to hold instead:
+
+> The engine never runs a sandbox with **more** egress than the declaration
+> allows. "Less" is always acceptable. When it can apply neither the declaration
+> nor a strictly stronger restriction, it says so where the project is accepted
+> and wherever the declaration is reported, and whether that is acceptable is the
+> operator's decision rather than a hard-coded refusal.
+
+### Planned shape
+
+1. **Admission-time verdict.** Evaluate the declaration against the selected
+   driver when the project is normalized (`config`, `apply`, `up`), beside the
+   existing k8s `stopped_runtime_policy` check, so the author learns before any
+   run that the declaration cannot be enforced on this driver. The runtime gate
+   stays only as a backstop for paths that bypass admission.
+2. **Prefer a stronger restriction to a refusal.** Where a mechanism exists that
+   enforces something narrower, use it. With an egress proxy in the path, "proxy
+   with an empty allowlist" (engine endpoints only) is strictly stronger than any
+   declaration and always implementable.
+3. **Make the default driver enforce.** Docker's only network knob today is the
+   daemon's network mode (`dockerDaemonTopology`); Kubernetes emits no egress
+   `NetworkPolicy`; BoxLite's host-side binding is unverified. So on three of four
+   drivers there is nothing to filter with. The engine already terminates guest
+   traffic for the runtime LLM facade and the capset gateway; extending that into
+   an egress forward proxy routes every guest connection through the compiled
+   `egress.Policy`, which is pure, carries a content-derived generation,
+   emits a record per decision, and already handles DNS-rebinding protection.
+   Sandboxes then join an internal network that can reach only the proxy, which
+   is also where L7 inspection belongs.
+4. **Operator choice for the residual case.** A deployment setting
+   (`EGRESS_UNENFORCEABLE_POLICY`) selects `warn` or `refuse`. `warn` records the
+   declaration, runs the sandbox, and reports it as unenforced in `config`/`up`
+   output and in every inspection surface: a declaration that is not enforced must
+   never be presented as a control. `refuse` stays available for deployments that
+   require the constraint to be real, and refuses at admission rather than at
+   sandbox creation.
