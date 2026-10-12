@@ -131,7 +131,11 @@ func (s *llmStore) UpsertDeclaredConnection(ctx context.Context, provider llms.P
 // A row the file stops declaring loses that scope: the projection releases it, and
 // the environment bootstrap maintains an unset scope. So a stale row cannot keep
 // owning an id the file has moved on from, and the bootstrap recovers by itself
-// instead of yielding to a source that will never rewrite the row again.
+// instead of yielding to a source that will never rewrite the row again. The file
+// projection is symmetric in the other direction — it rewrites the rows this
+// bootstrap maintains as well (see CatalogProjectionOwnsScope) — so an id the
+// environment materialized, including one it took over after a release, comes back
+// under the file the moment the file declares it again.
 func envProjectionConflict(ctx context.Context, tx *sql.Tx, providerID, modelID string) (*llms.DefaultConfigConflict, error) {
 	provider, err := foreignIDOwner(ctx, tx, "provider", `SELECT scope FROM llm_provider WHERE id = ?`, providerID)
 	if err != nil {

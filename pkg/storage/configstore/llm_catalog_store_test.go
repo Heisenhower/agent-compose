@@ -238,9 +238,76 @@ func assertReleased(t *testing.T, ctx context.Context, db *sql.DB, table, id str
 	}
 }
 
-func TestIntegrationApplyModelCatalogRejectsNonCatalogProviderCollision(t *testing.T) {
+// An id the environment bootstrap materialized is not another source's to keep.
+// The file is the daemon's own declaration and outranks the bootstrap fallback,
+// so declaring the same Provider id takes the row over; the environment
+// projection that follows yields instead of failing startup beside it.
+func TestIntegrationModelCatalogTakesOverEnvironmentOwnedProvider(t *testing.T) {
 	clearLLMTestEnvironment(t)
-	for _, scope := range []string{llms.ProviderScopeSystem, llms.ProviderScopeEnvDefault, llms.ProviderScopeAPI} {
+	for _, scope := range []string{llms.ProviderScopeSystem, llms.ProviderScopeEnvDefault} {
+		t.Run(scope, func(t *testing.T) {
+			ctx := context.Background()
+			store := newProjectionTestStore(t)
+
+			projected := envProjectionProvider(llms.ProviderIDDefaultOpenAI)
+			projected.Scope = scope
+			projected.Name = scope + " provider"
+			if err := store.UpsertDefaultLLMConfig(ctx, projected, envProjectionModel("env-model")); err != nil {
+				t.Fatalf("project the environment: %v", err)
+			}
+
+			if err := store.ApplyModelCatalog(ctx, catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")); err != nil {
+				t.Fatalf("the file declared an id the environment materialized: %v", err)
+			}
+			assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+
+			// The environment's model kept its default flag but lost the connection
+			// that served it, so the catalog must report no default rather than a
+			// model no run can receive.
+			loaded, err := llms.LoadCatalog(ctx, store)
+			if err != nil {
+				t.Fatalf("load catalog: %v", err)
+			}
+			if got := loaded.DefaultModel(); got != "" {
+				t.Fatalf("DefaultModel() = %q, want no default after the file took the connection over", got)
+			}
+
+			err = store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model"))
+			if _, ok := llms.AsDefaultConfigConflict(err); !ok {
+				t.Fatalf("environment projection error = %v, want it to yield to the file that owns the id", err)
+			}
+		})
+	}
+}
+
+// Releasing a row is not a claim the file can never take back: once the
+// environment bootstrap has taken the id over, declaring it in models.json again
+// takes the row back instead of failing every later startup.
+func TestIntegrationModelCatalogTakesItsReleasedIDBackFromTheEnvironment(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err != nil {
+		t.Fatalf("the environment takes the released id over: %v", err)
+	}
+
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("the file restores the declaration: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+}
+
+func TestIntegrationApplyModelCatalogRejectsConnectionsAnotherSourceOwns(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	for _, scope := range []string{llms.ProviderScopeAPI, llms.ProviderScopeDeclared} {
 		t.Run(scope, func(t *testing.T) {
 			ctx := context.Background()
 			store := FromDB(newMemoryDB(t))

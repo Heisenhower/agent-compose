@@ -461,6 +461,24 @@ func TestCatalogResolveAnthropicEndpoint(t *testing.T) {
 	}
 }
 
+// A flagged model no enabled connection serves cannot be resolved, so it must not
+// be reported as the default: the daemon would name a default no run receives
+// instead of falling back to "no default configured". A file projection that takes
+// a connection over leaves exactly this row behind when the environment had made
+// one of that connection's models the default.
+func TestCatalogDefaultModelIgnoresAFlagNoConnectionServes(t *testing.T) {
+	catalog := mustLoadCatalog(t, fakeCatalogStore{
+		providers: []Provider{catalogOpenAIConnection("env", "https://env.example.com")},
+		models:    []Model{{ID: "gpt-5.5", Name: "gpt-5.5", DefaultModel: true, Enabled: true}},
+	})
+	if got := catalog.DefaultModel(); got != "" {
+		t.Fatalf("DefaultModel() = %q, want no default for a model no connection serves", got)
+	}
+	if _, err := catalog.SelectModel("  "); !errors.Is(err, ErrNoModel) {
+		t.Fatalf("SelectModel(empty) error = %v, want ErrNoModel", err)
+	}
+}
+
 func TestCatalogDefaultModelFallsBackToModelFlag(t *testing.T) {
 	catalog := mustLoadCatalog(t, fakeCatalogStore{
 		providers: []Provider{catalogOpenAIConnection("env", "https://env.example.com")},

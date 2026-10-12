@@ -213,7 +213,14 @@ func (c *Catalog) defaultFromModelFlag(models []Model) (string, string) {
 		if modelID == "" {
 			continue
 		}
-		if serving := c.serving[modelID]; len(serving) == 1 {
+		// A flagged model no enabled connection serves cannot be resolved, so it is
+		// not a default: reporting it would name a model no run receives instead of
+		// leaving the daemon with no default.
+		serving := c.serving[modelID]
+		if len(serving) == 0 {
+			continue
+		}
+		if len(serving) == 1 {
 			return serving[0], modelID
 		}
 		return "", modelID

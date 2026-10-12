@@ -64,6 +64,17 @@ func EnvProjectionOwnsScope(scope string) bool {
 	}
 }
 
+// CatalogProjectionOwnsScope reports whether the models.json projection is
+// allowed to rewrite a connection that already carries scope. Besides its own
+// rows it accepts the ones the environment bootstrap maintains: the file is the
+// daemon's own declaration and outranks the bootstrap fallback, so declaring an
+// id the bootstrap already materialized takes the row over instead of failing
+// startup beside it. A row an explicit source owns — an LLM-service connection
+// or a run-scoped declared one — is not the file's to rewrite.
+func CatalogProjectionOwnsScope(scope string) bool {
+	return strings.TrimSpace(scope) == ProviderScopeCatalog || EnvProjectionOwnsScope(scope)
+}
+
 // EnvProviderLookup resolves an environment value for LLM connection
 // projection. It accepts candidate keys and returns the first non-empty value
 // (source-major: an earlier source wins across all candidate keys before a

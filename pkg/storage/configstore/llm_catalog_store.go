@@ -59,6 +59,20 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	return nil
 }
 
+// storedProviderScope reads the scope of the stored connection carrying
+// providerID, or "" when no row declares that id.
+func storedProviderScope(ctx context.Context, tx *sql.Tx, providerID string) (string, error) {
+	var scope string
+	err := tx.QueryRowContext(ctx, `SELECT scope FROM llm_provider WHERE id = ?`, providerID).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read provider %q scope: %w", providerID, err)
+	}
+	return strings.TrimSpace(scope), nil
+}
+
 // catalogProviderUpsert bundles one provider catalog entry and the apply timestamp.
 type catalogProviderUpsert struct {
 	ProviderID string
@@ -80,6 +94,19 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		return fmt.Errorf("encode provider %q headers: %w", providerID, err)
 	}
 	enabled := apiKey != ""
+	// The row may be the file's own, one a previous projection released, or one the
+	// environment bootstrap materialized. An id an explicit source owns (an
+	// LLM-service connection or a run-scoped declared one) is not the file's to
+	// rewrite, and neither is a row another writer changed while this transaction
+	// ran: the upsert below matches only the scope accepted here, so both fail as a
+	// conflict instead of overwriting configuration the file does not control.
+	scope, err := storedProviderScope(ctx, tx, providerID)
+	if err != nil {
+		return err
+	}
+	if !llms.CatalogProjectionOwnsScope(scope) {
+		return fmt.Errorf("model catalog provider %q conflicts with an existing non-catalog provider", providerID)
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO llm_provider(
 		id, name, provider_type, default_wire_api, base_url, api_key, auth_header, auth_scheme, headers_json,
 		use_generic_responses_text_parts, weight, enabled, scope, created_at, updated_at)
@@ -89,10 +116,9 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		base_url = excluded.base_url, api_key = excluded.api_key, auth_header = excluded.auth_header,
 		auth_scheme = excluded.auth_scheme, headers_json = excluded.headers_json, enabled = excluded.enabled,
 		scope = excluded.scope, updated_at = excluded.updated_at
-		WHERE llm_provider.scope IN (?, ?)`,
+		WHERE llm_provider.scope = ?`,
 		providerID, name, providerType, protocol, strings.TrimSpace(pointerString(definition.BaseURL)), apiKey,
-		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now,
-		llms.ProviderScopeCatalog, "")
+		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now, scope)
 	if err != nil {
 		return fmt.Errorf("upsert model catalog provider %q: %w", providerID, err)
 	}
