@@ -25,4 +25,10 @@ type Request struct {
 	// trimmed it. An empty Name means the consumer named no resource, which a
 	// policy may still resolve (for example to a sole grant).
 	Name string
+	// ResolvedIPs are the addresses a network-endpoint name resolved to, in the
+	// order the caller will try them. They are read only by a rule that
+	// constrains its allowed addresses; a caller that has not resolved the name
+	// leaves this empty, which such a rule treats as unsatisfied rather than as
+	// unconstrained.
+	ResolvedIPs []string
 }

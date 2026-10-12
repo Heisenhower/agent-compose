@@ -61,9 +61,10 @@ func (n *NormalizedSandboxNetworkSpec) EgressDeclaration() (egress.NetworkDeclar
 	declaration := egress.NetworkDeclaration{Default: defaultAction}
 	for _, entry := range n.Allow {
 		declaration.Allow = append(declaration.Allow, egress.AllowEntry{
-			Host:     entry.Host,
-			Port:     entry.Port,
-			Protocol: egress.Protocol(entry.Protocol),
+			Host:       entry.Host,
+			Port:       entry.Port,
+			Protocol:   egress.Protocol(entry.Protocol),
+			AllowedIPs: entry.AllowedIPs,
 		})
 	}
 	return declaration, nil
@@ -119,10 +120,15 @@ func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec)
 			return nil, &ValidationError{Path: entryPath, Message: fmt.Sprintf("duplicate allow entry for %q port %d protocol %q", host, value.Port, protocol)}
 		}
 		seen[dedupeKey] = struct{}{}
+		allowedIPs, err := egress.NormalizeAllowedIPs(value.AllowedIPs)
+		if err != nil {
+			return nil, &ValidationError{Path: entryPath + ".allowed_ips", Message: err.Error()}
+		}
 		normalized = append(normalized, NormalizedSandboxNetworkAllowSpec{
-			Host:     host,
-			Port:     value.Port,
-			Protocol: string(protocol),
+			Host:       host,
+			Port:       value.Port,
+			Protocol:   string(protocol),
+			AllowedIPs: allowedIPs,
 		})
 	}
 	// Order in the source carries no meaning because every entry allows, so

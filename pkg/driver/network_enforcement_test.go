@@ -73,7 +73,7 @@ func denyPolicyForTest(t *testing.T) SandboxNetworkPolicy {
 	t.Helper()
 	return SandboxNetworkPolicy{
 		Default:         egress.Deny,
-		Allow:           []egress.Endpoint{mustEndpoint(t, "api.example.com", 443, egress.ProtocolHTTPS)},
+		Allow:           []egress.AllowEntry{mustAllow(t, "api.example.com", 443, egress.ProtocolHTTPS)},
 		EngineEndpoints: []egress.EngineEndpoint{mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS)},
 	}
 }
@@ -123,7 +123,7 @@ func TestRequireSandboxNetworkEnforcementRefuseModeAborts(t *testing.T) {
 func TestRequireSandboxNetworkEnforcementRejectsMalformedPolicy(t *testing.T) {
 	policy := SandboxNetworkPolicy{
 		Default: egress.Deny,
-		Allow:   []egress.Endpoint{{Host: "bad host", Port: 443}},
+		Allow:   []egress.AllowEntry{{Host: "bad host", Port: 443}},
 	}
 	err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &policy, config.EgressUnenforceableRefuse)
 	if err == nil {
@@ -217,7 +217,7 @@ func TestRequireSandboxNetworkEnforcementWarnsByDefault(t *testing.T) {
 		}
 	})
 	t.Run("warn mode still rejects a malformed policy", func(t *testing.T) {
-		malformed := SandboxNetworkPolicy{Default: egress.Deny, Allow: []egress.Endpoint{{Host: "bad host", Port: 443}}}
+		malformed := SandboxNetworkPolicy{Default: egress.Deny, Allow: []egress.AllowEntry{{Host: "bad host", Port: 443}}}
 		err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &malformed, config.EgressUnenforceableWarn)
 		if err == nil {
 			t.Fatal("RequireSandboxNetworkEnforcement(warn) error = nil, want a validation error")
@@ -226,4 +226,53 @@ func TestRequireSandboxNetworkEnforcementWarnsByDefault(t *testing.T) {
 			t.Fatalf("error = %v, want a validation error, not the enforcement-unavailable sentinel", err)
 		}
 	})
+}
+
+// TestRequireSandboxNetworkEnforcementReportsAnUnappliedAddressConstraint pins
+// the seam rule: a mechanism that applies a declaration's destinations but not
+// the addresses they may resolve to is applying less than the project
+// declared, and a sandbox must not run as if the constraint were in place.
+func TestRequireSandboxNetworkEnforcementReportsAnUnappliedAddressConstraint(t *testing.T) {
+	constrained := SandboxNetworkPolicy{
+		Default: egress.Deny,
+		Allow: []egress.AllowEntry{{
+			Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS,
+			AllowedIPs: []string{"203.0.113.0/24"},
+		}},
+	}
+
+	// The SDK allowlist matches the name the sandbox asked for; it cannot
+	// constrain the address behind it.
+	if enforcement := SandboxNetworkEnforcementFor(RuntimeDriverMicrosandbox); enforcement.AppliesAllowedAddresses {
+		t.Fatalf("Microsandbox claims to apply allowed addresses: %+v", enforcement)
+	}
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &constrained, config.EgressUnenforceableWarn); err != nil {
+		t.Fatalf("warn mode refused instead of reporting: %v", err)
+	}
+	err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &constrained, config.EgressUnenforceableRefuse)
+	if !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+		t.Fatalf("refuse mode error = %v, want the enforcement-unavailable sentinel", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "constrain the addresses") {
+		t.Fatalf("refusal = %v, want it to name the unapplied address constraint", err)
+	}
+
+	// The engine's proxy resolves the destination itself, so it does apply them.
+	mediated := constrained
+	mediated.MediatedByForwardProxy = true
+	if enforcement := SandboxEgressForwardProxyEnforcement(RuntimeDriverDocker); !enforcement.AppliesAllowedAddresses {
+		t.Fatalf("the forward proxy does not claim to apply allowed addresses: %+v", enforcement)
+	}
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &mediated, config.EgressUnenforceableRefuse); err != nil {
+		t.Fatalf("a mediated sandbox with an address-constrained allowance was refused: %v", err)
+	}
+
+	// An allowance with no address constraint is unaffected.
+	plain := SandboxNetworkPolicy{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+	}
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &plain, config.EgressUnenforceableRefuse); err != nil {
+		t.Fatalf("an unconstrained allowance was refused: %v", err)
+	}
 }

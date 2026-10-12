@@ -8,6 +8,12 @@ type AllowEntry struct {
 	Host     string
 	Port     int
 	Protocol Protocol
+	// AllowedIPs constrains which addresses a name may resolve to for this
+	// allowance to apply. It is empty for an allowance that names an address
+	// directly (nothing is resolved) or that deliberately trusts every address
+	// a name resolves to. Each entry is a canonical CIDR, as produced by
+	// NormalizeAllowedIPs.
+	AllowedIPs []string
 }
 
 // NetworkDeclaration is a declared sandbox outbound network policy. It is the
@@ -43,6 +49,11 @@ func (d NetworkDeclaration) Validate() error {
 		if _, err := ParseProtocol(string(entry.Protocol)); err != nil {
 			return fmt.Errorf("allow[%d]: %w", i, err)
 		}
+		for _, allowed := range entry.AllowedIPs {
+			if _, err := ParseAllowedIP(allowed); err != nil {
+				return fmt.Errorf("allow[%d]: %w", i, err)
+			}
+		}
 	}
 	return nil
 }
@@ -69,10 +80,11 @@ func CompileNetworkPolicy(declaration NetworkDeclaration, engine []EngineEndpoin
 	}
 	for _, entry := range declaration.Allow {
 		rules = append(rules, Rule{
-			ID:     "network.allow",
-			Match:  MatchEndpoint,
-			Names:  []string{FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol)},
-			Action: Allow,
+			ID:         "network.allow",
+			Match:      MatchEndpoint,
+			Names:      []string{FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol)},
+			Action:     Allow,
+			AllowedIPs: entry.AllowedIPs,
 		})
 	}
 	return NewPolicy(declaration.Default, rules...), nil

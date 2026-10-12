@@ -261,7 +261,24 @@ func (p endpointPattern) matches(target Endpoint) bool {
 	if p.protocol != ProtocolAny && p.protocol != target.Protocol {
 		return false
 	}
-	return HostPatternMatches(p.host, target.Host)
+	return endpointHostMatches(p.host, target.Host)
+}
+
+// endpointHostMatches matches a declared host pattern against the host a request
+// named. A destination that names an address is matched only by that same
+// address: a pattern matches names, so a wildcard can never reach an address the
+// declaration did not name, and an address pattern never matches a name. The
+// reverse direction — a name that resolves to an address — is constrained by the
+// rule's allowed addresses, not by pattern matching.
+func endpointHostMatches(pattern, host string) bool {
+	normalizedHost := strings.Trim(strings.ToLower(strings.TrimSpace(host)), "[]")
+	if IsIPLiteral(normalizedHost) {
+		return strings.Trim(strings.ToLower(strings.TrimSpace(pattern)), "[]") == normalizedHost
+	}
+	if IsIPLiteral(pattern) {
+		return false
+	}
+	return HostPatternMatches(pattern, host)
 }
 
 func validatePort(port int) error {

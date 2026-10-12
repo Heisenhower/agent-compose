@@ -1086,6 +1086,11 @@ Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍�
 | `host` | string | 必填 | 主机或主机模式。各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。不支持 IPv6 字面量。 |
 | `port` | int | 必填 | 目标端口，取值 1–65535。 |
 | `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 在模型中被标记为可在 L7 检查，`any`、`tcp`、`udp` 属于不透明放行，永远不会被呈现为“已检查”。当前没有实现 L7 中间层，因此引擎今天不会检查任何载荷：这个区分是建模与报告属性，不是过滤器。 |
+| `allowed_ips` | list | 空 | 该条目的 `host` 允许解析到的 IP 地址或 CIDR 范围（可选）。名字解析出的每个地址都必须落在其中，否则该放行项不适用。裸地址就是它自身的单地址范围（`10.0.0.5` 即 `10.0.0.5/32`）；条目会被规范化并排序。 |
+
+`allowed_ips` 的作用是把名字与地址绑定起来。没有它时，对 `api.example.com` 的放行会跟随该名字解析到的任何地方，因此被污染或被攻陷的解析结果可以把 sandbox 引到声明从未指定的地址。有了它，引擎只有在即将使用的地址落在声明范围内时才建立连接；如果一个名字同时解析出允许与不允许的地址，会被拒绝而不是被择优采用。引擎永不转发的地址——loopback、link-local（含元数据地址 `169.254.169.254`）、multicast，以及控制面端口 `2379`、`2380`、`6443`、`10250`、`10255`——无论 `allowed_ips` 怎么写都保持被拒绝。
+
+以地址命名的目标（`host: 10.0.0.5`）只由同一地址匹配，永远不会由模式匹配：通配符放行项无法到达声明未点名的地址。
 
 ```yaml
 policy:
@@ -1095,9 +1100,14 @@ policy:
       - host: api.github.com
         port: 443
         protocol: https
+        allowed_ips:
+          - 140.82.112.0/20
       - host: "*.internal.example.com"
         port: 8080
         protocol: tcp
+      - host: 203.0.113.7
+        port: 443
+        protocol: https
 ```
 
 主机名会被转为小写，重复项会被拒绝，放行项会被排序，因此规范化后的声明进入 canonical JSON 与 spec hash，且与声明顺序无关。声明 `network` 会改变 hash；不声明则与引入该字段之前的 spec 逐字节一致。

@@ -34,8 +34,11 @@ type SandboxNetworkPolicy struct {
 	Default egress.Action
 	// Allow is the declared allowance list in declaration order. Order does not
 	// change the outcome because every entry allows, but it is preserved so a
-	// report can echo the declaration.
-	Allow []egress.Endpoint
+	// report can echo the declaration. It is the declaration layer's own entry
+	// type rather than a narrowed endpoint so an entry's allowed address range
+	// survives the seam: a boundary policy that quietly dropped a constraint
+	// would let a driver enforce less than the project declared.
+	Allow []egress.AllowEntry
 	// EngineEndpoints are the engine-owned endpoints that must stay reachable
 	// under egress.Deny.
 	EngineEndpoints []egress.EngineEndpoint
@@ -57,7 +60,7 @@ type SandboxNetworkPolicy struct {
 // NewSandboxNetworkPolicy normalizes and validates a boundary policy. It returns
 // an error for a value a driver could not enforce, so a malformed declaration
 // fails closed instead of silently widening access.
-func NewSandboxNetworkPolicy(defaultAction egress.Action, allow []egress.Endpoint, engineEndpoints []egress.EngineEndpoint, denyDomains []string) (SandboxNetworkPolicy, error) {
+func NewSandboxNetworkPolicy(defaultAction egress.Action, allow []egress.AllowEntry, engineEndpoints []egress.EngineEndpoint, denyDomains []string) (SandboxNetworkPolicy, error) {
 	normalizedDefault, err := normalizeSandboxNetworkDefault(defaultAction)
 	if err != nil {
 		return SandboxNetworkPolicy{}, err
@@ -97,10 +100,7 @@ func SandboxNetworkPolicyFromDeclaration(declaration *egress.NetworkDeclaration,
 	if err := declaration.Validate(); err != nil {
 		return SandboxNetworkPolicy{}, err
 	}
-	allow := make([]egress.Endpoint, 0, len(declaration.Allow))
-	for _, entry := range declaration.Allow {
-		allow = append(allow, egress.Endpoint(entry))
-	}
+	allow := append([]egress.AllowEntry(nil), declaration.Allow...)
 	return NewSandboxNetworkPolicy(declaration.Default, allow, engineEndpoints, denyDomains)
 }
 
@@ -113,6 +113,20 @@ func (p SandboxNetworkPolicy) DenyByDefault() bool {
 		return true
 	}
 	return normalized == egress.Deny
+}
+
+// AddressConstrainedAllowances counts the declared allowances that constrain
+// which addresses a name may resolve to. A mechanism that applies the
+// destinations but not these ranges is applying less than the project declared,
+// so it has to say so rather than run as if the constraint were in place.
+func (p SandboxNetworkPolicy) AddressConstrainedAllowances() int {
+	constrained := 0
+	for _, entry := range p.Allow {
+		if len(entry.AllowedIPs) > 0 {
+			constrained++
+		}
+	}
+	return constrained
 }
 
 // Validate rejects a policy a driver could not enforce. The destinations and
@@ -153,7 +167,8 @@ func (p SandboxNetworkPolicy) permittingEndpoints() []egress.Endpoint {
 		seen[name] = struct{}{}
 		entries = append(entries, engineEndpoint.Endpoint)
 	}
-	for _, endpoint := range p.Allow {
+	for _, entry := range p.Allow {
+		endpoint := egress.Endpoint{Host: entry.Host, Port: entry.Port, Protocol: entry.Protocol}
 		name := endpoint.Name()
 		if _, duplicate := seen[name]; duplicate {
 			continue
@@ -175,23 +190,32 @@ func normalizeSandboxNetworkDefault(action egress.Action) (egress.Action, error)
 	}
 }
 
-func normalizeSandboxNetworkEndpoints(field string, endpoints []egress.Endpoint) ([]egress.Endpoint, error) {
-	if len(endpoints) == 0 {
+func normalizeSandboxNetworkEndpoints(field string, entries []egress.AllowEntry) ([]egress.AllowEntry, error) {
+	if len(entries) == 0 {
 		return nil, nil
 	}
-	normalized := make([]egress.Endpoint, 0, len(endpoints))
-	seen := make(map[string]struct{}, len(endpoints))
-	for index, endpoint := range endpoints {
-		candidate, err := egress.NewEndpoint(endpoint.Host, endpoint.Port, endpoint.Protocol)
+	normalized := make([]egress.AllowEntry, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for index, entry := range entries {
+		endpoint, err := egress.NewEndpoint(entry.Host, entry.Port, entry.Protocol)
 		if err != nil {
 			return nil, fmt.Errorf("%s[%d]: %w", field, index, err)
 		}
-		key := candidate.Name()
+		allowed, err := egress.NormalizeAllowedIPs(entry.AllowedIPs)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", field, index, err)
+		}
+		key := endpoint.Name()
 		if _, duplicate := seen[key]; duplicate {
 			return nil, fmt.Errorf("%s[%d]: duplicate entry %q", field, index, key)
 		}
 		seen[key] = struct{}{}
-		normalized = append(normalized, candidate)
+		normalized = append(normalized, egress.AllowEntry{
+			Host:       endpoint.Host,
+			Port:       endpoint.Port,
+			Protocol:   endpoint.Protocol,
+			AllowedIPs: allowed,
+		})
 	}
 	return normalized, nil
 }

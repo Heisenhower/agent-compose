@@ -6461,7 +6461,12 @@ type SandboxNetworkAllowSpec struct {
 	// Optional. "any" (the value an omitted protocol normalizes to), "http",
 	// "https", "tcp", or "udp". Only "http" and "https" are L7-inspectable;
 	// "any", "tcp", and "udp" are opaque allowances, not checked ones.
-	Protocol      string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	Protocol string `protobuf:"bytes,3,opt,name=protocol,proto3" json:"protocol,omitempty"`
+	// Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
+	// canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
+	// part of the normalized spec the client hashes, so it must travel with the
+	// declaration rather than being rederived from the host.
+	AllowedIps    []string `protobuf:"bytes,4,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6515,6 +6520,13 @@ func (x *SandboxNetworkAllowSpec) GetProtocol() string {
 		return x.Protocol
 	}
 	return ""
+}
+
+func (x *SandboxNetworkAllowSpec) GetAllowedIps() []string {
+	if x != nil {
+		return x.AllowedIps
+	}
+	return nil
 }
 
 type MCPServerSpec struct {
@@ -21005,11 +21017,13 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\anetwork\x18\x02 \x01(\v2#.agentcompose.v2.SandboxNetworkSpecR\anetwork\"n\n" +
 	"\x12SandboxNetworkSpec\x12\x18\n" +
 	"\adefault\x18\x01 \x01(\tR\adefault\x12>\n" +
-	"\x05allow\x18\x02 \x03(\v2(.agentcompose.v2.SandboxNetworkAllowSpecR\x05allow\"]\n" +
+	"\x05allow\x18\x02 \x03(\v2(.agentcompose.v2.SandboxNetworkAllowSpecR\x05allow\"~\n" +
 	"\x17SandboxNetworkAllowSpec\x12\x12\n" +
 	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
 	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x1a\n" +
-	"\bprotocol\x18\x03 \x01(\tR\bprotocol\"\xfb\x01\n" +
+	"\bprotocol\x18\x03 \x01(\tR\bprotocol\x12\x1f\n" +
+	"\vallowed_ips\x18\x04 \x03(\tR\n" +
+	"allowedIps\"\xfb\x01\n" +
 	"\rMCPServerSpec\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1c\n" +

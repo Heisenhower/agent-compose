@@ -1,5 +1,10 @@
 package egress
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Result is the single outcome structure of an egress decision: the action, the
 // rule that decided it (empty when the policy default applied), the canonical
 // upstream resource, and the generation of the policy it was evaluated against.
@@ -40,9 +45,23 @@ func (r Result) IsStale(current Policy) bool {
 // Target resolves an allow to the requested name unchanged. When no rule
 // matches, the policy default applies; any default other than Allow denies.
 func Decide(policy Policy, request Request) Result {
+	// A rule whose allowance is constrained by address can match the name and
+	// still not permit the request. Evaluation continues past it, so a later
+	// rule may still allow the destination, and the first such refusal is kept
+	// so the caller learns which declared allowance the destination fell
+	// outside instead of only that the default denied it.
+	var constrained *Result
 	for _, rule := range policy.rules {
 		if !rule.matches(request.Name) {
 			continue
+		}
+		if rule.Action == Allow {
+			if refusal, allowed := rule.allowsAddresses(request); !allowed {
+				if constrained == nil {
+					constrained = &refusal
+				}
+				continue
+			}
 		}
 		target := rule.Target
 		if rule.Action == Allow && target == "" {
@@ -56,6 +75,10 @@ func Decide(policy Policy, request Request) Result {
 			Generation: policy.generation,
 		}
 	}
+	if constrained != nil {
+		constrained.Generation = policy.generation
+		return *constrained
+	}
 	result := Result{
 		Action:     policy.defaultAction,
 		Generation: policy.generation,
@@ -64,4 +87,32 @@ func Decide(policy Policy, request Request) Result {
 		result.Target = request.Name
 	}
 	return result
+}
+
+// allowsAddresses reports whether a matched allow rule also permits the
+// addresses the request resolved to. A rule that declares no allowed addresses
+// constrains nothing. A rule that does requires every resolved address to fall
+// inside one of them: the connection is opened to one of those addresses, and a
+// name that answers with an address outside the declaration must not be
+// reachable merely because another answer was inside it.
+func (r Rule) allowsAddresses(request Request) (Result, bool) {
+	if len(r.AllowedIPs) == 0 {
+		return Result{}, true
+	}
+	refusal := Result{
+		Action: Deny,
+		RuleID: r.ID,
+		Target: request.Name,
+	}
+	if len(request.ResolvedIPs) == 0 {
+		refusal.Reason = fmt.Sprintf("the rule allows only %s, and the destination address was not resolved", strings.Join(r.AllowedIPs, ", "))
+		return refusal, false
+	}
+	for _, address := range request.ResolvedIPs {
+		if !AddressAllowed(address, r.AllowedIPs) {
+			refusal.Reason = fmt.Sprintf("the destination resolves to %s, which is outside the allowed addresses %s", address, strings.Join(r.AllowedIPs, ", "))
+			return refusal, false
+		}
+	}
+	return Result{}, true
 }

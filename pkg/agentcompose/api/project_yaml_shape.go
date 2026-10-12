@@ -187,11 +187,19 @@ func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
 	if entries := network.GetAllow(); len(entries) > 0 {
 		allow := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
-			allow = append(allow, map[string]any{
+			rendered := map[string]any{
 				"host":     entry.GetHost(),
 				"port":     entry.GetPort(),
 				"protocol": entry.GetProtocol(),
-			})
+			}
+			// The allowed addresses are part of the declaration the client
+			// hashed, so they have to survive the round trip: dropping them
+			// would make the daemon normalize a different spec than the one it
+			// was asked to apply.
+			if allowed := entry.GetAllowedIps(); len(allowed) > 0 {
+				rendered["allowed_ips"] = append([]string(nil), allowed...)
+			}
+			allow = append(allow, rendered)
 		}
 		networkShape["allow"] = allow
 	}

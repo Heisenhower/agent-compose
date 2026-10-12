@@ -197,10 +197,16 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	addresses, err := p.resolve(r.Context(), destination.host)
 	if err != nil {
+		reason := "the destination name did not resolve"
+		rule := EgressRuleUnresolvedAddress
+		if errors.Is(err, errIPv6OnlyDestination) {
+			rule = EgressRuleBlockedAddress
+			reason = "the destination has no IPv4 address, and an IPv6 destination cannot be expressed as an engine endpoint"
+		}
 		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: egress.Result{
 			Action:     egress.Deny,
-			RuleID:     EgressRuleUnresolvedAddress,
-			Reason:     "the destination name did not resolve",
+			RuleID:     rule,
+			Reason:     reason,
 			Generation: policy.Generation(),
 		}})
 		p.logger.WarnContext(r.Context(), "egress proxy could not resolve a destination",
@@ -226,6 +232,12 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The addresses are the ones the rule constrains and the ones the proxy will
+	// dial, so the decision and the connection cannot disagree about either.
+	request.ResolvedIPs = make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		request.ResolvedIPs = append(request.ResolvedIPs, address.String())
+	}
 	result := egress.Decide(policy, request)
 	if !result.Allowed() {
 		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: result})
@@ -268,9 +280,21 @@ func (p *EgressProxy) authenticate(w http.ResponseWriter, r *http.Request) (stri
 	return sandboxID, true
 }
 
+// errIPv6OnlyDestination reports a name that resolved to no IPv4 address. The
+// engine's canonical endpoint identifier cannot express an IPv6 destination, so
+// the decision could not be recorded or matched faithfully; refusing it is what
+// keeps the recorded decision and the connection that followed in agreement.
+var errIPv6OnlyDestination = errors.New("the destination resolved only to IPv6 addresses")
+
+// resolve returns the IPv4 addresses a destination has. IPv6 answers are dropped
+// rather than refused outright, so a dual-stack name stays reachable over IPv4
+// while a name reachable only over IPv6 is refused.
 func (p *EgressProxy) resolve(ctx context.Context, host string) ([]net.IP, error) {
 	if literal := net.ParseIP(strings.Trim(host, "[]")); literal != nil {
-		return []net.IP{literal}, nil
+		if ipv4 := literal.To4(); ipv4 != nil {
+			return []net.IP{ipv4}, nil
+		}
+		return nil, errIPv6OnlyDestination
 	}
 	ctx, cancel := context.WithTimeout(ctx, p.dialTimeout)
 	defer cancel()
@@ -278,10 +302,22 @@ func (p *EgressProxy) resolve(ctx context.Context, host string) ([]net.IP, error
 	if err != nil {
 		return nil, err
 	}
-	if len(ips) == 0 {
+	ipv4 := make([]net.IP, 0, len(ips))
+	for _, address := range ips {
+		if address == nil {
+			continue
+		}
+		if four := address.To4(); four != nil {
+			ipv4 = append(ipv4, four)
+		}
+	}
+	if len(ipv4) == 0 {
+		if len(ips) > 0 {
+			return nil, errIPv6OnlyDestination
+		}
 		return nil, fmt.Errorf("no address for %q", host)
 	}
-	return ips, nil
+	return ipv4, nil
 }
 
 // lookupHostAddresses is the production resolver: the process resolver, read

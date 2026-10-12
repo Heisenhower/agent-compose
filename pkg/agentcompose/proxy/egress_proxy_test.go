@@ -404,6 +404,115 @@ func TestEgressProxyStillForwardsAnUnblockedPort(t *testing.T) {
 	}
 }
 
+// TestEgressProxyAppliesADeclaredAddressRange is the end-to-end shape of
+// allowed_ips: the same declaration and the same name, decided only by the
+// address the name resolved to.
+func TestEgressProxyAppliesADeclaredAddressRange(t *testing.T) {
+	const allowedRange = "203.0.113.0/24"
+	policy := egress.NewPolicy(egress.Deny, egress.Rule{
+		ID:         "network.allow",
+		Match:      egress.MatchEndpoint,
+		Names:      []string{"api.example.com:443/https"},
+		Action:     egress.Allow,
+		AllowedIPs: []string{allowedRange},
+	})
+
+	tests := []struct {
+		name       string
+		resolved   string
+		wantCode   int
+		wantRule   string
+		wantDialed bool
+	}{
+		{name: "an address inside the declared range is tunnelled", resolved: "203.0.113.10", wantCode: http.StatusOK, wantDialed: true},
+		{name: "an address outside it is refused", resolved: "198.51.100.7", wantCode: http.StatusForbidden, wantRule: "network.allow"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policies := &proxyTestPolicies{policies: []egress.Policy{policy}}
+			upstreamSide, upstream := net.Pipe()
+			defer func() { _ = upstreamSide.Close() }()
+			dialed := false
+			proxyServer, recorder := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+				options.LookupIP = func(context.Context, string) ([]net.IP, error) {
+					return []net.IP{net.ParseIP(test.resolved)}, nil
+				}
+				options.Dial = func(_ context.Context, _, address string) (net.Conn, error) {
+					dialed = true
+					if address != net.JoinHostPort(test.resolved, "443") {
+						return nil, fmt.Errorf("dialed %q, want the address the decision used", address)
+					}
+					return upstream, nil
+				}
+			})
+			server := httptest.NewServer(proxyServer)
+			defer server.Close()
+
+			connection := dialProxy(t, server)
+			defer func() { _ = connection.Close() }()
+			writeConnect(t, connection, "api.example.com:443", testSandboxID, testCredential)
+			response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+			if err != nil {
+				t.Fatalf("reading the response: %v", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != test.wantCode {
+				t.Fatalf("CONNECT status = %d, want %d", response.StatusCode, test.wantCode)
+			}
+			if test.wantRule != "" {
+				if rule := response.Header.Get("X-Agent-Compose-Egress-Rule"); rule != test.wantRule {
+					t.Fatalf("deny rule = %q, want %q", rule, test.wantRule)
+				}
+				if reason := response.Header.Get("X-Agent-Compose-Egress-Reason"); !strings.Contains(reason, test.resolved) {
+					t.Fatalf("deny reason = %q, want it to name %s", reason, test.resolved)
+				}
+			}
+			if dialed != test.wantDialed {
+				t.Fatalf("dialed = %v, want %v", dialed, test.wantDialed)
+			}
+			records := recorder.collected()
+			if len(records) != 1 {
+				t.Fatalf("records = %+v, want exactly one decision", records)
+			}
+			if records[0].Allowed() != test.wantDialed {
+				t.Fatalf("record = %+v, want allowed=%v", records[0], test.wantDialed)
+			}
+		})
+	}
+}
+
+// TestEgressProxyRefusesADestinationWithNoIPv4Address pins the transport limit
+// the manual states: an IPv6-only destination is refused because the engine's
+// endpoint identifier cannot express it.
+func TestEgressProxyRefusesADestinationWithNoIPv4Address(t *testing.T) {
+	policies := &proxyTestPolicies{policies: []egress.Policy{egress.NewPolicy(egress.Allow)}}
+	proxyServer, recorder := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.LookupIP = func(context.Context, string) ([]net.IP, error) {
+			return []net.IP{net.ParseIP("2001:db8::1")}, nil
+		}
+	})
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	writeConnect(t, connection, "ipv6.example:443", testSandboxID, testCredential)
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading the deny response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT status = %d, want 403", response.StatusCode)
+	}
+	if rule := response.Header.Get("X-Agent-Compose-Egress-Rule"); rule != EgressRuleBlockedAddress {
+		t.Fatalf("deny rule = %q, want %q", rule, EgressRuleBlockedAddress)
+	}
+	if records := recorder.collected(); len(records) != 1 || records[0].Allowed() {
+		t.Fatalf("records = %+v, want one deny", records)
+	}
+}
+
 func TestEgressProxyRequiresASandboxCredential(t *testing.T) {
 	policies := &proxyTestPolicies{}
 	proxyServer, recorder := newTestEgressProxy(t, policies)

@@ -103,6 +103,10 @@ type NormalizedSandboxNetworkAllowSpec struct {
 	Host     string `yaml:"host" json:"host"`
 	Port     int    `yaml:"port" json:"port"`
 	Protocol string `yaml:"protocol" json:"protocol"`
+	// AllowedIPs are the canonical CIDRs a name may resolve to for this
+	// allowance to apply. It is empty when the declaration left the addresses
+	// unconstrained, and it participates in the canonical JSON and spec hash.
+	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
 }
 
 type NormalizedMCPServerSpec struct {

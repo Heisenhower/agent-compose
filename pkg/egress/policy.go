@@ -60,6 +60,13 @@ type Rule struct {
 	// Reason is a short, stable explanation of a deny. Consumers map it onto
 	// their own transport error; it never carries secrets.
 	Reason string
+	// AllowedIPs, on an allow rule, constrains the addresses a matched name may
+	// resolve to. The rule allows the request only when every resolved address
+	// falls inside one of these canonical CIDRs, so a name the declaration
+	// trusts cannot be pointed at an address it does not. An empty list leaves
+	// the allowance unconstrained, which is a different declaration from a list
+	// that happens to allow everything.
+	AllowedIPs []string
 }
 
 // Policy is one immutable snapshot of the rules governing a consumer's egress.
@@ -81,6 +88,7 @@ func NewPolicy(defaultAction Action, rules ...Rule) Policy {
 		copied[i].Action = normalizeAction(rule.Action)
 		copied[i].Match = normalizeMatch(rule.Match)
 		copied[i].Names = append([]string(nil), rule.Names...)
+		copied[i].AllowedIPs = append([]string(nil), rule.AllowedIPs...)
 	}
 	policy := Policy{defaultAction: normalizeAction(defaultAction), rules: copied}
 	policy.generation = policy.contentGeneration()
@@ -112,6 +120,7 @@ func (p Policy) Rules() []Rule {
 	for i, rule := range p.rules {
 		copied[i] = rule
 		copied[i].Names = append([]string(nil), rule.Names...)
+		copied[i].AllowedIPs = append([]string(nil), rule.AllowedIPs...)
 	}
 	return copied
 }

@@ -86,6 +86,127 @@ func TestDecideTableDriven(t *testing.T) {
 	}
 }
 
+// TestDecideConstrainsAnAllowanceToItsAddresses pins the difference between an
+// allowance that names a destination and one that also constrains where that
+// name may resolve.
+func TestDecideConstrainsAnAllowanceToItsAddresses(t *testing.T) {
+	endpoint := Endpoint{Host: "api.example.com", Port: 443, Protocol: ProtocolHTTPS}
+	policy := NewPolicy(Deny, Rule{
+		ID:         "network.allow",
+		Match:      MatchEndpoint,
+		Names:      []string{FormatEndpointPattern(endpoint.Host, endpoint.Port, endpoint.Protocol)},
+		Action:     Allow,
+		AllowedIPs: []string{"203.0.113.0/24", "198.51.100.7/32"},
+	})
+
+	tests := []struct {
+		name       string
+		resolved   []string
+		wantAction Action
+		wantReason string
+		wantRuleID string
+	}{
+		{name: "an address inside the range is allowed", resolved: []string{"203.0.113.10"}, wantAction: Allow},
+		{name: "the whole address list must be inside", resolved: []string{"203.0.113.10", "203.0.113.11"}, wantAction: Allow},
+		{name: "a single allowed address is allowed", resolved: []string{"198.51.100.7"}, wantAction: Allow},
+		{
+			name:       "an address outside the range is denied by the allowance",
+			resolved:   []string{"198.51.100.7", "10.1.2.3"},
+			wantAction: Deny,
+			wantRuleID: "network.allow",
+			wantReason: "the destination resolves to 10.1.2.3, which is outside the allowed addresses 203.0.113.0/24, 198.51.100.7/32",
+		},
+		{
+			name:       "an unresolved destination cannot satisfy the constraint",
+			wantAction: Deny,
+			wantRuleID: "network.allow",
+			wantReason: "the rule allows only 203.0.113.0/24, 198.51.100.7/32, and the destination address was not resolved",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := NetworkRequest("sandbox-1", endpoint)
+			request.ResolvedIPs = test.resolved
+			result := Decide(policy, request)
+			if result.Action != test.wantAction {
+				t.Fatalf("Action = %q, want %q (%s)", result.Action, test.wantAction, result.Reason)
+			}
+			if test.wantAction == Allow {
+				if result.RuleID != "network.allow" || result.Target != endpoint.Name() {
+					t.Fatalf("allowed result = %+v, want the allowance to resolve the request", result)
+				}
+				return
+			}
+			if result.RuleID != test.wantRuleID {
+				t.Fatalf("RuleID = %q, want %q", result.RuleID, test.wantRuleID)
+			}
+			if result.Reason != test.wantReason {
+				t.Fatalf("Reason = %q, want %q", result.Reason, test.wantReason)
+			}
+		})
+	}
+}
+
+// TestDecideFallsThroughAConstrainedAllowanceToALaterRule pins that a
+// constrained allowance which does not apply is not the last word: evaluation
+// continues, so a later rule can still allow the destination.
+func TestDecideFallsThroughAConstrainedAllowanceToALaterRule(t *testing.T) {
+	policy := NewPolicy(Deny,
+		Rule{
+			ID:         "network.allow",
+			Match:      MatchEndpoint,
+			Names:      []string{FormatEndpointPattern("api.example.com", 443, ProtocolAny)},
+			Action:     Allow,
+			AllowedIPs: []string{"203.0.113.0/24"},
+		},
+		Rule{
+			ID:     "network.allow-explicit",
+			Match:  MatchEndpoint,
+			Names:  []string{FormatEndpointPattern("api.example.com", 443, ProtocolAny)},
+			Action: Allow,
+		},
+	)
+	request := NetworkRequest("sandbox-1", Endpoint{Host: "api.example.com", Port: 443, Protocol: ProtocolHTTPS})
+	request.ResolvedIPs = []string{"198.51.100.7"}
+	result := Decide(policy, request)
+	if !result.Allowed() || result.RuleID != "network.allow-explicit" {
+		t.Fatalf("Decide() = %+v, want the unconstrained rule to allow the request", result)
+	}
+}
+
+// TestDecideMatchesAnAddressOnlyByItself pins the address half of host
+// matching: a wildcard is a name pattern, so it can never reach an address the
+// declaration did not name, and an address never matches a name.
+func TestDecideMatchesAnAddressOnlyByItself(t *testing.T) {
+	tests := []struct {
+		name       string
+		pattern    string
+		host       string
+		wantAction Action
+	}{
+		{name: "a wildcard does not match an address", pattern: "*", host: "10.0.0.5", wantAction: Deny},
+		{name: "a wildcard host does not match a deeper wildcard address", pattern: "*.*.*.*", host: "10.0.0.5", wantAction: Deny},
+		{name: "the same address matches itself", pattern: "10.0.0.5", host: "10.0.0.5", wantAction: Allow},
+		{name: "a different address does not match", pattern: "10.0.0.5", host: "10.0.0.6", wantAction: Deny},
+		{name: "an address pattern does not match a name", pattern: "10.0.0.5", host: "ten.example.com", wantAction: Deny},
+		{name: "a name pattern matches a name", pattern: "*.example.com", host: "ten.example.com", wantAction: Allow},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			policy := NewPolicy(Deny, Rule{
+				ID:     "network.allow",
+				Match:  MatchEndpoint,
+				Names:  []string{FormatEndpointPattern(test.pattern, 443, ProtocolAny)},
+				Action: Allow,
+			})
+			result := Decide(policy, NetworkRequest("sandbox-1", Endpoint{Host: test.host, Port: 443, Protocol: ProtocolHTTPS}))
+			if result.Action != test.wantAction {
+				t.Fatalf("Decide(pattern %q, host %q) = %q, want %q", test.pattern, test.host, result.Action, test.wantAction)
+			}
+		})
+	}
+}
+
 func TestDecideFirstMatchWins(t *testing.T) {
 	policy := NewPolicy(Deny,
 		Rule{ID: "first", Names: []string{"dev"}, Action: Allow, Target: "dev-v1"},

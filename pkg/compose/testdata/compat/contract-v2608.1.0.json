@@ -263,6 +263,11 @@
       "optional": true
     },
     {
+      "path": "agents.*.policy.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
+      "optional": true
+    },
+    {
       "path": "agents.*.policy.network.allow[].host",
       "go_type": "string",
       "optional": true
@@ -305,6 +310,11 @@
     {
       "path": "agents.*.sandbox.network.allow",
       "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
       "optional": true
     },
     {
@@ -675,6 +685,11 @@
     {
       "path": "policies.*.network.allow",
       "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
       "optional": true
     },
     {

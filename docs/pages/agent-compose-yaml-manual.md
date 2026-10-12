@@ -1108,6 +1108,11 @@ Each `allow` entry:
 | `host` | string | Required | A host or host pattern. Labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. IPv6 literals are not supported. |
 | `port` | int | Required | Destination port, 1–65535. |
 | `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are modelled as inspectable at L7, and an opaque allowance (`any`, `tcp`, `udp`) is never presented as a checked one. No L7 mediator is implemented, so nothing inspects payloads today: the distinction is a modelling and reporting property, not a filter. |
+| `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. |
+
+`allowed_ips` is what ties a name to an address. Without it an allowance for `api.example.com` follows that name wherever it resolves, so a poisoned or compromised answer could send the sandbox to an address the declaration never named. With it, the engine refuses the connection unless the address it is about to use is inside the declared range, and a name that resolves to both an allowed and a disallowed address is refused rather than picked opportunistically. An address the engine never forwards to at all — loopback, link-local including the metadata address `169.254.169.254`, multicast, and the control-plane ports `2379`, `2380`, `6443`, `10250`, `10255` — stays refused whatever `allowed_ips` says.
+
+A destination that names an address (`host: 10.0.0.5`) is matched by that same address and never by a pattern: a wildcard allowance cannot reach an address the declaration did not name.
 
 ```yaml
 policy:
@@ -1117,9 +1122,14 @@ policy:
       - host: api.github.com
         port: 443
         protocol: https
+        allowed_ips:
+          - 140.82.112.0/20
       - host: "*.internal.example.com"
         port: 8080
         protocol: tcp
+      - host: 203.0.113.7
+        port: 443
+        protocol: https
 ```
 
 Hosts are lowercased, duplicate entries are rejected, and entries are sorted, so the normalized declaration enters canonical JSON and the spec hash independently of declaration order. Declaring `network` changes the hash; leaving it out keeps the hash byte-identical to a spec written before the field existed.

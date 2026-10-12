@@ -16,6 +16,15 @@ func mustEndpoint(t *testing.T, host string, port int, protocol egress.Protocol)
 	return endpoint
 }
 
+// mustAllow is mustEndpoint's counterpart for an allowance: the two are
+// different types on purpose, because an allowance carries the addresses its
+// name may resolve to and an endpoint does not.
+func mustAllow(t *testing.T, host string, port int, protocol egress.Protocol) egress.AllowEntry {
+	t.Helper()
+	endpoint := mustEndpoint(t, host, port, protocol)
+	return egress.AllowEntry{Host: endpoint.Host, Port: endpoint.Port, Protocol: endpoint.Protocol}
+}
+
 func mustEngineEndpoint(t *testing.T, purpose egress.EndpointPurpose, host string, port int, protocol egress.Protocol) egress.EngineEndpoint {
 	t.Helper()
 	endpoint := egress.EngineEndpoint{
@@ -30,14 +39,14 @@ func mustEngineEndpoint(t *testing.T, purpose egress.EndpointPurpose, host strin
 }
 
 func TestNewSandboxNetworkPolicyNormalizesAndValidates(t *testing.T) {
-	api := mustEndpoint(t, "api.example.com", 443, egress.ProtocolHTTPS)
-	dns := mustEndpoint(t, "dns.example.com", 53, egress.ProtocolUDP)
+	api := mustAllow(t, "api.example.com", 443, egress.ProtocolHTTPS)
+	dns := mustAllow(t, "dns.example.com", 53, egress.ProtocolUDP)
 	engine := mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS)
 
 	tests := []struct {
 		name        string
 		defaultName egress.Action
-		allow       []egress.Endpoint
+		allow       []egress.AllowEntry
 		engine      []egress.EngineEndpoint
 		denyDomains []string
 		want        SandboxNetworkPolicy
@@ -51,11 +60,11 @@ func TestNewSandboxNetworkPolicyNormalizesAndValidates(t *testing.T) {
 		{
 			name:        "deny keeps ordered entries",
 			defaultName: egress.Deny,
-			allow:       []egress.Endpoint{api, dns},
+			allow:       []egress.AllowEntry{api, dns},
 			engine:      []egress.EngineEndpoint{engine},
 			want: SandboxNetworkPolicy{
 				Default:         egress.Deny,
-				Allow:           []egress.Endpoint{api, dns},
+				Allow:           []egress.AllowEntry{api, dns},
 				EngineEndpoints: []egress.EngineEndpoint{engine},
 			},
 		},
@@ -76,28 +85,28 @@ func TestNewSandboxNetworkPolicyNormalizesAndValidates(t *testing.T) {
 		{
 			name:        "empty host is rejected",
 			defaultName: egress.Deny,
-			allow:       []egress.Endpoint{{Host: "  ", Port: 443}},
+			allow:       []egress.AllowEntry{{Host: "  ", Port: 443}},
 			wantErr:     true,
 		},
 		{
 			name:        "port out of range is rejected",
 			defaultName: egress.Deny,
-			allow:       []egress.Endpoint{{Host: "api.example.com", Port: 0}},
+			allow:       []egress.AllowEntry{{Host: "api.example.com", Port: 0}},
 			wantErr:     true,
 		},
 		{
 			name:        "unknown protocol is rejected",
 			defaultName: egress.Deny,
-			allow:       []egress.Endpoint{{Host: "api.example.com", Port: 443, Protocol: "sctp"}},
+			allow:       []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: "sctp"}},
 			wantErr:     true,
 		},
 		{
 			name:        "wildcard host is accepted for allow entries",
 			defaultName: egress.Deny,
-			allow:       []egress.Endpoint{{Host: "*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+			allow:       []egress.AllowEntry{{Host: "*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
 			want: SandboxNetworkPolicy{
 				Default: egress.Deny,
-				Allow:   []egress.Endpoint{{Host: "*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+				Allow:   []egress.AllowEntry{{Host: "*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
 			},
 		},
 		{
@@ -109,7 +118,7 @@ func TestNewSandboxNetworkPolicyNormalizesAndValidates(t *testing.T) {
 		{
 			name:        "duplicate allow entries are rejected",
 			defaultName: egress.Deny,
-			allow: []egress.Endpoint{
+			allow: []egress.AllowEntry{
 				{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolTCP},
 				{Host: "API.example.com", Port: 443, Protocol: egress.ProtocolTCP},
 			},
@@ -165,7 +174,7 @@ func TestSandboxNetworkPolicyFromDeclarationIsTheComposeSeam(t *testing.T) {
 	}
 	want := SandboxNetworkPolicy{
 		Default:         egress.Deny,
-		Allow:           []egress.Endpoint{mustEndpoint(t, "api.example.com", 443, egress.ProtocolHTTPS)},
+		Allow:           []egress.AllowEntry{mustAllow(t, "api.example.com", 443, egress.ProtocolHTTPS)},
 		EngineEndpoints: []egress.EngineEndpoint{engine},
 		DenyDomains:     []string{"ads.example.com"},
 	}
@@ -207,23 +216,23 @@ func TestSandboxNetworkPolicyDenyByDefault(t *testing.T) {
 
 func TestSandboxNetworkPolicyPermittingEndpoints(t *testing.T) {
 	engine := mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS)
-	allow := mustEndpoint(t, "api.example.com", 443, egress.ProtocolHTTPS)
-	duplicate := mustEndpoint(t, "API.example.com", 443, egress.ProtocolHTTPS)
+	allow := mustAllow(t, "api.example.com", 443, egress.ProtocolHTTPS)
+	duplicate := mustAllow(t, "API.example.com", 443, egress.ProtocolHTTPS)
 
 	policy := SandboxNetworkPolicy{
 		Default:         egress.Deny,
-		Allow:           []egress.Endpoint{allow, duplicate},
+		Allow:           []egress.AllowEntry{allow, duplicate},
 		EngineEndpoints: []egress.EngineEndpoint{engine},
 	}
 	got := policy.permittingEndpoints()
-	want := []egress.Endpoint{engine.Endpoint, allow}
+	want := []egress.Endpoint{engine.Endpoint, {Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("permittingEndpoints() = %+v, want %+v", got, want)
 	}
 
 	permissive := SandboxNetworkPolicy{
 		Default:         egress.Allow,
-		Allow:           []egress.Endpoint{allow},
+		Allow:           []egress.AllowEntry{allow},
 		EngineEndpoints: []egress.EngineEndpoint{engine},
 	}
 	if got := permissive.permittingEndpoints(); got != nil {
@@ -234,7 +243,7 @@ func TestSandboxNetworkPolicyPermittingEndpoints(t *testing.T) {
 // TestSandboxNetworkPolicyRejectsMalformedHost pins that a host the egress
 // model cannot interpret is rejected rather than passed through.
 func TestSandboxNetworkPolicyRejectsMalformedHost(t *testing.T) {
-	_, err := NewSandboxNetworkPolicy(egress.Deny, []egress.Endpoint{
+	_, err := NewSandboxNetworkPolicy(egress.Deny, []egress.AllowEntry{
 		{Host: "bad host.example.com", Port: 443, Protocol: egress.ProtocolHTTPS},
 	}, nil, nil)
 	if err == nil {

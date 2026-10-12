@@ -145,6 +145,11 @@ type SandboxNetworkAllowSpec struct {
 	// Protocol is optional. An omitted protocol normalizes to "any", which is
 	// an opaque allowance: the engine does not claim it can inspect it.
 	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	// AllowedIPs optionally restricts which addresses Host may resolve to. Each
+	// entry is an IP address or a CIDR range; a name that resolves outside them
+	// is not covered by this allowance, so a name the declaration trusts cannot
+	// be pointed at an address it does not.
+	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
 }
 
 type AgentMCPEntriesSpec []AgentMCPEntrySpec
@@ -665,9 +670,10 @@ func validateSandboxNetworkAllowList(node *yaml.Node, path string) error {
 	for index, item := range node.Content {
 		itemPath := fmt.Sprintf("%s[%d]", path, index)
 		if err := validateMapping(item, itemPath, map[string]nodeValidator{
-			"host":     validateScalar,
-			"port":     validateInt,
-			"protocol": validateScalar,
+			"host":        validateScalar,
+			"port":        validateInt,
+			"protocol":    validateScalar,
+			"allowed_ips": validateStringList,
 		}); err != nil {
 			return err
 		}

@@ -946,6 +946,11 @@ message SandboxNetworkAllowSpec {
   // "https", "tcp", or "udp". Only "http" and "https" are L7-inspectable;
   // "any", "tcp", and "udp" are opaque allowances, not checked ones.
   string protocol = 3;
+  // Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
+  // canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
+  // part of the normalized spec the client hashes, so it must travel with the
+  // declaration rather than being rederived from the host.
+  repeated string allowed_ips = 4;
 }
 
 message MCPServerSpec {

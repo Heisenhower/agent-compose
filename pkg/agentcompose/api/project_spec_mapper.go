@@ -95,9 +95,10 @@ func SandboxSpecToProto(sandbox *compose.NormalizedSandboxSpec) *agentcomposev2.
 	network := &agentcomposev2.SandboxNetworkSpec{Default: sandbox.Network.Default}
 	for _, entry := range sandbox.Network.Allow {
 		network.Allow = append(network.Allow, &agentcomposev2.SandboxNetworkAllowSpec{
-			Host:     entry.Host,
-			Port:     int32(entry.Port),
-			Protocol: entry.Protocol,
+			Host:       entry.Host,
+			Port:       int32(entry.Port),
+			Protocol:   entry.Protocol,
+			AllowedIps: append([]string(nil), entry.AllowedIPs...),
 		})
 	}
 	result.Network = network

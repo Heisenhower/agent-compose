@@ -26,7 +26,7 @@ func planAllows(plan microsandboxNetworkPlan, destination, port, protocol string
 
 func TestPlanMicrosandboxNetwork(t *testing.T) {
 	engineEndpoint := mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS)
-	declaredAllow := mustEndpoint(t, "api.example.com", 443, egress.ProtocolHTTPS)
+	declaredAllow := mustAllow(t, "api.example.com", 443, egress.ProtocolHTTPS)
 
 	tests := []struct {
 		name    string
@@ -46,7 +46,7 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			name: "declared allow renders no enforceful rules",
 			policy: &SandboxNetworkPolicy{
 				Default: egress.Allow,
-				Allow:   []egress.Endpoint{declaredAllow},
+				Allow:   []egress.AllowEntry{declaredAllow},
 			},
 			want: microsandboxNetworkPlan{
 				DefaultEgress:    microsandboxPlanDefaultEgressAllow,
@@ -57,7 +57,7 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			name: "deny renders engine endpoints first then declared entries",
 			policy: &SandboxNetworkPolicy{
 				Default:         egress.Deny,
-				Allow:           []egress.Endpoint{declaredAllow},
+				Allow:           []egress.AllowEntry{declaredAllow},
 				EngineEndpoints: []egress.EngineEndpoint{engineEndpoint},
 				DenyDomains:     []string{"ads.example.com", "evil.example.com"},
 			},
@@ -75,7 +75,7 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			name: "single leading wildcard becomes the SDK domain suffix",
 			policy: &SandboxNetworkPolicy{
 				Default: egress.Deny,
-				Allow:   []egress.Endpoint{mustEndpoint(t, "*.example.com", 443, egress.ProtocolHTTPS)},
+				Allow:   []egress.AllowEntry{mustAllow(t, "*.example.com", 443, egress.ProtocolHTTPS)},
 			},
 			want: microsandboxNetworkPlan{
 				DefaultEgress: microsandboxPlanDefaultEgressDeny,
@@ -89,9 +89,9 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			name: "udp and any protocols map to the SDK L4 values",
 			policy: &SandboxNetworkPolicy{
 				Default: egress.Deny,
-				Allow: []egress.Endpoint{
-					mustEndpoint(t, "dns.example.com", 53, egress.ProtocolUDP),
-					mustEndpoint(t, "raw.example.com", 9000, egress.ProtocolAny),
+				Allow: []egress.AllowEntry{
+					mustAllow(t, "dns.example.com", 53, egress.ProtocolUDP),
+					mustAllow(t, "raw.example.com", 9000, egress.ProtocolAny),
 				},
 			},
 			want: microsandboxNetworkPlan{
@@ -107,7 +107,7 @@ func TestPlanMicrosandboxNetwork(t *testing.T) {
 			name: "an inexpressible host pattern is rejected",
 			policy: &SandboxNetworkPolicy{
 				Default: egress.Deny,
-				Allow:   []egress.Endpoint{{Host: "*.*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+				Allow:   []egress.AllowEntry{{Host: "*.*.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
 			},
 			wantErr: true,
 		},

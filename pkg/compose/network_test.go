@@ -1,6 +1,8 @@
 package compose
 
 import (
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -222,7 +224,7 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
 				t.Fatalf("allow = %+v, want %+v", got.Allow, tc.want.Allow)
 			}
 			for i := range got.Allow {
-				if got.Allow[i] != tc.want.Allow[i] {
+				if !reflect.DeepEqual(got.Allow[i], tc.want.Allow[i]) {
 					t.Fatalf("allow[%d] = %+v, want %+v", i, got.Allow[i], tc.want.Allow[i])
 				}
 			}
@@ -366,7 +368,7 @@ func TestSandboxNetworkEgressDeclaration(t *testing.T) {
 				t.Fatalf("allow = %+v, want %+v", declaration.Allow, tt.wantAllow)
 			}
 			for i, want := range tt.wantAllow {
-				if declaration.Allow[i] != want {
+				if !reflect.DeepEqual(declaration.Allow[i], want) {
 					t.Fatalf("allow[%d] = %+v, want %+v", i, declaration.Allow[i], want)
 				}
 			}
@@ -501,5 +503,56 @@ agents:
 
 	if after := mustHash(t, spec); after != before {
 		t.Fatalf("hash changed after mutating a returned view: %s != %s", after, before)
+	}
+}
+
+// TestNormalizeSandboxNetworkAllowedIPs pins the schema half of allowed_ips:
+// the declaration carries canonical ranges into the normalized spec, an entry
+// the engine cannot interpret is rejected at the field that caused it, and the
+// range participates in the spec hash.
+func TestNormalizeSandboxNetworkAllowedIPs(t *testing.T) {
+	raw := func(allowedIPs string) string {
+		return "name: network-egress\nagents:\n  worker:\n    provider: codex\n    sandbox:\n      network:\n        default: deny\n        allow:\n          - host: api.example.com\n            port: 443\n            protocol: https\n" + allowedIPs
+	}
+
+	spec := mustNormalizeCompose(t, raw("            allowed_ips:\n              - 203.0.113.7\n              - 10.0.0.5/8\n              - 10.1.2.3/8\n"), nil)
+	normalized := spec.Agents[0].PolicyBlock().Network
+	if len(normalized.Allow) != 1 {
+		t.Fatalf("allow = %+v, want one entry", normalized.Allow)
+	}
+	want := []string{"10.0.0.0/8", "203.0.113.7/32"}
+	if !reflect.DeepEqual(normalized.Allow[0].AllowedIPs, want) {
+		t.Fatalf("allowed_ips = %v, want %v", normalized.Allow[0].AllowedIPs, want)
+	}
+	declaration, err := normalized.EgressDeclaration()
+	if err != nil {
+		t.Fatalf("EgressDeclaration returned error: %v", err)
+	}
+	if len(declaration.Allow) != 1 || !reflect.DeepEqual(declaration.Allow[0].AllowedIPs, want) {
+		t.Fatalf("declaration = %+v, want the ranges carried into the decision model", declaration.Allow)
+	}
+	if err := declaration.Validate(); err != nil {
+		t.Fatalf("declaration did not validate: %v", err)
+	}
+
+	// The same declaration without the range hashes differently: the constraint
+	// is part of what a project declared.
+	unconstrained := mustNormalizeCompose(t, raw(""), nil)
+	if mustHash(t, spec) == mustHash(t, unconstrained) {
+		t.Fatal("a declaration with and without allowed_ips hash the same")
+	}
+	// Order inside the list carries no meaning.
+	reordered := mustNormalizeCompose(t, raw("            allowed_ips:\n              - 10.1.2.3/8\n              - 203.0.113.7\n              - 10.0.0.5/8\n"), nil)
+	if mustHash(t, spec) != mustHash(t, reordered) {
+		t.Fatal("reordering allowed_ips changed the hash")
+	}
+
+	_, err = Normalize(mustParseCompose(t, raw("            allowed_ips: [\"api.example.com\"]\n")), NormalizeOptions{})
+	if err == nil {
+		t.Fatal("a name in allowed_ips was accepted")
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) || validation.Path != "agents.worker.sandbox.network.allow[0].allowed_ips" {
+		t.Fatalf("error = %v, want a validation error at the allowed_ips field, got %+v", err, validation)
 	}
 }
