@@ -66,9 +66,14 @@ Docker Engine, outbound network access, and a guest image with `curl`. It starts
 an isolated host daemon whose proxy listener is reachable from a sandbox, applies
 a project that declares `policy.network`, and asserts the enforcement a driver
 must show: a declared allowance succeeds, an unlisted host and the metadata
-address are refused by the engine, a declaration the engine cannot enforce
-carries no proxy, an allow list without a declared default restricts nothing, and
-an edit reaches a sandbox that is already running. Run it with:
+address are refused by the engine, an undeclared agent carries no proxy, an allow
+list without a declared default restricts nothing, and an edit reaches a sandbox
+that is already running. A *declared* policy this deployment cannot enforce (no
+guest-reachable proxy address) is not part of this matrix: it is pinned at the
+adapter boundary by `TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable` in
+`pkg/agentcompose/adapters/egress_proxy_sandbox_test.go`, which asserts that such
+a start receives no proxy environment and is recorded as declared but unenforced.
+Run it with:
 
 ```bash
 task test:e2e:network-policy

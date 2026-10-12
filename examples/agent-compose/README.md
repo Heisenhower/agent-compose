@@ -12,6 +12,7 @@ runtime drivers, ordered from simplest to most complete.
 | [docker-scheduler-script-url](docker-scheduler-script-url/) | A scheduler script loaded from a relative `file` source, with an HTTP source alternative. | No, for `config`/`up`/`ls`/`down` |
 | [docker-scheduler-timeout](docker-scheduler-timeout/) | End-to-end scheduled run that fires, executes the agent, and persists logs. | Yes, for the scheduled run |
 | [k8s-scheduler-skills-mcp](k8s-scheduler-skills-mcp/) | Scheduler, Git-sourced skills, MCP, and a PVC-backed volume on the `k8s` driver. | Yes, for the scheduled run |
+| [docker-policy-library](docker-policy-library/) | Project-level `policies` library: one policy block per audience, selected by name from each agent, plus an inline declaration and a retained stopped runtime. | No, for `config`/`up`/`ls` |
 
 ## Prerequisites
 
