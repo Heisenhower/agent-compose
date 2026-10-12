@@ -1085,7 +1085,7 @@ Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍�
 | --- | --- | --- | --- |
 | `host` | string | 必填 | 主机或主机模式。各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。不支持 IPv6 字面量。 |
 | `port` | int | 必填 | 目标端口，取值 1–65535。 |
-| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 可在 L7 被检查；`any`、`tcp`、`udp` 属于不可检查的放行，永远不会被呈现为“已检查”。 |
+| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 在模型中被标记为可在 L7 检查，`any`、`tcp`、`udp` 属于不透明放行，永远不会被呈现为“已检查”。当前没有实现 L7 中间层，因此引擎今天不会检查任何载荷：这个区分是建模与报告属性，不是过滤器。 |
 
 ```yaml
 policy:
@@ -1111,6 +1111,14 @@ policy:
 - 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制。
 - 在 Docker、Kubernetes 与 BoxLite 上，当声明要求 `default: deny` 时，引擎会**拒绝创建 sandbox**：这些 driver 无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。此时 sandbox 会以指明 driver 的错误启动失败，而不是在不受限的出网状态下静默运行；它们的能力报告带有 `strength=none`。
 - 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，也不会导致 sandbox 启动失败。
+
+**声明何时生效。** driver 是在创建 sandbox 时应用网络配置的，因此每次启动都会从当前 Agent 定义读取声明：
+
+- 修改之后新建的 sandbox 使用新声明；
+- 仅被 resume / ensure 的既有 sandbox 保持它创建时的网络配置，因为 resume 时不会重新配置 driver。默认的 `stopped_runtime_policy: remove` 会在停止时丢弃 runtime，因此下一次启动会重建并读到新声明；`retain` 的 runtime 不会；
+- 在报告为 `strength=none` 的 driver 上，如果既有 sandbox 当前的声明是 `default: deny`，它会在下一次启动时被拒绝，而不是以不受限状态启动。
+
+`stopped_runtime_policy` 的时机不同：它在 sandbox 创建时被快照到 sandbox 上，因此修改它只影响新建的 sandbox。
 
 ### `scheduler`
 

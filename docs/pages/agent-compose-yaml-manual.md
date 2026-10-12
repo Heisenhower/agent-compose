@@ -1107,7 +1107,7 @@ Each `allow` entry:
 | --- | --- | --- | --- |
 | `host` | string | Required | A host or host pattern. Labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. IPv6 literals are not supported. |
 | `port` | int | Required | Destination port, 1–65535. |
-| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are inspectable at L7; `any`, `tcp`, and `udp` are opaque allowances and are never presented as checked ones. |
+| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are modelled as inspectable at L7, and an opaque allowance (`any`, `tcp`, `udp`) is never presented as a checked one. No L7 mediator is implemented, so nothing inspects payloads today: the distinction is a modelling and reporting property, not a filter. |
 
 ```yaml
 policy:
@@ -1133,6 +1133,14 @@ The declaration is validated, hashed, round-trips through the API, and compiles 
 - On Microsandbox the SDK network configuration applies the declaration: `allow` entries become ordered allow rules and traffic no engine rule or `allow` entry matches is denied under `default: deny`. Its capability report carries `strength=allowlist` plus the remaining limits.
 - On Docker, Kubernetes, and BoxLite the engine **refuses to create the sandbox** when the declaration asks for `default: deny`, because those drivers cannot express the declared allowances while keeping the engine's own LLM facade and telemetry endpoint reachable. The sandbox fails to start with an error naming the driver instead of silently running with unrestricted egress, and their capability report carries `strength=none`.
 - A declaration whose default is `allow-all` (including an `allow` list without `default: deny`) never restricts traffic and never makes a sandbox fail to start.
+
+**When a declaration takes effect.** A driver applies a network configuration when it creates the sandbox, so the declaration is read from the current agent definition at each start:
+
+- a sandbox created after an edit uses the new declaration;
+- an existing sandbox that is only resumed or ensured keeps the network configuration it was created with, because the driver is not reconfigured on resume. With the default `stopped_runtime_policy: remove` the runtime is discarded on stop, so the next start creates one and picks the declaration up; a retained runtime does not;
+- on a driver whose report is `strength=none`, an existing sandbox whose current declaration is `default: deny` is refused at the next start rather than started unrestricted.
+
+`stopped_runtime_policy` does not share this timing: it is snapshotted onto the sandbox when the sandbox is created, so editing it affects only new sandboxes.
 
 ### `scheduler`
 
