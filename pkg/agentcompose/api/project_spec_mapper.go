@@ -73,7 +73,7 @@ func AgentSpecsToProto(agents []compose.NormalizedAgentSpec) []*agentcomposev2.A
 			CapsetIds:    capabilities.NormalizeCapsetIDs(agent.CapsetIDs),
 			Skills:       SkillSpecsToProto(agent.Skills),
 			Workspace:    WorkspaceSpecToProto(agent.Workspace),
-			Sandbox:      SandboxSpecToProto(agent.Sandbox),
+			Sandbox:      SandboxSpecToProto(agent.PolicyBlock()),
 			Scheduler:    SchedulerSpecToProto(agent.Scheduler),
 			Jupyter:      JupyterSpecToProto(agent.Jupyter),
 			Volumes:      VolumeMountSpecsToProto(agent.Volumes),

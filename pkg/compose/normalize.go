@@ -69,9 +69,14 @@ type NormalizedAgentSpec struct {
 	Skills       []NormalizedSkillSpec              `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Volumes      []NormalizedVolumeMountSpec        `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Workspace    *WorkspaceSpec                     `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Sandbox      *NormalizedSandboxSpec             `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Scheduler    *NormalizedSchedulerSpec           `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
-	Jupyter      *JupyterSpec                       `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
+	// Policy is the normalized agent policy block. Normalization always writes
+	// this key.
+	Policy *NormalizedSandboxSpec `yaml:"policy,omitempty" json:"policy,omitempty"`
+	// Sandbox is the deprecated spelling, read only so specs persisted before
+	// the rename keep their declared policy. Normalization never sets it.
+	Sandbox   *NormalizedSandboxSpec   `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Scheduler *NormalizedSchedulerSpec `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+	Jupyter   *JupyterSpec             `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
 }
 
 type NormalizedSandboxSpec struct {
@@ -349,13 +354,17 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 	if workspace != nil && workspace.Mode == domain.WorkspaceModeMount && driver != nil && driver.Name != DriverDocker {
 		return NormalizedAgentSpec{}, &ValidationError{Path: joinPath("agents", name) + ".workspace.mode", Message: "workspace mount mode is only supported by the docker driver"}
 	}
-	sandbox, err := normalizeSandboxSpec(joinPath("agents", name)+".sandbox", agent.Sandbox)
+	policyKey, declaredPolicy, err := resolveDeclaredPolicyBlock(joinPath("agents", name), agent.Policy, agent.Sandbox)
 	if err != nil {
 		return NormalizedAgentSpec{}, err
 	}
-	if driver != nil && driver.Name == DriverK8s && sandbox != nil && sandbox.StoppedRuntimePolicy == domain.StoppedRuntimePolicyRetain {
+	policy, err := normalizeSandboxSpec(joinPath("agents", name)+"."+policyKey, declaredPolicy)
+	if err != nil {
+		return NormalizedAgentSpec{}, err
+	}
+	if driver != nil && driver.Name == DriverK8s && policy != nil && policy.StoppedRuntimePolicy == domain.StoppedRuntimePolicyRetain {
 		return NormalizedAgentSpec{}, &ValidationError{
-			Path:    joinPath("agents", name) + ".sandbox.stopped_runtime_policy",
+			Path:    joinPath("agents", name) + "." + policyKey + ".stopped_runtime_policy",
 			Message: "k8s does not support retain because stopping a Pod deletes it; use remove and sandbox_policy=sticky when the Pod must stay running",
 		}
 	}
@@ -380,10 +389,30 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 		Skills:       skills,
 		Volumes:      volumes,
 		Workspace:    workspace,
-		Sandbox:      sandbox,
+		Policy:       policy,
 		Scheduler:    scheduler,
 		Jupyter:      jupyter,
 	}, nil
+}
+
+// resolveDeclaredPolicyBlock returns the policy block an agent declared and the
+// key it used. `sandbox` is the deprecated spelling of `policy`; declaring both
+// is rejected rather than silently resolved, because the two blocks could
+// disagree about a policy that the engine enforces.
+func resolveDeclaredPolicyBlock(path string, policy, legacy *SandboxSpec) (string, *SandboxSpec, error) {
+	switch {
+	case policy != nil && legacy != nil:
+		return "", nil, &ValidationError{
+			Path:    path + ".sandbox",
+			Message: "declare either policy or its deprecated spelling sandbox, not both",
+		}
+	case policy != nil:
+		return "policy", policy, nil
+	case legacy != nil:
+		return "sandbox", legacy, nil
+	default:
+		return "policy", nil, nil
+	}
 }
 
 func normalizeSandboxSpec(path string, sandbox *SandboxSpec) (*NormalizedSandboxSpec, error) {

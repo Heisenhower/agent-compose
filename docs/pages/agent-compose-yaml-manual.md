@@ -516,7 +516,8 @@ agents:
 | `skills` | list | Empty | Skill sources projected into the agent runtime. |
 | `volumes` | list | Empty | Volume and bind mounts. |
 | `workspace` | object | None | Explicitly selects a project `workspaces` entry or defines an inline workspace. |
-| `sandbox` | object | Remove stopped runtime | Sandbox lifecycle configuration. |
+| `policy` | object | Remove stopped runtime | Declared runtime policies: the stopped-runtime lifecycle and the outbound network policy. |
+| `sandbox` | object | — | Deprecated spelling of `policy`. Still accepted; declaring both is an error. |
 | `scheduler` | object | None | Automatic trigger configuration. |
 | `jupyter` | object | Disabled | Default Jupyter behavior for agent runs. |
 
@@ -983,12 +984,18 @@ workspace:
 
 Inline workspaces accept the same `mode` and `read_only` fields as top-level definitions. To inherit a project entry, set only `name`; its delivery mode and permissions are inherited together. A name-only reference cannot override `mode` or set `read_only: true`. To use different settings, define another project workspace or provide a complete inline source. If `name` is combined with source fields or `target`, the object is an inline workspace and must include its own valid source; it does not merge fields from a project entry.
 
-### `sandbox`: stopped runtime lifecycle
+### `policy`: declared runtime policies
+
+`policy` groups everything this agent declares about how its sandboxes behave at runtime: the stopped-runtime lifecycle and the outbound network policy. Later runtime policies belong in this same block rather than in new top-level agent keys.
+
+> **`sandbox` is the deprecated spelling of `policy`.** It is still accepted so projects written before the rename keep working, and both keys accept the same fields, but new and edited projects should use `policy`. Declaring both in one agent is an error rather than a silent choice between two blocks that could disagree.
+
+#### `stopped_runtime_policy`: stopped runtime lifecycle
 
 By default, stopping a sandbox removes its driver runtime and private writable state after confirming the stop. Sandbox metadata, logs, workspace, and declared durable mounts remain, and `resume` creates a fresh runtime. To restart the same container, box, or microVM sandbox, retain its private runtime state explicitly:
 
 ```yaml
-sandbox:
+policy:
   stopped_runtime_policy: retain
 ```
 
@@ -1012,9 +1019,9 @@ The effective policy is snapshotted when the sandbox is created. Editing the pro
 
 For `remove`, the daemon first persists `release_pending`, then confirms a driver stop when the lifecycle record contains a start or start attempt newer than the last confirmed stop, even if the coarse VM status is `failed` rather than `running`. Only then does it remove the runtime and mark the record `released`. This ordering prevents a partially started runtime from being skipped or destructively released without a confirmed stop. The on-disk ownership-record layout is internal recovery state and is not a stable operator-facing format.
 
-### `sandbox.network`: declared outbound network policy
+### `policy.network`: declared outbound network policy
 
-`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `sandbox.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny` is a policy that takes effect only because the block was declared; it is not an engine default.
+`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `policy.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny` is a policy that takes effect only because the block was declared; it is not an engine default.
 
 | Field | Type | Default | Purpose |
 | --- | --- | --- | --- |
@@ -1030,7 +1037,7 @@ Each `allow` entry:
 | `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are inspectable at L7; `any`, `tcp`, and `udp` are opaque allowances and are never presented as checked ones. |
 
 ```yaml
-sandbox:
+policy:
   network:
     default: deny
     allow:

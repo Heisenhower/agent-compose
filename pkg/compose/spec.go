@@ -66,11 +66,23 @@ type AgentSpec struct {
 	Skills       []SkillSpec           `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Volumes      []VolumeMountSpec     `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Workspace    *WorkspaceSpec        `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Sandbox      *SandboxSpec          `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Scheduler    *SchedulerSpec        `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
-	Jupyter      *JupyterSpec          `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
+	// Policy groups the runtime policies this agent declares. `network` holds
+	// the outbound network policy; later policies (files, and other runtime
+	// behavior) belong in this same block, so one declaration states everything
+	// the engine enforces for the agent's sandboxes.
+	Policy *SandboxSpec `yaml:"policy,omitempty" json:"policy,omitempty"`
+	// Sandbox is the deprecated spelling of Policy, kept so projects written
+	// before the rename keep parsing. Declaring both in one agent is rejected
+	// rather than silently resolved, because the two blocks could disagree.
+	Sandbox   *SandboxSpec   `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Scheduler *SchedulerSpec `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+	Jupyter   *JupyterSpec   `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
 }
 
+// SandboxSpec is the agent policy block: the runtime policies one agent
+// declares. The type keeps its historical name because the stable authoring
+// contract (testdata/compat/contract-v2608.1.0.json) records it for the
+// deprecated `sandbox` key.
 type SandboxSpec struct {
 	StoppedRuntimePolicy string `yaml:"stopped_runtime_policy,omitempty" json:"stopped_runtime_policy,omitempty"`
 	// Network declares this agent's outbound network policy. A nil Network is
@@ -568,13 +580,16 @@ func validateAgent(node *yaml.Node, path string) error {
 		"skills":        validateSkillList,
 		"volumes":       validateVolumeMountList,
 		"workspace":     validateWorkspace,
-		"sandbox":       validateSandbox,
+		"policy":        validatePolicyBlock,
+		"sandbox":       validatePolicyBlock,
 		"scheduler":     validateScheduler,
 		"jupyter":       validateJupyter,
 	})
 }
 
-func validateSandbox(node *yaml.Node, path string) error {
+// validatePolicyBlock validates the policy block, which both the current
+// `policy` key and its deprecated `sandbox` spelling share.
+func validatePolicyBlock(node *yaml.Node, path string) error {
 	return validateMapping(node, path, map[string]nodeValidator{
 		"stopped_runtime_policy": validateScalar,
 		"network":                validateSandboxNetwork,

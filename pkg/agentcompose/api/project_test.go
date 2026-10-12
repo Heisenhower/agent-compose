@@ -580,8 +580,8 @@ agents:
 	if agent.Jupyter == nil || !agent.Jupyter.Enabled || agent.Jupyter.GuestPort != 8888 {
 		t.Fatalf("round-tripped jupyter = %#v", agent.Jupyter)
 	}
-	if agent.Sandbox == nil || agent.Sandbox.StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
-		t.Fatalf("round-tripped sandbox = %#v", agent.Sandbox)
+	if agent.PolicyBlock() == nil || agent.PolicyBlock().StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
+		t.Fatalf("round-tripped sandbox = %#v", agent.PolicyBlock())
 	}
 	if agent.Scheduler == nil || agent.Scheduler.ConcurrencyPolicy != domain.SchedulerConcurrencyPolicyParallel {
 		t.Fatalf("round-tripped scheduler = %#v", agent.Scheduler)

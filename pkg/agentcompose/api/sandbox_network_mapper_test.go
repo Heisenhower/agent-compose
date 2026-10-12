@@ -15,7 +15,7 @@ name: network-proto
 agents:
   worker:
     provider: codex
-    sandbox:
+    policy:
       network:
         default: deny
         allow:
@@ -27,7 +27,7 @@ agents:
             protocol: https
 `)
 
-	mapped := SandboxSpecToProto(spec.Agents[0].Sandbox)
+	mapped := SandboxSpecToProto(spec.Agents[0].PolicyBlock())
 	if mapped.GetNetwork() == nil {
 		t.Fatal("declared network policy was dropped by the proto mapping")
 	}
@@ -62,10 +62,10 @@ name: network-proto
 agents:
   worker:
     provider: codex
-    sandbox:
+    policy:
       stopped_runtime_policy: remove
 `)
-	mapped := SandboxSpecToProto(spec.Agents[0].Sandbox)
+	mapped := SandboxSpecToProto(spec.Agents[0].PolicyBlock())
 	if mapped.GetNetwork() != nil {
 		t.Fatalf("undeclared network policy appeared in proto: %+v", mapped.GetNetwork())
 	}

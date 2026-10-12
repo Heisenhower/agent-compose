@@ -36,8 +36,8 @@ func TestParseAgentStoppedRuntimePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse returned error: %v", err)
 	}
-	if parsed.Agents["worker"].Sandbox == nil || parsed.Agents["worker"].Sandbox.StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
-		t.Fatalf("parsed sandbox = %#v", parsed.Agents["worker"].Sandbox)
+	if parsed.Agents["worker"].PolicyBlock() == nil || parsed.Agents["worker"].PolicyBlock().StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
+		t.Fatalf("parsed sandbox = %#v", parsed.Agents["worker"].PolicyBlock())
 	}
 }
 
@@ -57,7 +57,7 @@ func TestNormalizeAgentStoppedRuntimePolicy(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Normalize returned error: %v", err)
 			}
-			got := normalized.Agents[0].Sandbox
+			got := normalized.Agents[0].PolicyBlock()
 			if tt.wantNil {
 				if got != nil {
 					t.Fatalf("sandbox = %#v, want nil", got)
@@ -100,7 +100,7 @@ func TestNormalizeAgentAllowsK8sStoppedRuntimeRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Normalize returned error: %v", err)
 	}
-	if got := normalized.Agents[0].Sandbox.StoppedRuntimePolicy; got != domain.StoppedRuntimePolicyRemove {
+	if got := normalized.Agents[0].PolicyBlock().StoppedRuntimePolicy; got != domain.StoppedRuntimePolicyRemove {
 		t.Fatalf("stopped runtime policy = %q, want %q", got, domain.StoppedRuntimePolicyRemove)
 	}
 }

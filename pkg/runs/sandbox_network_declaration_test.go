@@ -11,7 +11,7 @@ import (
 )
 
 func TestResolveNetworkDeclarationFromManagedAgentSpec(t *testing.T) {
-	specJSON := `{"name":"worker","sandbox":{"stopped_runtime_policy":"remove","network":{"default":"deny","allow":[{"host":"api.github.com","port":443,"protocol":"https"},{"host":"*.example.com","port":8443,"protocol":"tcp"}]}}}`
+	specJSON := `{"name":"worker","policy":{"stopped_runtime_policy":"remove","network":{"default":"deny","allow":[{"host":"api.github.com","port":443,"protocol":"https"},{"host":"*.example.com","port":8443,"protocol":"tcp"}]}}}`
 	store := &networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
 		"agent-1": {ID: "agent-1", ProjectID: "project-1", AgentName: "worker", SpecJSON: specJSON},
 	}}
@@ -33,14 +33,40 @@ func TestResolveNetworkDeclarationFromManagedAgentSpec(t *testing.T) {
 	}
 }
 
+func TestResolveNetworkDeclarationAcceptsDeprecatedSandboxKey(t *testing.T) {
+	// Managed agents persisted before the policy block was renamed to `policy`
+	// still store their declaration under the deprecated `sandbox` key.
+	// Decoding such a spec as undeclared would report an unrestricted network
+	// policy for an agent that declared a restricted one.
+	const legacySpecJSON = `{"name":"worker","sandbox":{"stopped_runtime_policy":"retain","network":{"default":"deny","allow":[{"host":"api.github.com","port":443,"protocol":"https"}]}}}`
+	resolver, err := NewSandboxRunTargetResolver(&networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
+		"agent-1": {ID: "agent-1", ProjectID: "project-1", AgentName: "worker", SpecJSON: legacySpecJSON},
+	}})
+	if err != nil {
+		t.Fatalf("NewSandboxRunTargetResolver returned error: %v", err)
+	}
+	sandbox := sandboxWithTags("sandbox-1", domain.SandboxTag{Name: domain.AgentSandboxTagID, Value: "agent-1"})
+
+	declaration, err := resolver.ResolveNetworkDeclaration(context.Background(), sandbox)
+	if err != nil {
+		t.Fatalf("ResolveNetworkDeclaration returned error: %v", err)
+	}
+	if declaration == nil || declaration.Default != egress.Deny {
+		t.Fatalf("declaration = %#v, want the deny policy stored under the deprecated key", declaration)
+	}
+	if len(declaration.Allow) != 1 || declaration.Allow[0].Host != "api.github.com" {
+		t.Fatalf("declaration allow = %#v, want the allowance stored under the deprecated key", declaration.Allow)
+	}
+}
+
 func TestResolveNetworkDeclarationPermissiveDefaultFromPersistedSpec(t *testing.T) {
 	// The canonical spec stores the schema's "allow-all" default; the resolver
 	// must translate it into the decision model's allow rather than hand the
 	// schema value to a compiler that only knows allow/deny.
 	for name, specJSON := range map[string]string{
-		"omitted default":  `{"name":"worker","sandbox":{"network":{"allow":[{"host":"api.github.com","port":443,"protocol":"https"}]}}}`,
-		"explicit default": `{"name":"worker","sandbox":{"network":{"default":"allow-all"}}}`,
-		"empty block":      `{"name":"worker","sandbox":{"network":{}}}`,
+		"omitted default":  `{"name":"worker","policy":{"network":{"allow":[{"host":"api.github.com","port":443,"protocol":"https"}]}}}`,
+		"explicit default": `{"name":"worker","policy":{"network":{"default":"allow-all"}}}`,
+		"empty block":      `{"name":"worker","policy":{"network":{}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			store := &networkDeclarationStoreStub{agents: map[string]domain.ProjectAgentRecord{
@@ -75,7 +101,7 @@ func TestResolveNetworkDeclarationUndeclaredCases(t *testing.T) {
 		{
 			name:    "no managed agent tag",
 			sandbox: sandboxWithTags("sandbox-1", domain.SandboxTag{Name: "project", Value: "project-1"}),
-			agents:  map[string]domain.ProjectAgentRecord{"agent-1": {ID: "agent-1", SpecJSON: `{"sandbox":{"network":{"default":"deny"}}}`}},
+			agents:  map[string]domain.ProjectAgentRecord{"agent-1": {ID: "agent-1", SpecJSON: `{"policy":{"network":{"default":"deny"}}}`}},
 		},
 		{
 			name:    "agent record missing",

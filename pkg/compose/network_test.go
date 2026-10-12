@@ -10,9 +10,15 @@ import (
 // The golden hashes were captured from the code before SandboxSpec.network
 // existed. An undeclared network policy must not change the canonical JSON, and
 // therefore must not change the spec hash.
+//
+// stoppedRuntimeGoldenHash was re-baselined when the agent policy block was
+// renamed from `sandbox` to `policy`: the canonical JSON of a spec that declares
+// the block necessarily changed key, so one reconciliation is expected per agent
+// that declares a policy. A spec that declares no policy block is unaffected,
+// which undeclaredNetworkGoldenHash still pins.
 const (
 	undeclaredNetworkGoldenHash = "sha256:f08cbeba0de6afd597bc83977f5ada85d4a10ccdc7d0afe070aa4c9a84899534"
-	stoppedRuntimeGoldenHash    = "sha256:78fec1f44000f7ae853b23f8021164adf53746ad6a8583fee43a7eae5f2c6957"
+	stoppedRuntimeGoldenHash    = "sha256:020d1dce179d7a8f38ae1341bc1a03267018bc4588947c56473c65ed1802248a"
 )
 
 func TestUndeclaredSandboxNetworkKeepsCanonicalHash(t *testing.T) {
@@ -205,7 +211,7 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			normalized := mustNormalizeCompose(t, "name: network\nagents:\n  worker:\n    provider: codex\n    sandbox:\n      "+tc.network+"\n", nil)
-			got := normalized.Agents[0].Sandbox.Network
+			got := normalized.Agents[0].PolicyBlock().Network
 			if got == nil {
 				t.Fatal("network declaration was dropped during normalization")
 			}
@@ -349,7 +355,7 @@ func TestSandboxNetworkEgressDeclaration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			spec := mustNormalizeCompose(t, "name: network-egress\nagents:\n  worker:\n    provider: codex\n    sandbox:\n      "+tt.network+"\n", nil)
-			declaration, err := spec.Agents[0].Sandbox.Network.EgressDeclaration()
+			declaration, err := spec.Agents[0].PolicyBlock().Network.EgressDeclaration()
 			if err != nil {
 				t.Fatalf("EgressDeclaration returned error: %v", err)
 			}
@@ -414,7 +420,7 @@ agents:
     sandbox:
       `+test.body+`
 `, nil)
-			declaration, err := spec.Agents[0].Sandbox.Network.EgressDeclaration()
+			declaration, err := spec.Agents[0].PolicyBlock().Network.EgressDeclaration()
 			if err != nil {
 				t.Fatalf("EgressDeclaration() error = %v", err)
 			}
@@ -489,9 +495,9 @@ agents:
 	before := mustHash(t, spec)
 
 	cloned := spec.Redacted()
-	cloned.Agents[0].Sandbox.Network.Default = SandboxNetworkDefaultAllowAll
-	cloned.Agents[0].Sandbox.Network.Allow[0].Host = "attacker.example.com"
-	cloned.Agents[0].Sandbox.Network.Allow = append(cloned.Agents[0].Sandbox.Network.Allow, NormalizedSandboxNetworkAllowSpec{Host: "extra.example.com", Port: 1, Protocol: "tcp"})
+	cloned.Agents[0].PolicyBlock().Network.Default = SandboxNetworkDefaultAllowAll
+	cloned.Agents[0].PolicyBlock().Network.Allow[0].Host = "attacker.example.com"
+	cloned.Agents[0].PolicyBlock().Network.Allow = append(cloned.Agents[0].PolicyBlock().Network.Allow, NormalizedSandboxNetworkAllowSpec{Host: "extra.example.com", Port: 1, Protocol: "tcp"})
 
 	if after := mustHash(t, spec); after != before {
 		t.Fatalf("hash changed after mutating a returned view: %s != %s", after, before)

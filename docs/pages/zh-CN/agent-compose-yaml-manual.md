@@ -517,7 +517,8 @@ agents:
 | `skills` | list | 空 | 注入 Agent 的 Skill 来源。 |
 | `volumes` | list | 空 | Volume 或 bind mount 列表。 |
 | `workspace` | object | 无 | 显式引用一个顶层 `workspaces` 条目，或定义 Agent 内联 Workspace。 |
-| `sandbox` | object | 删除已停止 runtime | Sandbox 生命周期配置。 |
+| `policy` | object | 删除已停止 runtime | 运行时策略声明：已停止 runtime 的生命周期与出网策略。 |
+| `sandbox` | object | — | `policy` 的弃用拼写。仍然可用；同时声明两者会报错。 |
 | `scheduler` | object | 无 | 自动触发 Agent 的 Scheduler。 |
 | `jupyter` | object | disabled | Agent run 的 Jupyter 默认配置。 |
 
@@ -967,12 +968,18 @@ workspace:
 
 内联 Workspace 支持与顶层定义相同的 `mode` 和 `read_only` 字段。继承项目条目时只写 `name`，交付模式和权限会一起继承。只有名称的引用不能覆盖 `mode` 或设置 `read_only: true`；需要不同设置时，另建项目 Workspace，或提供完整内联来源。若 `name` 与来源字段或 `target` 同时出现，该对象按内联 Workspace 处理，必须自行提供合法来源，不会与项目条目合并字段。
 
-### `sandbox`：已停止 runtime 生命周期
+### `policy`：运行时策略声明
+
+`policy` 集中声明该 Agent 的 sandbox 在运行时的行为：已停止 runtime 的生命周期，以及出网策略。后续新增的运行时策略应继续放进这个块，而不是新增顶层 agent 字段。
+
+> **`sandbox` 是 `policy` 的弃用拼写。** 为了兼容重命名之前编写的项目，`sandbox` 仍然可用，两个 key 接受完全相同的字段；但新建或修改项目请使用 `policy`。同一 agent 同时声明两者会直接报错，而不是在两个可能互相矛盾的块之间静默选择。
+
+#### `stopped_runtime_policy`：已停止 runtime 生命周期
 
 默认情况下，停止 sandbox 会在确认 stop 后删除 driver runtime 及其私有可写状态，同时保留 sandbox 元数据、日志、workspace 和声明的持久挂载；`resume` 会创建新的 runtime。若需要重新启动同一个容器、Box 或 microVM sandbox，请显式保留私有 runtime 状态：
 
 ```yaml
-sandbox:
+policy:
   stopped_runtime_policy: retain
 ```
 
@@ -991,9 +998,9 @@ Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍�
 
 对于 `remove`，daemon 会先持久化 `release_pending`。如果生命周期记录中存在晚于最近一次确认 stop 的启动或启动尝试，即使粗粒度 VM 状态是 `failed` 而不是 `running`，也会先确认 driver stop；之后才删除 runtime 并把记录标记为 `released`。这个顺序可避免部分启动的 runtime 被跳过 stop，或未经确认便被破坏性释放。磁盘上的 ownership record 格式属于内部恢复状态，不是稳定的运维接口。
 
-### `sandbox.network`：出网策略声明
+### `policy.network`：出网策略声明
 
-`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `sandbox.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
+`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `policy.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
 
 | 字段 | 类型 | 默认值 | 作用 |
 | --- | --- | --- | --- |
@@ -1009,7 +1016,7 @@ Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍�
 | `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 可在 L7 被检查；`any`、`tcp`、`udp` 属于不可检查的放行，永远不会被呈现为“已检查”。 |
 
 ```yaml
-sandbox:
+policy:
   network:
     default: deny
     allow:

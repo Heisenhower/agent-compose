@@ -37,8 +37,10 @@ func (r *SandboxRunTargetResolver) ResolveNetworkDeclaration(ctx context.Context
 }
 
 // networkDeclarationFromAgentSpecJSON decodes the declaration out of a managed
-// agent's canonical spec JSON. An absent sandbox block or network block is an
-// undeclared policy (nil), not an empty default-deny policy.
+// agent's canonical spec JSON. An absent policy block or network block is an
+// undeclared policy (nil), not an empty default-deny policy. The deprecated
+// `sandbox` key is still read so agents persisted before the rename keep their
+// declared policy.
 func networkDeclarationFromAgentSpecJSON(raw string) (*egress.NetworkDeclaration, error) {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -48,10 +50,11 @@ func networkDeclarationFromAgentSpecJSON(raw string) (*egress.NetworkDeclaration
 	if err := json.Unmarshal([]byte(trimmed), &spec); err != nil {
 		return nil, fmt.Errorf("decode agent network declaration: %w", err)
 	}
-	if spec.Sandbox == nil || spec.Sandbox.Network == nil {
+	policy := spec.PolicyBlock()
+	if policy == nil || policy.Network == nil {
 		return nil, nil
 	}
-	declaration, err := spec.Sandbox.Network.EgressDeclaration()
+	declaration, err := policy.Network.EgressDeclaration()
 	if err != nil {
 		return nil, fmt.Errorf("decode agent network declaration: %w", err)
 	}

@@ -144,7 +144,7 @@ func NewAgentDefinitionFromSpec(project domain.ProjectRecord, revision int64, ag
 
 type agentDefinitionConfig struct {
 	Jupyter        *projectdef.JupyterSpec                           `json:"jupyter,omitempty"`
-	Sandbox        *projectdef.NormalizedSandboxSpec                 `json:"sandbox,omitempty"`
+	Policy         *projectdef.NormalizedSandboxSpec                 `json:"policy,omitempty"`
 	MCPServers     map[string]projectdef.NormalizedMCPServerSpec     `json:"mcp_servers,omitempty"`
 	OctoBusServers map[string]projectdef.NormalizedOctoBusServerSpec `json:"octobus_servers,omitempty"`
 	// Workspace carries the full yaml `workspace:` declaration (provider,
@@ -157,7 +157,7 @@ type agentDefinitionConfig struct {
 
 	// DriverK8s carries the agent's `driver.k8s` override (cluster context,
 	// namespace). It has no dedicated AgentDefinition column, same as
-	// Jupyter/Sandbox/Workspace above; runtime code decodes it back out of
+	// Jupyter/Policy/Workspace above; runtime code decodes it back out of
 	// ConfigJSON where it's needed (see driverK8sOptionsFromAgentDefinition).
 	DriverK8s *projectdef.K8sDriverSpec `json:"driver_k8s,omitempty"`
 }
@@ -169,13 +169,13 @@ func agentDefinitionConfigJSON(agent projectdef.NormalizedAgentSpec, projectMCPS
 	}
 	payload := agentDefinitionConfig{
 		Jupyter:        agent.Jupyter,
-		Sandbox:        agent.Sandbox,
+		Policy:         agent.PolicyBlock(),
 		MCPServers:     selectedAgentMCPServers(agent, projectMCPServers),
 		OctoBusServers: selectedAgentOctoBusServers(agent, projectOctoBusServers),
 		Workspace:      agent.Workspace,
 		DriverK8s:      driverK8s,
 	}
-	if payload.Jupyter == nil && payload.Sandbox == nil && payload.Workspace == nil && payload.DriverK8s == nil && len(payload.MCPServers) == 0 && len(payload.OctoBusServers) == 0 {
+	if payload.Jupyter == nil && payload.Policy == nil && payload.Workspace == nil && payload.DriverK8s == nil && len(payload.MCPServers) == 0 && len(payload.OctoBusServers) == 0 {
 		return "{}", nil
 	}
 	data, err := MarshalCanonicalJSON(payload)

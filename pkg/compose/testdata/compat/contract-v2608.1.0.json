@@ -248,6 +248,46 @@
       "optional": true
     },
     {
+      "path": "agents.*.policy",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxNetworkSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow",
+      "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].host",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].port",
+      "go_type": "int",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].protocol",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.default",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.stopped_runtime_policy",
+      "go_type": "string",
+      "optional": true
+    },
+    {
       "path": "agents.*.provider",
       "go_type": "string",
       "optional": true

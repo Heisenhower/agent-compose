@@ -152,8 +152,8 @@ func AgentYAMLMap(agents []*agentcomposev2.AgentSpec) (map[string]any, []*agentc
 		} else if len(workspace) > 0 {
 			raw["workspace"] = workspace
 		}
-		if sandbox := agent.GetSandbox(); sandbox != nil {
-			raw["sandbox"] = sandboxYAMLShape(sandbox)
+		if policy := agent.GetSandbox(); policy != nil {
+			raw["policy"] = policyYAMLShape(policy)
 		}
 		if scheduler := SchedulerYAMLShape(agent.GetScheduler()); len(scheduler) > 0 {
 			raw["scheduler"] = scheduler
@@ -174,12 +174,12 @@ func AgentYAMLMap(agents []*agentcomposev2.AgentSpec) (map[string]any, []*agentc
 	return values, nil
 }
 
-// sandboxYAMLShape renders the sandbox declaration. The network block is only
-// added when it was declared, so a spec that does not use it renders exactly as
-// it did before the field existed.
-func sandboxYAMLShape(sandbox *agentcomposev2.SandboxSpec) map[string]any {
-	shape := map[string]any{"stopped_runtime_policy": sandbox.GetStoppedRuntimePolicy()}
-	network := sandbox.GetNetwork()
+// policyYAMLShape renders the agent policy declaration. The network block is
+// only added when it was declared, so a spec that does not use it renders
+// exactly as it did before the field existed.
+func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
+	shape := map[string]any{"stopped_runtime_policy": policy.GetStoppedRuntimePolicy()}
+	network := policy.GetNetwork()
 	if network == nil {
 		return shape
 	}
