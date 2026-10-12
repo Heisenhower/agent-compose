@@ -258,7 +258,11 @@ func StartBackground(di do.Injector) error {
 	if err := loadLLMConfig(ctx, do.MustInvoke[*appconfig.Config](di), do.MustInvoke[*configstore.ConfigStore](di)); err != nil {
 		return fmt.Errorf("load llm configuration: %w", err)
 	}
-	do.MustInvoke[*adapters.LLMUpstreamProber](di).ProbeConfigured(ctx, do.MustInvoke[*configstore.ConfigStore](di))
+	// The sweep runs in the background and shares one LLM_PROBE_TIMEOUT budget
+	// (15s by default). Probing only produces diagnostic log lines, so recovery
+	// and the managers below must not wait for a slow or unreachable upstream;
+	// StopBackground waits for the sweep so it cannot outlive the store it reads.
+	do.MustInvoke[*adapters.LLMUpstreamProber](di).StartProbeConfigured(ctx, do.MustInvoke[*configstore.ConfigStore](di))
 	for _, warning := range do.MustInvoke[*adapters.SandboxRPCBridge](di).RecoverStoppedRuntimeReleases(ctx) {
 		slog.Warn("failed to recover stopped runtime release", "warning", warning)
 	}
@@ -307,6 +311,17 @@ func StopBackground(ctx context.Context, di do.Injector) error {
 		setupErrors = append(setupErrors, fmt.Errorf("resolve cleanup runner: %w", runnerErr))
 	} else {
 		components = append(components, backgroundComponent{name: "cleanup runner", shutdown: runner.Shutdown})
+	}
+	// The startup probe sweep reads the catalog store, so it must finish before
+	// shutdown proceeds past the stores. Its context is already cancelled by the
+	// time this runs, and its own budget bounds how long the wait can take.
+	if prober, proberErr := do.Invoke[*adapters.LLMUpstreamProber](di); proberErr != nil {
+		setupErrors = append(setupErrors, fmt.Errorf("resolve llm upstream prober: %w", proberErr))
+	} else {
+		components = append(components, backgroundComponent{name: "llm upstream probe", shutdown: func(context.Context) error {
+			prober.WaitProbeConfigured()
+			return nil
+		}})
 	}
 	return stopBackgroundComponents(ctx, components, setupErrors...)
 }

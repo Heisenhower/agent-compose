@@ -63,20 +63,30 @@ func (c *UpstreamProbeCache) Lookup(key string) (UpstreamProbeResult, bool) {
 }
 
 // Store records the verdict for key, replacing any earlier one.
+//
+// Expired entries are dropped while the lock is held. A rotated endpoint or
+// credential produces a key nothing revisits, so without this the map would keep
+// one entry per deployment the process has ever seen.
 func (c *UpstreamProbeCache) Store(key string, result UpstreamProbeResult) {
 	if c == nil {
 		return
 	}
-	now := c.now
-	if now == nil {
-		now = time.Now
+	clock := c.now
+	if clock == nil {
+		clock = time.Now
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.entries == nil {
 		c.entries = map[string]probeCacheEntry{}
 	}
-	c.entries[key] = probeCacheEntry{result: result, storedAt: now()}
+	now := clock()
+	for existing, entry := range c.entries {
+		if now.Sub(entry.storedAt) >= c.ttl {
+			delete(c.entries, existing)
+		}
+	}
+	c.entries[key] = probeCacheEntry{result: result, storedAt: now}
 }
 
 // UpstreamProbeKey identifies a probe target.
@@ -85,7 +95,9 @@ func (c *UpstreamProbeCache) Store(key string, result UpstreamProbeResult) {
 // a changed base URL, family, header set, or key invalidates the entry on its
 // own. The credential is hashed rather than stored, so a cache dump cannot leak
 // it. The model is deliberately not part of the key: protocol support does not
-// depend on which model a request names.
+// depend on which model a request names. It is enforced when an entry is reused
+// instead — see UpstreamProber.probeReuseMatches — because the verdict records
+// the model it was taken with.
 func UpstreamProbeKey(provider Provider) string {
 	material := strings.Join([]string{
 		NormalizeProviderType(provider.ProviderType),

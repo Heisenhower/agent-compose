@@ -64,6 +64,12 @@ type CatalogStore interface {
 //  4. the only configured connection, when exactly one exists;
 //  5. otherwise every configured connection, ranked the same way: a model id is
 //     opaque, so a connection that never declared the model may still serve it.
+//
+// Configuration source is deliberately not a ranking axis. "The daemon
+// environment is a bootstrap fallback" governs the default model reference
+// above, not this lookup: when an environment connection and a models.json
+// connection both serve the model over the preferred protocol they are peers,
+// and the random tie-break decides between them.
 type Catalog struct {
 	providers         map[string]Provider
 	bindings          map[string]map[string]ProviderModelConfig

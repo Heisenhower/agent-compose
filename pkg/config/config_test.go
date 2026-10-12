@@ -166,8 +166,8 @@ func TestNewConfigDefaultsUpstreamProbeOn(t *testing.T) {
 	if !config.LLMUpstreamProbe {
 		t.Fatal("LLMUpstreamProbe = false, want the probe enabled by default")
 	}
-	if config.LLMProbeTimeout != 15*time.Second {
-		t.Fatalf("LLMProbeTimeout = %s, want 15s", config.LLMProbeTimeout)
+	if config.LLMProbeTimeout != DefaultLLMProbeTimeout {
+		t.Fatalf("LLMProbeTimeout = %s, want the shared default %s", config.LLMProbeTimeout, DefaultLLMProbeTimeout)
 	}
 }
 

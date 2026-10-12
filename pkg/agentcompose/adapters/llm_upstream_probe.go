@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
@@ -22,6 +23,8 @@ type LLMUpstreamProber struct {
 	timeout time.Duration
 	logger  *slog.Logger
 	prober  *llms.UpstreamProber
+	// sweep tracks the background startup sweep so shutdown can wait for it.
+	sweep sync.WaitGroup
 }
 
 // NewLLMUpstreamProber builds the prober from daemon configuration.
@@ -44,10 +47,41 @@ func NewLLMUpstreamProber(config *appconfig.Config, logger *slog.Logger) *LLMUps
 	}
 }
 
-// ProbeConfigured probes every enabled connection once, after startup has
-// materialized the catalog. The whole sweep shares one deadline, so a hanging
-// upstream cannot delay readiness indefinitely and the remaining connections are
-// reported inconclusive instead.
+// StartProbeConfigured probes every enabled connection once, after startup has
+// materialized the catalog, without delaying the daemon.
+//
+// The verdicts are diagnostic, so nothing that starts after this call waits on
+// an upstream: a slow or unreachable endpoint used to hold recovery and the
+// background managers for the whole LLM_PROBE_TIMEOUT budget, and a deployment
+// with several such endpoints paid that delay before it served anything. The
+// sweep still shares one deadline, so it stops on its own and reports how many
+// connections it could not reach; callers that must not outlive it — shutdown —
+// wait with WaitProbeConfigured.
+func (p *LLMUpstreamProber) StartProbeConfigured(ctx context.Context, store llms.CatalogStore) {
+	if p == nil || !p.enabled || store == nil {
+		return
+	}
+	p.sweep.Add(1)
+	go func() {
+		defer p.sweep.Done()
+		p.ProbeConfigured(ctx, store)
+	}()
+}
+
+// WaitProbeConfigured blocks until a started sweep finished. It is what makes
+// the background sweep safe to interrupt: shutdown cancels the context it was
+// given and then waits here, so the goroutine cannot outlive the store it reads.
+func (p *LLMUpstreamProber) WaitProbeConfigured() {
+	if p == nil {
+		return
+	}
+	p.sweep.Wait()
+}
+
+// ProbeConfigured probes every enabled connection once and returns when the
+// sweep is done. The whole sweep shares one deadline, so a hanging upstream
+// cannot delay it indefinitely and the remaining connections are reported
+// inconclusive instead.
 func (p *LLMUpstreamProber) ProbeConfigured(ctx context.Context, store llms.CatalogStore) {
 	if p == nil || !p.enabled || store == nil {
 		return

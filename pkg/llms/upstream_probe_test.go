@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -88,6 +89,86 @@ func TestUpstreamProberDistinguishesUnsupportedProtocol(t *testing.T) {
 	}
 	if !reflect.DeepEqual(supported, []Protocol{ProtocolChatCompletions}) {
 		t.Fatalf("supported = %v, want chat_completions", supported)
+	}
+}
+
+// Only the declared protocol's own verdict is evidence about it. A sibling
+// protocol succeeding, an inconclusive answer, or a protocol the probe never
+// reached must not be reported as "the endpoint does not support the declared
+// protocol".
+func TestDeclaredProtocolUnsupportedRequiresTheDeclaredProtocolsVerdict(t *testing.T) {
+	provider := probeTestProvider("https://gateway.example/v1")
+	cases := []struct {
+		name      string
+		protocols []ProtocolProbe
+		want      bool
+	}{
+		{
+			name: "declared protocol proven absent",
+			protocols: []ProtocolProbe{
+				{Protocol: ProtocolChatCompletions, Outcome: ProbeSupported},
+				{Protocol: ProtocolResponses, Outcome: ProbeUnsupported},
+			},
+			want: true,
+		},
+		{
+			name: "declared protocol inconclusive while a sibling succeeded",
+			protocols: []ProtocolProbe{
+				{Protocol: ProtocolChatCompletions, Outcome: ProbeSupported},
+				{Protocol: ProtocolResponses, Outcome: ProbeInconclusive},
+			},
+			want: false,
+		},
+		{
+			name: "declared protocol not probed",
+			protocols: []ProtocolProbe{
+				{Protocol: ProtocolChatCompletions, Outcome: ProbeSupported},
+			},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			declared, supported, mismatch := DeclaredProtocolUnsupported(provider, UpstreamProbeResult{Protocols: tc.protocols})
+			if declared != ProtocolResponses {
+				t.Fatalf("declared = %q, want responses", declared)
+			}
+			if mismatch != tc.want {
+				t.Fatalf("mismatch = %v, want %v", mismatch, tc.want)
+			}
+			if !reflect.DeepEqual(supported, []Protocol{ProtocolChatCompletions}) {
+				t.Fatalf("supported = %v, want chat_completions", supported)
+			}
+		})
+	}
+}
+
+// A 500 on the declared protocol is classified inconclusive, so an endpoint that
+// answers its sibling protocol must not be reported as not supporting the
+// declared one: the probe never proved that.
+func TestUpstreamProberDoesNotBlameAnInconclusiveDeclaredProtocol(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			writeProbeJSON(w, `{"data":[{"id":"m"}]}`)
+		case "/v1/chat/completions":
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	provider := probeTestProvider(server.URL + "/v1")
+	result, err := NewUpstreamProber(server.Client()).Probe(context.Background(), UpstreamProbeRequest{Provider: provider, Model: "m"})
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if outcome, probed := result.Outcome(ProtocolResponses); !probed || outcome != ProbeInconclusive {
+		t.Fatalf("responses verdict = %q probed=%v, want %q", outcome, probed, ProbeInconclusive)
+	}
+	if declared, supported, mismatch := DeclaredProtocolUnsupported(provider, result); mismatch {
+		t.Fatalf("mismatch claimed for an inconclusive declared protocol: declared=%q supported=%v", declared, supported)
 	}
 }
 
@@ -183,6 +264,35 @@ func TestUpstreamProberReportsInconclusiveWhenNoModelIsAvailable(t *testing.T) {
 	for _, probe := range result.Protocols {
 		if probe.Outcome != ProbeInconclusive {
 			t.Fatalf("outcome for %s = %q, want %q", probe.Protocol, probe.Outcome, ProbeInconclusive)
+		}
+		// The endpoint was reached and really did return an empty list, so this
+		// is the one case where blaming the model list is accurate.
+		if !strings.Contains(probe.Detail, "listed none") {
+			t.Fatalf("detail for %s = %q, want the empty model list reported", probe.Protocol, probe.Detail)
+		}
+	}
+}
+
+// An endpoint that was never reached must not be reported as having listed no
+// models: the inventory request failed, so the daemon has no observation about
+// the model list at all.
+func TestUpstreamProberAttributesAnUnreachableModelList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	server.Close()
+
+	result, err := NewUpstreamProber(nil).Probe(context.Background(), UpstreamProbeRequest{Provider: probeTestProvider(server.URL + "/v1")})
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if result.ModelsDetail == "" {
+		t.Fatal("an unreachable endpoint recorded no model list detail")
+	}
+	for _, probe := range result.Protocols {
+		if probe.Outcome != ProbeInconclusive {
+			t.Fatalf("outcome for %s = %q, want %q", probe.Protocol, probe.Outcome, ProbeInconclusive)
+		}
+		if !strings.Contains(probe.Detail, "model list is unavailable") {
+			t.Fatalf("detail for %s = %q, want the unavailable model list named", probe.Protocol, probe.Detail)
 		}
 	}
 }

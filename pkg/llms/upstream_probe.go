@@ -11,12 +11,18 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	appconfig "github.com/chaitin/agent-compose/pkg/config"
 )
 
 const (
-	// DefaultProbeTimeout bounds each probe request when the injected client
-	// carries no timeout of its own.
-	DefaultProbeTimeout = 10 * time.Second
+	// DefaultProbeTimeout bounds one probe when the caller injects neither a
+	// deadline nor a client timeout. It is the daemon's LLM_PROBE_TIMEOUT default
+	// rather than a second value of its own: a probe used to fall back to a
+	// different budget than a loaded configuration supplied, so whether the
+	// timeout was applied depended on whether the caller passed a fully
+	// materialized configuration.
+	DefaultProbeTimeout = appconfig.DefaultLLMProbeTimeout
 	// probeBodyLimit caps how much of a probe response is read and classified.
 	probeBodyLimit = 4 << 10
 	// probeDetailLimit caps the response excerpt a probe keeps for a log line.
@@ -89,12 +95,20 @@ func (r UpstreamProbeResult) SupportedProtocols() []Protocol {
 
 // Supports reports whether the probe proved the endpoint serves protocol.
 func (r UpstreamProbeResult) Supports(protocol Protocol) bool {
+	outcome, probed := r.Outcome(protocol)
+	return probed && outcome == ProbeSupported
+}
+
+// Outcome returns the verdict the probe reached for protocol, and whether the
+// protocol was probed at all. A caller that reasons about one protocol needs its
+// own verdict: another protocol's outcome is not evidence about this one.
+func (r UpstreamProbeResult) Outcome(protocol Protocol) (ProbeOutcome, bool) {
 	for _, probe := range r.Protocols {
-		if probe.Protocol == protocol && probe.Outcome == ProbeSupported {
-			return true
+		if probe.Protocol == protocol {
+			return probe.Outcome, true
 		}
 	}
-	return false
+	return "", false
 }
 
 // Proven reports whether the probe reached a supported-or-unsupported verdict
@@ -128,7 +142,11 @@ type UpstreamProber struct {
 }
 
 // NewUpstreamProber returns a prober that issues requests through client. A nil
-// client, or one without a timeout, gets DefaultProbeTimeout.
+// client, or one without a timeout, gets DefaultProbeTimeout, which is the same
+// budget the daemon applies around a probe through LLM_PROBE_TIMEOUT. A caller
+// that bounds the probe with its own context deadline still gets that deadline
+// first, because it is established before the request starts; the client timeout
+// is the backstop for a caller that supplies no deadline at all.
 func NewUpstreamProber(client *http.Client) *UpstreamProber {
 	if client == nil {
 		client = &http.Client{}
@@ -179,7 +197,7 @@ func (p *UpstreamProber) Probe(ctx context.Context, req UpstreamProbeRequest) (U
 		return result, fmt.Errorf("probe connection %q: a base url is required", provider.ID)
 	}
 	cacheKey := UpstreamProbeKey(provider)
-	if cached, ok := p.cache.Lookup(cacheKey); ok {
+	if cached, ok := p.cache.Lookup(cacheKey); ok && probeReuseMatches(cached, req.Model) {
 		cached.Cached = true
 		return cached, nil
 	}
@@ -196,12 +214,7 @@ func (p *UpstreamProber) Probe(ctx context.Context, req UpstreamProbeRequest) (U
 	result.Model = model
 	protocols := UpstreamProbeProtocols(provider)
 	if model == "" {
-		detail := "the connection declares no model and the endpoint listed none"
-		// An exhausted budget also arrives with no model, but the endpoint was
-		// never asked, so blaming its model list would be a false report.
-		if ctx.Err() != nil {
-			detail = "the probe budget ended before the endpoint could list a model"
-		}
+		detail := inconclusiveModelDetail(ctx, result)
 		for _, protocol := range protocols {
 			result.Protocols = append(result.Protocols, ProtocolProbe{
 				Protocol: protocol,
@@ -229,6 +242,43 @@ func (p *UpstreamProber) storeProbe(ctx context.Context, cacheKey string, result
 		return
 	}
 	p.cache.Store(cacheKey, result)
+}
+
+// probeReuseMatches reports whether a cached verdict answers the question this
+// probe would ask.
+//
+// The cache key covers the deployment — endpoint, family, headers, credential —
+// because protocol support is a property of the endpoint. The verdict itself
+// records the model it was taken with and the model list it read, so reusing one
+// model's verdict for another reports both wrongly: a connection whose declared
+// models changed kept reporting the previous probed_model and inventory for the
+// whole TTL, and the write-time probe that was supposed to refresh them returned
+// the stale verdict instead.
+//
+// A caller that names no model asks the endpoint to advertise one, which is the
+// same question every time, so any verdict for the deployment answers it.
+func probeReuseMatches(cached UpstreamProbeResult, requestedModel string) bool {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return true
+	}
+	return strings.TrimSpace(cached.Model) == requestedModel
+}
+
+// inconclusiveModelDetail explains why the protocol probes had no model to name.
+// Only a model list that was actually read and came back empty supports "the
+// endpoint listed none"; an exhausted budget or a failed inventory request means
+// the endpoint was never asked, and reporting the empty-list wording there would
+// blame a request the daemon never completed.
+func inconclusiveModelDetail(ctx context.Context, result UpstreamProbeResult) string {
+	switch {
+	case ctx.Err() != nil:
+		return "the probe budget ended before the endpoint could list a model"
+	case result.ModelsDetail != "":
+		return "the connection declares no model and the endpoint model list is unavailable: " + result.ModelsDetail
+	default:
+		return "the connection declares no model and the endpoint listed none"
+	}
 }
 
 // listModels performs the inventory request. Its outcome never gates the
@@ -341,14 +391,19 @@ func ClassifyProbeResponse(protocol Protocol, statusCode int, body []byte) Proto
 
 // DeclaredProtocolUnsupported reports the mismatch worth surfacing: the
 // connection declares a protocol the probe proved this endpoint cannot serve.
-// It reports false when the probe proved nothing, so an unreachable upstream
-// never produces a misleading claim.
+//
+// Only the declared protocol's own verdict is evidence about it. A sibling
+// protocol succeeding says nothing about this one, and an inconclusive outcome
+// is not a verdict at all, so the report stays false unless the probe reached
+// ProbeUnsupported for the declared protocol itself. That keeps the promise the
+// classification table makes: only a 404/405/501 verdict proves absence.
 func DeclaredProtocolUnsupported(provider Provider, result UpstreamProbeResult) (declared Protocol, supported []Protocol, mismatch bool) {
 	declared = NormalizeProtocol(provider.DefaultWireAPI)
-	if !declared.Valid() || !result.Proven() || result.Supports(declared) {
+	if !declared.Valid() {
 		return declared, result.SupportedProtocols(), false
 	}
-	return declared, result.SupportedProtocols(), true
+	outcome, probed := result.Outcome(declared)
+	return declared, result.SupportedProtocols(), probed && outcome == ProbeUnsupported
 }
 
 // LogUpstreamProbe writes the probe report in the operator-facing form used by

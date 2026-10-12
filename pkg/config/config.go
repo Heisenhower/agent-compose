@@ -20,6 +20,13 @@ import (
 const DefaultWorkspaceUploadLimitBytes int64 = 1 << 30
 const DefaultAgentComposeSocketPath = "/var/run/agent-compose.sock"
 const DefaultAgentTimeout = 10 * time.Hour
+
+// DefaultLLMProbeTimeout bounds one upstream LLM probe when LLM_PROBE_TIMEOUT is
+// unset. It is the single source of truth for that budget: pkg/llms uses it both
+// as the fallback for a configuration that carries no timeout and as the timeout
+// of a probe HTTP client built without one, so the two cannot drift apart.
+const DefaultLLMProbeTimeout = 15 * time.Second
+
 const defaultGuestHomePath = "/root"
 
 const (
@@ -496,7 +503,7 @@ func loadLLMEnvConfig(logger *slog.Logger) llmEnvConfig {
 			llmUpstreamProbe = parsed
 		}
 	}
-	llmProbeTimeout := 15 * time.Second
+	llmProbeTimeout := DefaultLLMProbeTimeout
 	if raw := os.Getenv("LLM_PROBE_TIMEOUT"); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err != nil {
 			logger.Warn("failed to parse LLM_PROBE_TIMEOUT", "value", raw, "error", err)

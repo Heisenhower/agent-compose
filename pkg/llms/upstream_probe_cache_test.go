@@ -147,3 +147,76 @@ func TestUpstreamProbeKeyFollowsEndpointAndCredential(t *testing.T) {
 		t.Fatal("a renamed connection changed the probe identity")
 	}
 }
+
+// The cache key covers the deployment, so a verdict taken with one model used to
+// answer a probe for another. The verdict records the model it was taken with and
+// the inventory it read, so the probe that was supposed to refresh them after a
+// connection's declared models changed kept reporting the previous model for the
+// whole TTL.
+func TestUpstreamProberDoesNotReuseAVerdictTakenWithAnotherModel(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/v1/models":
+			writeProbeJSON(w, `{"object":"list","data":[{"id":"first-model"},{"id":"second-model"}]}`)
+		case "/v1/chat/completions":
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := probeTestProvider(server.URL + "/v1")
+	prober := NewUpstreamProber(server.Client())
+	if _, err := prober.Probe(context.Background(), UpstreamProbeRequest{Provider: provider, Model: "first-model"}); err != nil {
+		t.Fatalf("Probe first model: %v", err)
+	}
+	afterFirst := requests.Load()
+
+	second, err := prober.Probe(context.Background(), UpstreamProbeRequest{Provider: provider, Model: "second-model"})
+	if err != nil {
+		t.Fatalf("Probe second model: %v", err)
+	}
+	if second.Cached {
+		t.Fatal("a probe for another model reused the previous model's verdict")
+	}
+	if second.Model != "second-model" {
+		t.Fatalf("probed model = %q, want the requested model", second.Model)
+	}
+	if requests.Load() == afterFirst {
+		t.Fatal("the probe for another model issued no request")
+	}
+
+	// Which protocols the endpoint speaks is a property of the deployment, so a
+	// probe that names no model is still answered from any verdict for it.
+	agnostic, err := prober.Probe(context.Background(), UpstreamProbeRequest{Provider: provider})
+	if err != nil {
+		t.Fatalf("Probe without a model: %v", err)
+	}
+	if !agnostic.Cached {
+		t.Fatal("a probe that names no model did not reuse a verdict for the deployment")
+	}
+}
+
+// A rotated endpoint or credential produces a key nothing revisits, so storing a
+// verdict also drops the entries that have expired instead of keeping one entry
+// per deployment the process has ever seen.
+func TestUpstreamProbeCacheDropsExpiredEntriesOnStore(t *testing.T) {
+	current := time.Unix(0, 0)
+	cache := NewUpstreamProbeCache(10 * time.Minute)
+	cache.now = func() time.Time { return current }
+	cache.Store("old", UpstreamProbeResult{Endpoint: "https://old.example/v1"})
+	current = current.Add(11 * time.Minute)
+	cache.Store("new", UpstreamProbeResult{Endpoint: "https://new.example/v1"})
+
+	cache.mu.Lock()
+	_, keptOld := cache.entries["old"]
+	_, storedNew := cache.entries["new"]
+	size := len(cache.entries)
+	cache.mu.Unlock()
+	if keptOld || !storedNew || size != 1 {
+		t.Fatalf("entries = %d, old kept = %v, new stored = %v; want only the new verdict", size, keptOld, storedNew)
+	}
+}
