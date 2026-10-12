@@ -418,6 +418,9 @@ message ValidateProjectResponse {
   bool valid = 1;
   repeated ProjectValidationIssue issues = 2;
   string spec_hash = 3;
+  // Same account as ApplyProjectResponse.network_policies, so `config`-style
+  // admission checks answer what will be enforced without applying anything.
+  repeated AgentNetworkPolicyReport network_policies = 4;
 }
 
 message ApplyProjectRequest {
@@ -444,6 +447,61 @@ message ApplyProjectResponse {
   repeated ProjectValidationIssue issues = 4;
   bool applied = 5;
   bool unchanged = 6;
+  // Per-agent account of the declared outbound network policy and the mechanism
+  // that will apply it, computed by the daemon because only it knows which
+  // drivers it compiled, whether its forward proxy can reach a sandbox, and the
+  // deployment's EGRESS_UNENFORCEABLE_POLICY. Agents that declared no policy are
+  // omitted: undeclared is not deny, so there is nothing to enforce or report.
+  repeated AgentNetworkPolicyReport network_policies = 7;
+}
+
+// AgentNetworkPolicyReport is one agent's declared outbound network policy and
+// what the engine will actually do about it. It is derived from the same
+// declaration the decision model is compiled from, so it cannot describe a
+// mechanism the creation path would not install.
+message AgentNetworkPolicyReport {
+  // The project-local agent name the declaration belongs to.
+  string agent = 1;
+  // The resolved runtime driver the report was computed for.
+  string driver = 2;
+  // False when the agent declared no policy. Such an agent is omitted from the
+  // response, so a consumer can rely on this being true.
+  bool declared = 3;
+  // False when the declaration cannot refuse anything, because an allow list
+  // only restricts under default: deny.
+  bool restricts = 4;
+  // The action applied to traffic no declared entry matches.
+  string default = 5;
+  // The declared allowances, in declaration order.
+  repeated DeclaredNetworkAllowance allow = 6;
+  // Whether the engine's own forward proxy will apply the declaration instead
+  // of the driver.
+  bool mediated = 7;
+  // Whether the effective mechanism applies the declaration.
+  bool enforced = 8;
+  // The mechanism's strength: "none" or "allowlist".
+  string strength = 9;
+  // The concrete mechanism, for example "forward_proxy".
+  string mechanism = 10;
+  // The parts of the declaration the mechanism does not apply. Empty when it
+  // applies all of it.
+  repeated string unapplied = 11;
+  // What the operator must know when the declaration will not be enforced as
+  // written, including what the deployment's EGRESS_UNENFORCEABLE_POLICY does
+  // about it. Empty when it will be enforced.
+  string warning = 12;
+}
+
+// DeclaredNetworkAllowance is one declared allowance as it appears in a report.
+message DeclaredNetworkAllowance {
+  // The canonical host:port/protocol pattern.
+  string endpoint = 1;
+  // False for an opaque allowance (protocol any/tcp/udp), which must not be
+  // presented as a checked one.
+  bool inspectable = 2;
+  // The canonical CIDR ranges the name may resolve to. Empty when the
+  // declaration left the addresses unconstrained.
+  repeated string allowed_ips = 3;
 }
 
 message PatchProjectRequest {

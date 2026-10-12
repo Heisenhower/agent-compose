@@ -53,6 +53,9 @@ func runComposeConfigCommand(cmd *cobra.Command, cli cliOptions, options compose
 		if err := writeDeprecatedPolicyBlockWarnings(cmd.ErrOrStderr(), deprecatedPolicyBlocks); err != nil {
 			return err
 		}
+		if err := writeComposeDeclaredNetworkPolicyNotes(cmd.ErrOrStderr(), normalized); err != nil {
+			return err
+		}
 	}
 	if options.Quiet {
 		return nil
@@ -132,14 +135,26 @@ func runComposeUpCommand(cmd *cobra.Command, cli cliOptions) error {
 	if err := writeRunWarnings(cmd.ErrOrStderr(), warnings); err != nil {
 		return err
 	}
+	output := composeUpOutputFromResponse(msg)
+	if err := writeRunWarnings(cmd.ErrOrStderr(), composeNetworkPolicyWarnings(output.NetworkPolicies)); err != nil {
+		return err
+	}
 	if cli.JSON {
-		data, err := json.MarshalIndent(composeUpOutputFromResponse(msg), "", "  ")
+		data, err := json.MarshalIndent(output, "", "  ")
 		if err != nil {
 			return err
 		}
 		return writeCommandOutput(cmd.OutOrStdout(), append(data, '\n'))
 	}
-	return writeComposeUpText(cmd.OutOrStdout(), composeDisplayChangesFromProjectChanges(msg.GetChanges(), normalized, msg.GetProject().GetSummary().GetProjectId()))
+	if err := writeComposeUpText(cmd.OutOrStdout(), composeDisplayChangesFromProjectChanges(msg.GetChanges(), normalized, msg.GetProject().GetSummary().GetProjectId())); err != nil {
+		return err
+	}
+	if len(output.NetworkPolicies) > 0 {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout()); err != nil {
+			return err
+		}
+	}
+	return writeComposeNetworkPolicyReport(cmd.OutOrStdout(), output.NetworkPolicies)
 }
 
 func runComposeDownCommand(cmd *cobra.Command, cli cliOptions) error {

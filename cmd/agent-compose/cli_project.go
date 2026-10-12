@@ -111,11 +111,12 @@ func resolveComposeProject(cli cliOptions) (string, *compose.NormalizedProjectSp
 }
 
 type composeUpOutput struct {
-	Project   composeUpProjectOutput  `json:"project"`
-	Revision  composeUpRevisionOutput `json:"revision"`
-	Applied   bool                    `json:"applied"`
-	Unchanged bool                    `json:"unchanged"`
-	Changes   []composeUpChangeOutput `json:"changes"`
+	Project         composeUpProjectOutput       `json:"project"`
+	Revision        composeUpRevisionOutput      `json:"revision"`
+	Applied         bool                         `json:"applied"`
+	Unchanged       bool                         `json:"unchanged"`
+	Changes         []composeUpChangeOutput      `json:"changes"`
+	NetworkPolicies []composeNetworkPolicyOutput `json:"network_policies,omitempty"`
 }
 
 type composeDownOutput struct {
@@ -240,9 +241,10 @@ func composeUpOutputFromResponse(resp *agentcomposev2.ApplyProjectResponse) comp
 			Revision: revision.GetRevision(),
 			SpecHash: revision.GetSpecHash(),
 		},
-		Applied:   resp.GetApplied(),
-		Unchanged: resp.GetUnchanged(),
-		Changes:   changes,
+		Applied:         resp.GetApplied(),
+		Unchanged:       resp.GetUnchanged(),
+		Changes:         changes,
+		NetworkPolicies: composeNetworkPoliciesFromProto(resp.GetNetworkPolicies()),
 	}
 }
 

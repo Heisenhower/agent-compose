@@ -1148,6 +1148,18 @@ The declaration is validated, hashed, round-trips through the API, and compiles 
 - When the sandbox has no address for the proxy (a deployment where the daemon is not reachable from inside the sandbox), the declaration cannot be applied and the sandbox is **reported as unenforced and still runs** — a restriction the platform cannot deliver must not become an availability failure. The daemon logs `declared network policy is not enforced` with the sandbox, driver, and reason, and the capability report states the same limit, so an unenforced declaration is never presented as a control. Set `EGRESS_UNENFORCEABLE_POLICY=refuse` to reject the sandbox in that case instead; the refusal happens while the sandbox is created (inside a run or a scheduler tick), so a deployment that requires the constraint to be real should treat the project as invalid rather than relying on that error.
 - A declaration whose default is `allow-all` (including an `allow` list without `default: deny`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start.
 
+**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
+
+```
+Network policy
+  worker (driver docker)
+    declared  default deny, 1 allowance(s)
+      - api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+    enforced  forward_proxy (allowlist), the engine's forward proxy
+```
+
+A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy are not listed — undeclared is not deny, so there is nothing to report. `agent-compose up --json` carries the same account under `network_policies`.
+
 **When a declaration takes effect.** It depends on which mechanism applies it:
 
 - The engine's forward proxy reads the declaration **on every request**, so on a proxied sandbox an edit takes effect immediately, without recreating or restarting anything. A credential is issued once per sandbox creation; the policy behind it is re-read each time.

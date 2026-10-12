@@ -65,6 +65,7 @@ func RegisterDependencies(di do.Injector) {
 	do.Provide(di, NewTelemetryRecorder)
 	do.Provide(di, NewRuntimeProvider)
 	do.Provide(di, NewEgressProxy)
+	do.Provide(di, NewSandboxEgressMediation)
 	do.Provide(di, NewLLMClient)
 	do.Provide(di, NewProjectOctoBusTargetResolver)
 	do.Provide(di, NewCapabilityProvider)
@@ -105,7 +106,11 @@ func RegisterRoutes(di do.Injector) {
 	schedulerController := do.MustInvoke[*schedulers.Controller](di)
 
 	projectHandler := api.NewProjectHandlerWithAgentModels(api.ProjectHandlerDeps{
-		Delegate:         projectControllerDelegate{controller: do.MustInvoke[*projects.Controller](di)},
+		Delegate: projectControllerDelegate{
+			controller: do.MustInvoke[*projects.Controller](di),
+			mediation:  do.MustInvoke[*adapters.SandboxEgressProxy](di),
+			config:     do.MustInvoke[*appconfig.Config](di),
+		},
 		Store:            do.MustInvoke[*configstore.ConfigStore](di),
 		SchedulerRuntime: schedulerController,
 		SchedulerRuns:    schedulerController.SchedulerRuns(),
@@ -411,12 +416,7 @@ func NewRuntimeProvider(di do.Injector) (adapters.RuntimeProvider, error) {
 		sandboxStore,
 		targets,
 		adapters.WithRuntimeRecorder(do.MustInvoke[*telemetry.Recorder](di)),
-		adapters.WithSandboxEgressProxy(adapters.NewSandboxEgressProxy(
-			config,
-			do.MustInvoke[*configstore.ConfigStore](di),
-			sandboxStore,
-			targets,
-		)),
+		adapters.WithSandboxEgressProxy(*do.MustInvoke[*adapters.SandboxEgressProxy](di)),
 	)
 }
 
@@ -426,19 +426,27 @@ func NewRuntimeProvider(di do.Injector) (adapters.RuntimeProvider, error) {
 // sandbox does this credential belong to) and its policy source (what does that
 // sandbox's project declare now).
 func NewEgressProxy(di do.Injector) (*proxy.EgressProxy, error) {
-	config := do.MustInvoke[*appconfig.Config](di)
-	sandboxStore := do.MustInvoke[*sandboxstore.Store](di)
-	mediation := adapters.NewSandboxEgressProxy(
-		config,
-		do.MustInvoke[*configstore.ConfigStore](di),
-		sandboxStore,
-		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
-	)
+	mediation := *do.MustInvoke[*adapters.SandboxEgressProxy](di)
 	return proxy.NewEgressProxy(proxy.EgressProxyOptions{
 		Authorizer: mediation,
 		Policies:   mediation,
 		Logger:     do.MustInvoke[*slog.Logger](di),
 	})
+}
+
+// NewSandboxEgressMediation builds the one mediation value the daemon shares:
+// the proxy uses it as its authorizer and policy source, the creation seam uses
+// it to decide whether a sandbox is given the proxy, and the admission report
+// uses it to name the mechanism that will apply a declaration. One value means
+// the three cannot disagree about whether the engine mediates.
+func NewSandboxEgressMediation(di do.Injector) (*adapters.SandboxEgressProxy, error) {
+	mediation := adapters.NewSandboxEgressProxy(
+		do.MustInvoke[*appconfig.Config](di),
+		do.MustInvoke[*configstore.ConfigStore](di),
+		do.MustInvoke[*sandboxstore.Store](di),
+		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
+	)
+	return &mediation, nil
 }
 
 func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {

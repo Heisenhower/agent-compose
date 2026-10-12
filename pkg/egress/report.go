@@ -23,6 +23,11 @@ type DeclaredAllowance struct {
 	// Inspectable is false for an opaque allowance (protocol any/tcp/udp),
 	// which the report must not present as a checked one.
 	Inspectable bool
+	// AllowedIPs lists the canonical CIDR ranges this entry's name may resolve
+	// to. It is empty when the declaration left the addresses unconstrained,
+	// which the report must state rather than imply a constraint that is not
+	// there.
+	AllowedIPs []string
 }
 
 // NetworkPolicyReport is the auditable account of one sandbox's declared
@@ -67,6 +72,7 @@ func ReportNetworkPolicy(declaration *NetworkDeclaration, engine []EngineEndpoin
 		report.Allow = append(report.Allow, DeclaredAllowance{
 			Endpoint:    FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol),
 			Inspectable: protocol.Inspectable(),
+			AllowedIPs:  append([]string(nil), entry.AllowedIPs...),
 		})
 	}
 	if declaration.Default != Deny {

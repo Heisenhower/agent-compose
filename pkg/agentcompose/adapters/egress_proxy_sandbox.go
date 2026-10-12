@@ -86,6 +86,19 @@ func (p SandboxEgressProxy) available(session *domain.Sandbox) bool {
 	return egressProxyAddress(p.config, session) != ""
 }
 
+// MediatesDriver reports whether a sandbox on driver would be routed through the
+// engine's forward proxy. It answers the same address-resolution question
+// available asks, with the per-sandbox inputs an admission report cannot know
+// yet (the sandbox ID and the environment a project declares for it), so an
+// admission-time report cannot claim mediation the creation seam would not set.
+func (p SandboxEgressProxy) MediatesDriver(driver string) bool {
+	if p.credentials == nil || p.sandboxes == nil {
+		return false
+	}
+	session := &domain.Sandbox{Summary: domain.SandboxSummary{Driver: driverpkg.ResolveRuntimeDriver(driver)}}
+	return egressProxyAddress(p.config, session) != ""
+}
+
 // Enable issues the sandbox's proxy credential and returns the environment that
 // routes its HTTP traffic through the engine's forward proxy. It returns no
 // environment and no error when this deployment cannot offer a reachable proxy,

@@ -1,0 +1,146 @@
+package app
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/chaitin/agent-compose/pkg/compose"
+	appconfig "github.com/chaitin/agent-compose/pkg/config"
+)
+
+type staticMediation struct {
+	drivers map[string]bool
+}
+
+func (m staticMediation) MediatesDriver(driver string) bool {
+	return m.drivers[driver]
+}
+
+func normalizedAgentWithNetwork(name, driver string, network *compose.NormalizedSandboxNetworkSpec) compose.NormalizedAgentSpec {
+	agent := compose.NormalizedAgentSpec{Name: name}
+	if driver != "" {
+		agent.Driver = &compose.NormalizedDriverSpec{Name: driver}
+	}
+	if network != nil {
+		agent.Policy = &compose.NormalizedSandboxSpec{Network: network}
+	}
+	return agent
+}
+
+// TestAgentNetworkPolicyReportsNameTheMechanismAndTheGap pins the admission
+// account: a declaration is reported with its addresses, the mechanism that will
+// apply it is named, and a declaration the mechanism cannot deliver says so
+// rather than being presented as a control.
+func TestAgentNetworkPolicyReportsNameTheMechanismAndTheGap(t *testing.T) {
+	deny := &compose.NormalizedSandboxNetworkSpec{
+		Default: compose.SandboxNetworkDefaultDeny,
+		Allow: []compose.NormalizedSandboxNetworkAllowSpec{{
+			Host: "api.github.com", Port: 443, Protocol: "https",
+			AllowedIPs: []string{"203.0.113.0/24"},
+		}},
+	}
+	allowAll := &compose.NormalizedSandboxNetworkSpec{Default: compose.SandboxNetworkDefaultAllowAll}
+	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
+		normalizedAgentWithNetwork("worker", "", deny),
+		normalizedAgentWithNetwork("builder", "microsandbox", deny),
+		normalizedAgentWithNetwork("helper", "docker", allowAll),
+		normalizedAgentWithNetwork("plain", "docker", nil),
+	}}
+
+	reports, err := agentNetworkPolicyReports(spec, staticMediation{drivers: map[string]bool{"docker": true}}, &appconfig.Config{})
+	if err != nil {
+		t.Fatalf("agentNetworkPolicyReports() error = %v", err)
+	}
+	if len(reports) != 3 {
+		t.Fatalf("reports = %+v, want one per agent that declared a policy", reports)
+	}
+	// Declared allowances are reported in a stable, agent-sorted order.
+	if got := []string{reports[0].Agent, reports[1].Agent, reports[2].Agent}; !equalStrings(got, []string{"builder", "helper", "worker"}) {
+		t.Fatalf("reported agents = %v, want builder, helper, worker", got)
+	}
+
+	worker := reports[2]
+	if worker.Driver != "docker" || !worker.Restricts || !worker.Enforced || !worker.Mediated {
+		t.Fatalf("worker report = %+v, want an enforced mediated default-deny policy on the default driver", worker)
+	}
+	if worker.Enforcement.Mechanism != "forward_proxy" {
+		t.Fatalf("worker mechanism = %q, want forward_proxy", worker.Enforcement.Mechanism)
+	}
+	if len(worker.Allow) != 1 || !equalStrings(worker.Allow[0].AllowedIPs, []string{"203.0.113.0/24"}) {
+		t.Fatalf("worker allow = %+v, want the declared address range", worker.Allow)
+	}
+	if worker.Warning != "" || len(worker.Unapplied) != 0 {
+		t.Fatalf("worker report = %+v, want nothing unapplied through the proxy", worker)
+	}
+
+	// The engine cannot reach this agent's sandbox through the proxy, and the
+	// driver applies destinations but not addresses: the report names the part
+	// it leaves, and the creation gate reports the same gap.
+	builder := reports[0]
+	if !builder.Enforced || builder.Mediated {
+		t.Fatalf("builder report = %+v, want the driver's own mechanism", builder)
+	}
+	if len(builder.Unapplied) != 1 || !strings.Contains(builder.Unapplied[0], "addresses") {
+		t.Fatalf("builder unapplied = %v, want the address constraint", builder.Unapplied)
+	}
+	if !strings.Contains(builder.Warning, "does not constrain which addresses") {
+		t.Fatalf("builder warning = %q, want the address limit", builder.Warning)
+	}
+
+	helper := reports[1]
+	if helper.Restricts || helper.Enforced {
+		t.Fatalf("helper report = %+v, want a declared allow-all policy that restricts nothing", helper)
+	}
+}
+
+// TestAgentNetworkPolicyReportsStateTheOutcomeOfAnUnenforceableDeclaration pins
+// that admission answers "and then what": the report names the deployment's own
+// EGRESS_UNENFORCEABLE_POLICY rather than leaving it to be looked up.
+func TestAgentNetworkPolicyReportsStateTheOutcomeOfAnUnenforceableDeclaration(t *testing.T) {
+	deny := &compose.NormalizedSandboxNetworkSpec{Default: compose.SandboxNetworkDefaultDeny}
+	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
+		normalizedAgentWithNetwork("worker", "k8s", deny),
+	}}
+
+	for _, test := range []struct {
+		mode appconfig.EgressUnenforceablePolicy
+		want string
+	}{
+		{mode: appconfig.EgressUnenforceableWarn, want: "EGRESS_UNENFORCEABLE_POLICY=warn"},
+		{mode: appconfig.EgressUnenforceableRefuse, want: "EGRESS_UNENFORCEABLE_POLICY=refuse"},
+	} {
+		reports, err := agentNetworkPolicyReports(spec, nil, &appconfig.Config{EgressUnenforceablePolicy: test.mode})
+		if err != nil {
+			t.Fatalf("agentNetworkPolicyReports(%q) error = %v", test.mode, err)
+		}
+		if len(reports) != 1 || reports[0].Enforced {
+			t.Fatalf("reports = %+v, want one unenforced declaration", reports)
+		}
+		if !strings.Contains(reports[0].Warning, test.want) {
+			t.Fatalf("warning = %q, want it to name %q", reports[0].Warning, test.want)
+		}
+	}
+}
+
+// TestAgentNetworkPolicyReportsRejectADeclarationTheEngineCannotRead pins that
+// admission fails instead of describing a project the engine does not have.
+func TestAgentNetworkPolicyReportsRejectADeclarationTheEngineCannotRead(t *testing.T) {
+	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
+		normalizedAgentWithNetwork("worker", "docker", &compose.NormalizedSandboxNetworkSpec{Default: "sometimes"}),
+	}}
+	if _, err := agentNetworkPolicyReports(spec, nil, nil); err == nil {
+		t.Fatal("agentNetworkPolicyReports() error = nil, want a rejection of the unknown default")
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index] != b[index] {
+			return false
+		}
+	}
+	return true
+}

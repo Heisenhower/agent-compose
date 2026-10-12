@@ -1126,6 +1126,18 @@ policy:
 - 当 sandbox 没有任何可达的代理地址时（例如 daemon 在 sandbox 内部不可达的部署），声明无法被执行，此时会**报告该声明未被执行，sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可在这种情况下改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
 - 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。
 
+**准入阶段会报告这些信息，你不必自行推断。**`config` 会把声明的策略（各条 allow、是否可检视、以及声明的地址范围）打印到 stderr，同时保持 stdout 上的规范化 spec 不变。`up` 与 `apply` 则从 daemon 自身的视角回答准入阶段真正重要的问题——每条声明最终由哪种机制执行：
+
+```
+Network policy
+  worker (driver docker)
+    declared  default deny, 1 allowance(s)
+      - api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+    enforced  forward_proxy (allowlist), the engine's forward proxy
+```
+
+引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。未声明策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息。
+
 **声明何时生效。** 取决于由哪个机制执行它：
 
 - 引擎的正向代理**在每个请求上重新读取声明**，因此在被代理的 sandbox 上，一次修改立即生效，无需重建或重启任何东西。凭据在 sandbox 创建时签发一次；凭据背后的策略每次都会重读。

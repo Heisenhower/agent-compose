@@ -1,0 +1,247 @@
+package main
+
+import (
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+
+	"github.com/chaitin/agent-compose/pkg/compose"
+	"github.com/chaitin/agent-compose/pkg/egress"
+	agentcomposev2 "github.com/chaitin/agent-compose/proto/agentcompose/v2"
+)
+
+// composeNetworkPolicyOutput is the per-agent admission account of a declared
+// outbound network policy: what was declared, and the mechanism that will apply
+// it. It is rendered from the daemon's report rather than re-derived here,
+// because only the daemon knows which drivers it compiled and whether its
+// forward proxy can reach a sandbox.
+type composeNetworkPolicyOutput struct {
+	Agent     string                      `json:"agent"`
+	Driver    string                      `json:"driver"`
+	Restricts bool                        `json:"restricts"`
+	Default   string                      `json:"default"`
+	Allow     []composeNetworkAllowOutput `json:"allow"`
+	Mediated  bool                        `json:"mediated"`
+	Enforced  bool                        `json:"enforced"`
+	Strength  string                      `json:"strength"`
+	Mechanism string                      `json:"mechanism"`
+	Unapplied []string                    `json:"unapplied,omitempty"`
+	Warning   string                      `json:"warning,omitempty"`
+}
+
+type composeNetworkAllowOutput struct {
+	Endpoint    string   `json:"endpoint"`
+	Inspectable bool     `json:"inspectable"`
+	AllowedIPs  []string `json:"allowed_ips,omitempty"`
+}
+
+func composeNetworkPoliciesFromProto(reports []*agentcomposev2.AgentNetworkPolicyReport) []composeNetworkPolicyOutput {
+	if len(reports) == 0 {
+		return nil
+	}
+	policies := make([]composeNetworkPolicyOutput, 0, len(reports))
+	for _, report := range reports {
+		allow := make([]composeNetworkAllowOutput, 0, len(report.GetAllow()))
+		for _, entry := range report.GetAllow() {
+			allow = append(allow, composeNetworkAllowOutput{
+				Endpoint:    entry.GetEndpoint(),
+				Inspectable: entry.GetInspectable(),
+				AllowedIPs:  append([]string(nil), entry.GetAllowedIps()...),
+			})
+		}
+		policies = append(policies, composeNetworkPolicyOutput{
+			Agent:     report.GetAgent(),
+			Driver:    report.GetDriver(),
+			Restricts: report.GetRestricts(),
+			Default:   report.GetDefault(),
+			Allow:     allow,
+			Mediated:  report.GetMediated(),
+			Enforced:  report.GetEnforced(),
+			Strength:  report.GetStrength(),
+			Mechanism: report.GetMechanism(),
+			Unapplied: append([]string(nil), report.GetUnapplied()...),
+			Warning:   report.GetWarning(),
+		})
+	}
+	return policies
+}
+
+// composeNetworkPolicyWarnings collects the declarations the engine will not
+// enforce as written, so they are visible on stderr even when the report itself
+// is redirected. Agents that share one gap share one warning: the reason is a
+// property of the mechanism, and repeating it per agent would bury the agents it
+// applies to.
+func composeNetworkPolicyWarnings(policies []composeNetworkPolicyOutput) []string {
+	byWarning := make(map[string][]string)
+	order := make([]string, 0, len(policies))
+	for _, policy := range policies {
+		warning := strings.TrimSpace(policy.Warning)
+		if warning == "" {
+			continue
+		}
+		if _, seen := byWarning[warning]; !seen {
+			order = append(order, warning)
+		}
+		byWarning[warning] = append(byWarning[warning], policy.Agent)
+	}
+	warnings := make([]string, 0, len(order))
+	for _, warning := range order {
+		agents := byWarning[warning]
+		sort.Strings(agents)
+		noun := "agent"
+		if len(agents) > 1 {
+			noun = "agents"
+		}
+		warnings = append(warnings, fmt.Sprintf("%s %s: %s", noun, strings.Join(agents, ", "), warning))
+	}
+	return warnings
+}
+
+// writeComposeNetworkPolicyReport renders what each agent declared and what the
+// engine will do about it. The lines are ordered so the declared fact and the
+// enforced mechanism are adjacent: the point of the report is the difference
+// between them.
+func writeComposeNetworkPolicyReport(out io.Writer, policies []composeNetworkPolicyOutput) error {
+	if len(policies) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(out, "Network policy"); err != nil {
+		return err
+	}
+	for _, policy := range policies {
+		if err := writeComposeAgentNetworkPolicy(out, policy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeComposeAgentNetworkPolicy(out io.Writer, policy composeNetworkPolicyOutput) error {
+	if _, err := fmt.Fprintf(out, "  %s (driver %s)\n", policy.Agent, policy.Driver); err != nil {
+		return err
+	}
+	if !policy.Restricts {
+		// An undeclared policy cannot reach here, so this is a declared policy
+		// that refuses nothing: the documented behavior of an allow list without
+		// a deny default.
+		if _, err := fmt.Fprintf(out, "    declared  default %s with %d allowance(s): egress is not restricted, because an allow list only restricts under default: deny\n", policy.Default, len(policy.Allow)); err != nil {
+			return err
+		}
+		return writeComposeNetworkAllowances(out, policy.Allow)
+	}
+	if _, err := fmt.Fprintf(out, "    declared  default %s, %d allowance(s)\n", policy.Default, len(policy.Allow)); err != nil {
+		return err
+	}
+	if err := writeComposeNetworkAllowances(out, policy.Allow); err != nil {
+		return err
+	}
+	if !policy.Enforced {
+		if _, err := fmt.Fprintf(out, "    enforced  no: %s\n", policy.Warning); err != nil {
+			return err
+		}
+	} else {
+		mechanism := fmt.Sprintf("%s (%s)", policy.Mechanism, policy.Strength)
+		if policy.Mediated {
+			mechanism += ", the engine's forward proxy"
+		}
+		if _, err := fmt.Fprintf(out, "    enforced  %s\n", mechanism); err != nil {
+			return err
+		}
+	}
+	// The parts the mechanism leaves are stated whenever they exist, enforced or
+	// not: a partially applied declaration is the case a reader is most likely to
+	// mistake for a complete one.
+	if len(policy.Unapplied) > 0 {
+		if _, err := fmt.Fprintf(out, "    partial   %s\n", strings.Join(policy.Unapplied, ", ")); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeComposeNetworkAllowances(out io.Writer, allow []composeNetworkAllowOutput) error {
+	for _, entry := range allow {
+		detail := "not inspectable"
+		if entry.Inspectable {
+			detail = "inspectable"
+		}
+		if len(entry.AllowedIPs) > 0 {
+			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
+		}
+		if _, err := fmt.Fprintf(out, "      - %s (%s)\n", entry.Endpoint, detail); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// writeComposeDeclaredNetworkPolicyNotes reports what a project declares about
+// sandbox egress without claiming what the engine will do about it. `config`
+// reads the project locally and never contacts the daemon, so the enforcement
+// mechanism — which depends on the daemon's compiled drivers and whether its
+// forward proxy can reach a sandbox — is decided and reported by `up`/`apply`.
+//
+// It is written to stderr so the canonical spec on stdout keeps its contract,
+// and it stays silent for a project that declares no policy.
+func writeComposeDeclaredNetworkPolicyNotes(out io.Writer, spec *compose.NormalizedProjectSpec) error {
+	if spec == nil {
+		return nil
+	}
+	names := make([]string, 0, len(spec.Agents))
+	networks := make(map[string]*compose.NormalizedSandboxNetworkSpec, len(spec.Agents))
+	for _, agent := range spec.Agents {
+		if agent.PolicyBlock().Network == nil {
+			continue
+		}
+		names = append(names, agent.Name)
+		networks[agent.Name] = agent.PolicyBlock().Network
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	sort.Strings(names)
+	if _, err := fmt.Fprintln(out, "declared network policy (what the daemon will enforce is reported by up/apply):"); err != nil {
+		return err
+	}
+	for _, name := range names {
+		declaration, err := networks[name].EgressDeclaration()
+		if err != nil {
+			return fmt.Errorf("agent %s: %w", name, err)
+		}
+		// The declared half of the account comes from the same function the
+		// daemon's report uses, so the two cannot describe different policies.
+		report, err := egress.ReportNetworkPolicy(&declaration, nil)
+		if err != nil {
+			return fmt.Errorf("agent %s: %w", name, err)
+		}
+		if err := writeDeclaredNetworkPolicy(out, name, report); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeDeclaredNetworkPolicy(out io.Writer, agent string, report egress.NetworkPolicyReport) error {
+	if _, err := fmt.Fprintf(out, "  %s  default %s, %d allowance(s)\n", agent, report.Default, len(report.Allow)); err != nil {
+		return err
+	}
+	if report.Default != egress.Deny && len(report.Allow) > 0 {
+		if _, err := fmt.Fprintln(out, "    egress is not restricted: an allow list only restricts under default: deny"); err != nil {
+			return err
+		}
+	}
+	for _, entry := range report.Allow {
+		detail := "not inspectable"
+		if entry.Inspectable {
+			detail = "inspectable"
+		}
+		if len(entry.AllowedIPs) > 0 {
+			detail += ", addresses " + strings.Join(entry.AllowedIPs, " ")
+		}
+		if _, err := fmt.Fprintf(out, "    - %s (%s)\n", entry.Endpoint, detail); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -2041,12 +2041,15 @@ func (x *ValidateProjectRequest) GetSubmittedSpecHash() string {
 }
 
 type ValidateProjectResponse struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Valid         bool                      `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
-	Issues        []*ProjectValidationIssue `protobuf:"bytes,2,rep,name=issues,proto3" json:"issues,omitempty"`
-	SpecHash      string                    `protobuf:"bytes,3,opt,name=spec_hash,json=specHash,proto3" json:"spec_hash,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state    protoimpl.MessageState    `protogen:"open.v1"`
+	Valid    bool                      `protobuf:"varint,1,opt,name=valid,proto3" json:"valid,omitempty"`
+	Issues   []*ProjectValidationIssue `protobuf:"bytes,2,rep,name=issues,proto3" json:"issues,omitempty"`
+	SpecHash string                    `protobuf:"bytes,3,opt,name=spec_hash,json=specHash,proto3" json:"spec_hash,omitempty"`
+	// Same account as ApplyProjectResponse.network_policies, so `config`-style
+	// admission checks answer what will be enforced without applying anything.
+	NetworkPolicies []*AgentNetworkPolicyReport `protobuf:"bytes,4,rep,name=network_policies,json=networkPolicies,proto3" json:"network_policies,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ValidateProjectResponse) Reset() {
@@ -2098,6 +2101,13 @@ func (x *ValidateProjectResponse) GetSpecHash() string {
 		return x.SpecHash
 	}
 	return ""
+}
+
+func (x *ValidateProjectResponse) GetNetworkPolicies() []*AgentNetworkPolicyReport {
+	if x != nil {
+		return x.NetworkPolicies
+	}
+	return nil
 }
 
 type ApplyProjectRequest struct {
@@ -2179,15 +2189,21 @@ func (x *ApplyProjectRequest) GetDryRun() bool {
 }
 
 type ApplyProjectResponse struct {
-	state         protoimpl.MessageState    `protogen:"open.v1"`
-	Project       *Project                  `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
-	Revision      *ProjectRevision          `protobuf:"bytes,2,opt,name=revision,proto3" json:"revision,omitempty"`
-	Changes       []*ProjectChange          `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
-	Issues        []*ProjectValidationIssue `protobuf:"bytes,4,rep,name=issues,proto3" json:"issues,omitempty"`
-	Applied       bool                      `protobuf:"varint,5,opt,name=applied,proto3" json:"applied,omitempty"`
-	Unchanged     bool                      `protobuf:"varint,6,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state     protoimpl.MessageState    `protogen:"open.v1"`
+	Project   *Project                  `protobuf:"bytes,1,opt,name=project,proto3" json:"project,omitempty"`
+	Revision  *ProjectRevision          `protobuf:"bytes,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	Changes   []*ProjectChange          `protobuf:"bytes,3,rep,name=changes,proto3" json:"changes,omitempty"`
+	Issues    []*ProjectValidationIssue `protobuf:"bytes,4,rep,name=issues,proto3" json:"issues,omitempty"`
+	Applied   bool                      `protobuf:"varint,5,opt,name=applied,proto3" json:"applied,omitempty"`
+	Unchanged bool                      `protobuf:"varint,6,opt,name=unchanged,proto3" json:"unchanged,omitempty"`
+	// Per-agent account of the declared outbound network policy and the mechanism
+	// that will apply it, computed by the daemon because only it knows which
+	// drivers it compiled, whether its forward proxy can reach a sandbox, and the
+	// deployment's EGRESS_UNENFORCEABLE_POLICY. Agents that declared no policy are
+	// omitted: undeclared is not deny, so there is nothing to enforce or report.
+	NetworkPolicies []*AgentNetworkPolicyReport `protobuf:"bytes,7,rep,name=network_policies,json=networkPolicies,proto3" json:"network_policies,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ApplyProjectResponse) Reset() {
@@ -2262,6 +2278,233 @@ func (x *ApplyProjectResponse) GetUnchanged() bool {
 	return false
 }
 
+func (x *ApplyProjectResponse) GetNetworkPolicies() []*AgentNetworkPolicyReport {
+	if x != nil {
+		return x.NetworkPolicies
+	}
+	return nil
+}
+
+// AgentNetworkPolicyReport is one agent's declared outbound network policy and
+// what the engine will actually do about it. It is derived from the same
+// declaration the decision model is compiled from, so it cannot describe a
+// mechanism the creation path would not install.
+type AgentNetworkPolicyReport struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The project-local agent name the declaration belongs to.
+	Agent string `protobuf:"bytes,1,opt,name=agent,proto3" json:"agent,omitempty"`
+	// The resolved runtime driver the report was computed for.
+	Driver string `protobuf:"bytes,2,opt,name=driver,proto3" json:"driver,omitempty"`
+	// False when the agent declared no policy. Such an agent is omitted from the
+	// response, so a consumer can rely on this being true.
+	Declared bool `protobuf:"varint,3,opt,name=declared,proto3" json:"declared,omitempty"`
+	// False when the declaration cannot refuse anything, because an allow list
+	// only restricts under default: deny.
+	Restricts bool `protobuf:"varint,4,opt,name=restricts,proto3" json:"restricts,omitempty"`
+	// The action applied to traffic no declared entry matches.
+	Default string `protobuf:"bytes,5,opt,name=default,proto3" json:"default,omitempty"`
+	// The declared allowances, in declaration order.
+	Allow []*DeclaredNetworkAllowance `protobuf:"bytes,6,rep,name=allow,proto3" json:"allow,omitempty"`
+	// Whether the engine's own forward proxy will apply the declaration instead
+	// of the driver.
+	Mediated bool `protobuf:"varint,7,opt,name=mediated,proto3" json:"mediated,omitempty"`
+	// Whether the effective mechanism applies the declaration.
+	Enforced bool `protobuf:"varint,8,opt,name=enforced,proto3" json:"enforced,omitempty"`
+	// The mechanism's strength: "none" or "allowlist".
+	Strength string `protobuf:"bytes,9,opt,name=strength,proto3" json:"strength,omitempty"`
+	// The concrete mechanism, for example "forward_proxy".
+	Mechanism string `protobuf:"bytes,10,opt,name=mechanism,proto3" json:"mechanism,omitempty"`
+	// The parts of the declaration the mechanism does not apply. Empty when it
+	// applies all of it.
+	Unapplied []string `protobuf:"bytes,11,rep,name=unapplied,proto3" json:"unapplied,omitempty"`
+	// What the operator must know when the declaration will not be enforced as
+	// written, including what the deployment's EGRESS_UNENFORCEABLE_POLICY does
+	// about it. Empty when it will be enforced.
+	Warning       string `protobuf:"bytes,12,opt,name=warning,proto3" json:"warning,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AgentNetworkPolicyReport) Reset() {
+	*x = AgentNetworkPolicyReport{}
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AgentNetworkPolicyReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AgentNetworkPolicyReport) ProtoMessage() {}
+
+func (x *AgentNetworkPolicyReport) ProtoReflect() protoreflect.Message {
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AgentNetworkPolicyReport.ProtoReflect.Descriptor instead.
+func (*AgentNetworkPolicyReport) Descriptor() ([]byte, []int) {
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *AgentNetworkPolicyReport) GetAgent() string {
+	if x != nil {
+		return x.Agent
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetDriver() string {
+	if x != nil {
+		return x.Driver
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetDeclared() bool {
+	if x != nil {
+		return x.Declared
+	}
+	return false
+}
+
+func (x *AgentNetworkPolicyReport) GetRestricts() bool {
+	if x != nil {
+		return x.Restricts
+	}
+	return false
+}
+
+func (x *AgentNetworkPolicyReport) GetDefault() string {
+	if x != nil {
+		return x.Default
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetAllow() []*DeclaredNetworkAllowance {
+	if x != nil {
+		return x.Allow
+	}
+	return nil
+}
+
+func (x *AgentNetworkPolicyReport) GetMediated() bool {
+	if x != nil {
+		return x.Mediated
+	}
+	return false
+}
+
+func (x *AgentNetworkPolicyReport) GetEnforced() bool {
+	if x != nil {
+		return x.Enforced
+	}
+	return false
+}
+
+func (x *AgentNetworkPolicyReport) GetStrength() string {
+	if x != nil {
+		return x.Strength
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetMechanism() string {
+	if x != nil {
+		return x.Mechanism
+	}
+	return ""
+}
+
+func (x *AgentNetworkPolicyReport) GetUnapplied() []string {
+	if x != nil {
+		return x.Unapplied
+	}
+	return nil
+}
+
+func (x *AgentNetworkPolicyReport) GetWarning() string {
+	if x != nil {
+		return x.Warning
+	}
+	return ""
+}
+
+// DeclaredNetworkAllowance is one declared allowance as it appears in a report.
+type DeclaredNetworkAllowance struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The canonical host:port/protocol pattern.
+	Endpoint string `protobuf:"bytes,1,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// False for an opaque allowance (protocol any/tcp/udp), which must not be
+	// presented as a checked one.
+	Inspectable bool `protobuf:"varint,2,opt,name=inspectable,proto3" json:"inspectable,omitempty"`
+	// The canonical CIDR ranges the name may resolve to. Empty when the
+	// declaration left the addresses unconstrained.
+	AllowedIps    []string `protobuf:"bytes,3,rep,name=allowed_ips,json=allowedIps,proto3" json:"allowed_ips,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeclaredNetworkAllowance) Reset() {
+	*x = DeclaredNetworkAllowance{}
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeclaredNetworkAllowance) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeclaredNetworkAllowance) ProtoMessage() {}
+
+func (x *DeclaredNetworkAllowance) ProtoReflect() protoreflect.Message {
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeclaredNetworkAllowance.ProtoReflect.Descriptor instead.
+func (*DeclaredNetworkAllowance) Descriptor() ([]byte, []int) {
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DeclaredNetworkAllowance) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *DeclaredNetworkAllowance) GetInspectable() bool {
+	if x != nil {
+		return x.Inspectable
+	}
+	return false
+}
+
+func (x *DeclaredNetworkAllowance) GetAllowedIps() []string {
+	if x != nil {
+		return x.AllowedIps
+	}
+	return nil
+}
+
 type PatchProjectRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. Selects an existing project. PatchProject does not create or
@@ -2283,7 +2526,7 @@ type PatchProjectRequest struct {
 
 func (x *PatchProjectRequest) Reset() {
 	*x = PatchProjectRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[4]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2295,7 +2538,7 @@ func (x *PatchProjectRequest) String() string {
 func (*PatchProjectRequest) ProtoMessage() {}
 
 func (x *PatchProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[4]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2308,7 +2551,7 @@ func (x *PatchProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PatchProjectRequest.ProtoReflect.Descriptor instead.
 func (*PatchProjectRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{4}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PatchProjectRequest) GetProject() *ProjectRef {
@@ -2349,7 +2592,7 @@ type GetProjectRequest struct {
 
 func (x *GetProjectRequest) Reset() {
 	*x = GetProjectRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[5]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2361,7 +2604,7 @@ func (x *GetProjectRequest) String() string {
 func (*GetProjectRequest) ProtoMessage() {}
 
 func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[5]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2374,7 +2617,7 @@ func (x *GetProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProjectRequest.ProtoReflect.Descriptor instead.
 func (*GetProjectRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{5}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GetProjectRequest) GetProject() *ProjectRef {
@@ -2400,7 +2643,7 @@ type GetProjectResponse struct {
 
 func (x *GetProjectResponse) Reset() {
 	*x = GetProjectResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[6]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2412,7 +2655,7 @@ func (x *GetProjectResponse) String() string {
 func (*GetProjectResponse) ProtoMessage() {}
 
 func (x *GetProjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[6]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2425,7 +2668,7 @@ func (x *GetProjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProjectResponse.ProtoReflect.Descriptor instead.
 func (*GetProjectResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{6}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GetProjectResponse) GetProject() *Project {
@@ -2449,7 +2692,7 @@ type ListProjectsRequest struct {
 
 func (x *ListProjectsRequest) Reset() {
 	*x = ListProjectsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[7]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2461,7 +2704,7 @@ func (x *ListProjectsRequest) String() string {
 func (*ListProjectsRequest) ProtoMessage() {}
 
 func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[7]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2474,7 +2717,7 @@ func (x *ListProjectsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsRequest.ProtoReflect.Descriptor instead.
 func (*ListProjectsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{7}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListProjectsRequest) GetQuery() string {
@@ -2516,7 +2759,7 @@ type ListProjectsResponse struct {
 
 func (x *ListProjectsResponse) Reset() {
 	*x = ListProjectsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[8]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2528,7 +2771,7 @@ func (x *ListProjectsResponse) String() string {
 func (*ListProjectsResponse) ProtoMessage() {}
 
 func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[8]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2541,7 +2784,7 @@ func (x *ListProjectsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProjectsResponse.ProtoReflect.Descriptor instead.
 func (*ListProjectsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{8}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListProjectsResponse) GetProjects() []*ProjectSummary {
@@ -2569,7 +2812,7 @@ type RemoveProjectRequest struct {
 
 func (x *RemoveProjectRequest) Reset() {
 	*x = RemoveProjectRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[9]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2581,7 +2824,7 @@ func (x *RemoveProjectRequest) String() string {
 func (*RemoveProjectRequest) ProtoMessage() {}
 
 func (x *RemoveProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[9]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2594,7 +2837,7 @@ func (x *RemoveProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveProjectRequest.ProtoReflect.Descriptor instead.
 func (*RemoveProjectRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{9}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RemoveProjectRequest) GetProject() *ProjectRef {
@@ -2628,7 +2871,7 @@ type RemoveProjectResponse struct {
 
 func (x *RemoveProjectResponse) Reset() {
 	*x = RemoveProjectResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[10]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2640,7 +2883,7 @@ func (x *RemoveProjectResponse) String() string {
 func (*RemoveProjectResponse) ProtoMessage() {}
 
 func (x *RemoveProjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[10]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2653,7 +2896,7 @@ func (x *RemoveProjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveProjectResponse.ProtoReflect.Descriptor instead.
 func (*RemoveProjectResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{10}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RemoveProjectResponse) GetProject() *Project {
@@ -2679,7 +2922,7 @@ type WatchProjectRequest struct {
 
 func (x *WatchProjectRequest) Reset() {
 	*x = WatchProjectRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[11]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2691,7 +2934,7 @@ func (x *WatchProjectRequest) String() string {
 func (*WatchProjectRequest) ProtoMessage() {}
 
 func (x *WatchProjectRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[11]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2704,7 +2947,7 @@ func (x *WatchProjectRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchProjectRequest.ProtoReflect.Descriptor instead.
 func (*WatchProjectRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{11}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *WatchProjectRequest) GetProject() *ProjectRef {
@@ -2726,7 +2969,7 @@ type WatchProjectResponse struct {
 
 func (x *WatchProjectResponse) Reset() {
 	*x = WatchProjectResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[12]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2738,7 +2981,7 @@ func (x *WatchProjectResponse) String() string {
 func (*WatchProjectResponse) ProtoMessage() {}
 
 func (x *WatchProjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[12]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2751,7 +2994,7 @@ func (x *WatchProjectResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchProjectResponse.ProtoReflect.Descriptor instead.
 func (*WatchProjectResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{12}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *WatchProjectResponse) GetType() ProjectWatchEventType {
@@ -2798,7 +3041,7 @@ type ProjectRef struct {
 
 func (x *ProjectRef) Reset() {
 	*x = ProjectRef{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[13]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2810,7 +3053,7 @@ func (x *ProjectRef) String() string {
 func (*ProjectRef) ProtoMessage() {}
 
 func (x *ProjectRef) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[13]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2823,7 +3066,7 @@ func (x *ProjectRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRef.ProtoReflect.Descriptor instead.
 func (*ProjectRef) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{13}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ProjectRef) GetSelector() isProjectRef_Selector {
@@ -2892,7 +3135,7 @@ type ProjectSource struct {
 
 func (x *ProjectSource) Reset() {
 	*x = ProjectSource{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[14]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2904,7 +3147,7 @@ func (x *ProjectSource) String() string {
 func (*ProjectSource) ProtoMessage() {}
 
 func (x *ProjectSource) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[14]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2917,7 +3160,7 @@ func (x *ProjectSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectSource.ProtoReflect.Descriptor instead.
 func (*ProjectSource) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{14}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ProjectSource) GetComposePath() string {
@@ -2946,7 +3189,7 @@ type Project struct {
 
 func (x *Project) Reset() {
 	*x = Project{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[15]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2958,7 +3201,7 @@ func (x *Project) String() string {
 func (*Project) ProtoMessage() {}
 
 func (x *Project) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[15]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2971,7 +3214,7 @@ func (x *Project) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Project.ProtoReflect.Descriptor instead.
 func (*Project) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{15}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Project) GetSummary() *ProjectSummary {
@@ -3022,7 +3265,7 @@ type ProjectSummary struct {
 
 func (x *ProjectSummary) Reset() {
 	*x = ProjectSummary{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[16]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3034,7 +3277,7 @@ func (x *ProjectSummary) String() string {
 func (*ProjectSummary) ProtoMessage() {}
 
 func (x *ProjectSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[16]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3047,7 +3290,7 @@ func (x *ProjectSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectSummary.ProtoReflect.Descriptor instead.
 func (*ProjectSummary) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{16}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ProjectSummary) GetProjectId() string {
@@ -3147,7 +3390,7 @@ type ProjectRevision struct {
 
 func (x *ProjectRevision) Reset() {
 	*x = ProjectRevision{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[17]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3159,7 +3402,7 @@ func (x *ProjectRevision) String() string {
 func (*ProjectRevision) ProtoMessage() {}
 
 func (x *ProjectRevision) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[17]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3172,7 +3415,7 @@ func (x *ProjectRevision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectRevision.ProtoReflect.Descriptor instead.
 func (*ProjectRevision) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{17}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *ProjectRevision) GetProjectId() string {
@@ -3236,7 +3479,7 @@ type ProjectAgent struct {
 
 func (x *ProjectAgent) Reset() {
 	*x = ProjectAgent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[18]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3248,7 +3491,7 @@ func (x *ProjectAgent) String() string {
 func (*ProjectAgent) ProtoMessage() {}
 
 func (x *ProjectAgent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[18]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3261,7 +3504,7 @@ func (x *ProjectAgent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectAgent.ProtoReflect.Descriptor instead.
 func (*ProjectAgent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{18}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *ProjectAgent) GetProjectId() string {
@@ -3394,7 +3637,7 @@ type ProjectAgentCurrentRun struct {
 
 func (x *ProjectAgentCurrentRun) Reset() {
 	*x = ProjectAgentCurrentRun{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[19]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3406,7 +3649,7 @@ func (x *ProjectAgentCurrentRun) String() string {
 func (*ProjectAgentCurrentRun) ProtoMessage() {}
 
 func (x *ProjectAgentCurrentRun) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[19]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3419,7 +3662,7 @@ func (x *ProjectAgentCurrentRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectAgentCurrentRun.ProtoReflect.Descriptor instead.
 func (*ProjectAgentCurrentRun) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{19}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ProjectAgentCurrentRun) GetText() string {
@@ -3455,7 +3698,7 @@ type ProjectAgentLatestRun struct {
 
 func (x *ProjectAgentLatestRun) Reset() {
 	*x = ProjectAgentLatestRun{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[20]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3467,7 +3710,7 @@ func (x *ProjectAgentLatestRun) String() string {
 func (*ProjectAgentLatestRun) ProtoMessage() {}
 
 func (x *ProjectAgentLatestRun) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[20]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3480,7 +3723,7 @@ func (x *ProjectAgentLatestRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectAgentLatestRun.ProtoReflect.Descriptor instead.
 func (*ProjectAgentLatestRun) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{20}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ProjectAgentLatestRun) GetRunId() string {
@@ -3526,7 +3769,7 @@ type ProjectScheduler struct {
 
 func (x *ProjectScheduler) Reset() {
 	*x = ProjectScheduler{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[21]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3538,7 +3781,7 @@ func (x *ProjectScheduler) String() string {
 func (*ProjectScheduler) ProtoMessage() {}
 
 func (x *ProjectScheduler) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[21]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3551,7 +3794,7 @@ func (x *ProjectScheduler) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectScheduler.ProtoReflect.Descriptor instead.
 func (*ProjectScheduler) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{21}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ProjectScheduler) GetProjectId() string {
@@ -3615,7 +3858,7 @@ type GetSchedulerRequest struct {
 
 func (x *GetSchedulerRequest) Reset() {
 	*x = GetSchedulerRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[22]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3627,7 +3870,7 @@ func (x *GetSchedulerRequest) String() string {
 func (*GetSchedulerRequest) ProtoMessage() {}
 
 func (x *GetSchedulerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[22]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3640,7 +3883,7 @@ func (x *GetSchedulerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulerRequest.ProtoReflect.Descriptor instead.
 func (*GetSchedulerRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{22}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *GetSchedulerRequest) GetProject() *ProjectRef {
@@ -3676,7 +3919,7 @@ type GetSchedulerResponse struct {
 
 func (x *GetSchedulerResponse) Reset() {
 	*x = GetSchedulerResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[23]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3688,7 +3931,7 @@ func (x *GetSchedulerResponse) String() string {
 func (*GetSchedulerResponse) ProtoMessage() {}
 
 func (x *GetSchedulerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[23]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3701,7 +3944,7 @@ func (x *GetSchedulerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulerResponse.ProtoReflect.Descriptor instead.
 func (*GetSchedulerResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{23}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *GetSchedulerResponse) GetScheduler() *ProjectScheduler {
@@ -3746,7 +3989,7 @@ type ResolvedTrigger struct {
 
 func (x *ResolvedTrigger) Reset() {
 	*x = ResolvedTrigger{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[24]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3758,7 +4001,7 @@ func (x *ResolvedTrigger) String() string {
 func (*ResolvedTrigger) ProtoMessage() {}
 
 func (x *ResolvedTrigger) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[24]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3771,7 +4014,7 @@ func (x *ResolvedTrigger) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedTrigger.ProtoReflect.Descriptor instead.
 func (*ResolvedTrigger) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{24}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *ResolvedTrigger) GetSpec() *TriggerSpec {
@@ -3829,7 +4072,7 @@ type ListSchedulersRequest struct {
 
 func (x *ListSchedulersRequest) Reset() {
 	*x = ListSchedulersRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[25]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3841,7 +4084,7 @@ func (x *ListSchedulersRequest) String() string {
 func (*ListSchedulersRequest) ProtoMessage() {}
 
 func (x *ListSchedulersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[25]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3854,7 +4097,7 @@ func (x *ListSchedulersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulersRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulersRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{25}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *ListSchedulersRequest) GetQuery() string {
@@ -3896,7 +4139,7 @@ type SchedulerSummary struct {
 
 func (x *SchedulerSummary) Reset() {
 	*x = SchedulerSummary{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[26]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3908,7 +4151,7 @@ func (x *SchedulerSummary) String() string {
 func (*SchedulerSummary) ProtoMessage() {}
 
 func (x *SchedulerSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[26]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3921,7 +4164,7 @@ func (x *SchedulerSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerSummary.ProtoReflect.Descriptor instead.
 func (*SchedulerSummary) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{26}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SchedulerSummary) GetProjectId() string {
@@ -4005,7 +4248,7 @@ type ListSchedulersResponse struct {
 
 func (x *ListSchedulersResponse) Reset() {
 	*x = ListSchedulersResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[27]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4017,7 +4260,7 @@ func (x *ListSchedulersResponse) String() string {
 func (*ListSchedulersResponse) ProtoMessage() {}
 
 func (x *ListSchedulersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[27]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4030,7 +4273,7 @@ func (x *ListSchedulersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulersResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulersResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{27}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ListSchedulersResponse) GetSchedulers() []*SchedulerSummary {
@@ -4061,7 +4304,7 @@ type ListSchedulerEventsRequest struct {
 
 func (x *ListSchedulerEventsRequest) Reset() {
 	*x = ListSchedulerEventsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[28]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4073,7 +4316,7 @@ func (x *ListSchedulerEventsRequest) String() string {
 func (*ListSchedulerEventsRequest) ProtoMessage() {}
 
 func (x *ListSchedulerEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[28]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4086,7 +4329,7 @@ func (x *ListSchedulerEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulerEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulerEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{28}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *ListSchedulerEventsRequest) GetProject() *ProjectRef {
@@ -4138,7 +4381,7 @@ type SchedulerEvent struct {
 
 func (x *SchedulerEvent) Reset() {
 	*x = SchedulerEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[29]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4150,7 +4393,7 @@ func (x *SchedulerEvent) String() string {
 func (*SchedulerEvent) ProtoMessage() {}
 
 func (x *SchedulerEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[29]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4163,7 +4406,7 @@ func (x *SchedulerEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerEvent.ProtoReflect.Descriptor instead.
 func (*SchedulerEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{29}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *SchedulerEvent) GetId() string {
@@ -4268,7 +4511,7 @@ type ListSchedulerEventsResponse struct {
 
 func (x *ListSchedulerEventsResponse) Reset() {
 	*x = ListSchedulerEventsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[30]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4280,7 +4523,7 @@ func (x *ListSchedulerEventsResponse) String() string {
 func (*ListSchedulerEventsResponse) ProtoMessage() {}
 
 func (x *ListSchedulerEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[30]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4293,7 +4536,7 @@ func (x *ListSchedulerEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulerEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulerEventsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{30}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *ListSchedulerEventsResponse) GetEvents() []*SchedulerEvent {
@@ -4326,7 +4569,7 @@ type ListProjectSchedulerEventsRequest struct {
 
 func (x *ListProjectSchedulerEventsRequest) Reset() {
 	*x = ListProjectSchedulerEventsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[31]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4338,7 +4581,7 @@ func (x *ListProjectSchedulerEventsRequest) String() string {
 func (*ListProjectSchedulerEventsRequest) ProtoMessage() {}
 
 func (x *ListProjectSchedulerEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[31]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4351,7 +4594,7 @@ func (x *ListProjectSchedulerEventsRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use ListProjectSchedulerEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListProjectSchedulerEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{31}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ListProjectSchedulerEventsRequest) GetProject() *ProjectRef {
@@ -4407,7 +4650,7 @@ type ListProjectSchedulerEventsResponse struct {
 
 func (x *ListProjectSchedulerEventsResponse) Reset() {
 	*x = ListProjectSchedulerEventsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[32]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4419,7 +4662,7 @@ func (x *ListProjectSchedulerEventsResponse) String() string {
 func (*ListProjectSchedulerEventsResponse) ProtoMessage() {}
 
 func (x *ListProjectSchedulerEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[32]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4432,7 +4675,7 @@ func (x *ListProjectSchedulerEventsResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ListProjectSchedulerEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListProjectSchedulerEventsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{32}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ListProjectSchedulerEventsResponse) GetEvents() []*SchedulerEvent {
@@ -4460,7 +4703,7 @@ type InvokeSchedulerRequest struct {
 
 func (x *InvokeSchedulerRequest) Reset() {
 	*x = InvokeSchedulerRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[33]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4472,7 +4715,7 @@ func (x *InvokeSchedulerRequest) String() string {
 func (*InvokeSchedulerRequest) ProtoMessage() {}
 
 func (x *InvokeSchedulerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[33]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4485,7 +4728,7 @@ func (x *InvokeSchedulerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvokeSchedulerRequest.ProtoReflect.Descriptor instead.
 func (*InvokeSchedulerRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{33}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *InvokeSchedulerRequest) GetProject() *ProjectRef {
@@ -4520,7 +4763,7 @@ type InvokeSchedulerResponse struct {
 
 func (x *InvokeSchedulerResponse) Reset() {
 	*x = InvokeSchedulerResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[34]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4532,7 +4775,7 @@ func (x *InvokeSchedulerResponse) String() string {
 func (*InvokeSchedulerResponse) ProtoMessage() {}
 
 func (x *InvokeSchedulerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[34]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4545,7 +4788,7 @@ func (x *InvokeSchedulerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InvokeSchedulerResponse.ProtoReflect.Descriptor instead.
 func (*InvokeSchedulerResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{34}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *InvokeSchedulerResponse) GetResultJson() string {
@@ -4581,7 +4824,7 @@ type RunSchedulerRequest struct {
 
 func (x *RunSchedulerRequest) Reset() {
 	*x = RunSchedulerRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[35]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4593,7 +4836,7 @@ func (x *RunSchedulerRequest) String() string {
 func (*RunSchedulerRequest) ProtoMessage() {}
 
 func (x *RunSchedulerRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[35]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4606,7 +4849,7 @@ func (x *RunSchedulerRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSchedulerRequest.ProtoReflect.Descriptor instead.
 func (*RunSchedulerRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{35}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *RunSchedulerRequest) GetProject() *ProjectRef {
@@ -4646,7 +4889,7 @@ type RunSchedulerResponse struct {
 
 func (x *RunSchedulerResponse) Reset() {
 	*x = RunSchedulerResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[36]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4658,7 +4901,7 @@ func (x *RunSchedulerResponse) String() string {
 func (*RunSchedulerResponse) ProtoMessage() {}
 
 func (x *RunSchedulerResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[36]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4671,7 +4914,7 @@ func (x *RunSchedulerResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSchedulerResponse.ProtoReflect.Descriptor instead.
 func (*RunSchedulerResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{36}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *RunSchedulerResponse) GetRun() *SchedulerRun {
@@ -4693,7 +4936,7 @@ type StartSchedulerRunRequest struct {
 
 func (x *StartSchedulerRunRequest) Reset() {
 	*x = StartSchedulerRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[37]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4705,7 +4948,7 @@ func (x *StartSchedulerRunRequest) String() string {
 func (*StartSchedulerRunRequest) ProtoMessage() {}
 
 func (x *StartSchedulerRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[37]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4718,7 +4961,7 @@ func (x *StartSchedulerRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSchedulerRunRequest.ProtoReflect.Descriptor instead.
 func (*StartSchedulerRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{37}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *StartSchedulerRunRequest) GetProject() *ProjectRef {
@@ -4758,7 +5001,7 @@ type StartSchedulerRunResponse struct {
 
 func (x *StartSchedulerRunResponse) Reset() {
 	*x = StartSchedulerRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[38]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4770,7 +5013,7 @@ func (x *StartSchedulerRunResponse) String() string {
 func (*StartSchedulerRunResponse) ProtoMessage() {}
 
 func (x *StartSchedulerRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[38]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4783,7 +5026,7 @@ func (x *StartSchedulerRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartSchedulerRunResponse.ProtoReflect.Descriptor instead.
 func (*StartSchedulerRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{38}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *StartSchedulerRunResponse) GetRun() *SchedulerRun {
@@ -4803,7 +5046,7 @@ type GetSchedulerRunRequest struct {
 
 func (x *GetSchedulerRunRequest) Reset() {
 	*x = GetSchedulerRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[39]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4815,7 +5058,7 @@ func (x *GetSchedulerRunRequest) String() string {
 func (*GetSchedulerRunRequest) ProtoMessage() {}
 
 func (x *GetSchedulerRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[39]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4828,7 +5071,7 @@ func (x *GetSchedulerRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulerRunRequest.ProtoReflect.Descriptor instead.
 func (*GetSchedulerRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{39}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *GetSchedulerRunRequest) GetProject() *ProjectRef {
@@ -4854,7 +5097,7 @@ type GetSchedulerRunResponse struct {
 
 func (x *GetSchedulerRunResponse) Reset() {
 	*x = GetSchedulerRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[40]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4866,7 +5109,7 @@ func (x *GetSchedulerRunResponse) String() string {
 func (*GetSchedulerRunResponse) ProtoMessage() {}
 
 func (x *GetSchedulerRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[40]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4879,7 +5122,7 @@ func (x *GetSchedulerRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSchedulerRunResponse.ProtoReflect.Descriptor instead.
 func (*GetSchedulerRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{40}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *GetSchedulerRunResponse) GetRun() *SchedulerRun {
@@ -4905,7 +5148,7 @@ type ListSchedulerRunsRequest struct {
 
 func (x *ListSchedulerRunsRequest) Reset() {
 	*x = ListSchedulerRunsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[41]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4917,7 +5160,7 @@ func (x *ListSchedulerRunsRequest) String() string {
 func (*ListSchedulerRunsRequest) ProtoMessage() {}
 
 func (x *ListSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[41]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4930,7 +5173,7 @@ func (x *ListSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulerRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListSchedulerRunsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{41}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *ListSchedulerRunsRequest) GetProject() *ProjectRef {
@@ -4986,7 +5229,7 @@ type ListSchedulerRunsResponse struct {
 
 func (x *ListSchedulerRunsResponse) Reset() {
 	*x = ListSchedulerRunsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[42]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4998,7 +5241,7 @@ func (x *ListSchedulerRunsResponse) String() string {
 func (*ListSchedulerRunsResponse) ProtoMessage() {}
 
 func (x *ListSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[42]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5011,7 +5254,7 @@ func (x *ListSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSchedulerRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListSchedulerRunsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{42}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListSchedulerRunsResponse) GetRuns() []*SchedulerRun {
@@ -5042,7 +5285,7 @@ type PruneSchedulerRunsRequest struct {
 
 func (x *PruneSchedulerRunsRequest) Reset() {
 	*x = PruneSchedulerRunsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[43]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5054,7 +5297,7 @@ func (x *PruneSchedulerRunsRequest) String() string {
 func (*PruneSchedulerRunsRequest) ProtoMessage() {}
 
 func (x *PruneSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[43]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5067,7 +5310,7 @@ func (x *PruneSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneSchedulerRunsRequest.ProtoReflect.Descriptor instead.
 func (*PruneSchedulerRunsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{43}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PruneSchedulerRunsRequest) GetProject() *ProjectRef {
@@ -5126,7 +5369,7 @@ type SchedulerRunPruneStats struct {
 
 func (x *SchedulerRunPruneStats) Reset() {
 	*x = SchedulerRunPruneStats{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[44]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5138,7 +5381,7 @@ func (x *SchedulerRunPruneStats) String() string {
 func (*SchedulerRunPruneStats) ProtoMessage() {}
 
 func (x *SchedulerRunPruneStats) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[44]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5151,7 +5394,7 @@ func (x *SchedulerRunPruneStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerRunPruneStats.ProtoReflect.Descriptor instead.
 func (*SchedulerRunPruneStats) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{44}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *SchedulerRunPruneStats) GetRuns() uint64 {
@@ -5208,7 +5451,7 @@ type SchedulerRunPruneResidue struct {
 
 func (x *SchedulerRunPruneResidue) Reset() {
 	*x = SchedulerRunPruneResidue{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[45]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5220,7 +5463,7 @@ func (x *SchedulerRunPruneResidue) String() string {
 func (*SchedulerRunPruneResidue) ProtoMessage() {}
 
 func (x *SchedulerRunPruneResidue) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[45]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5233,7 +5476,7 @@ func (x *SchedulerRunPruneResidue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerRunPruneResidue.ProtoReflect.Descriptor instead.
 func (*SchedulerRunPruneResidue) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{45}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *SchedulerRunPruneResidue) GetSchedulerId() string {
@@ -5278,7 +5521,7 @@ type PruneSchedulerRunsResponse struct {
 
 func (x *PruneSchedulerRunsResponse) Reset() {
 	*x = PruneSchedulerRunsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[46]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5290,7 +5533,7 @@ func (x *PruneSchedulerRunsResponse) String() string {
 func (*PruneSchedulerRunsResponse) ProtoMessage() {}
 
 func (x *PruneSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[46]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5303,7 +5546,7 @@ func (x *PruneSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneSchedulerRunsResponse.ProtoReflect.Descriptor instead.
 func (*PruneSchedulerRunsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{46}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *PruneSchedulerRunsResponse) GetDryRun() bool {
@@ -5359,7 +5602,7 @@ type StopSchedulerRunRequest struct {
 
 func (x *StopSchedulerRunRequest) Reset() {
 	*x = StopSchedulerRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[47]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5371,7 +5614,7 @@ func (x *StopSchedulerRunRequest) String() string {
 func (*StopSchedulerRunRequest) ProtoMessage() {}
 
 func (x *StopSchedulerRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[47]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5384,7 +5627,7 @@ func (x *StopSchedulerRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSchedulerRunRequest.ProtoReflect.Descriptor instead.
 func (*StopSchedulerRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{47}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *StopSchedulerRunRequest) GetProject() *ProjectRef {
@@ -5418,7 +5661,7 @@ type StopSchedulerRunResponse struct {
 
 func (x *StopSchedulerRunResponse) Reset() {
 	*x = StopSchedulerRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[48]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5430,7 +5673,7 @@ func (x *StopSchedulerRunResponse) String() string {
 func (*StopSchedulerRunResponse) ProtoMessage() {}
 
 func (x *StopSchedulerRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[48]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5443,7 +5686,7 @@ func (x *StopSchedulerRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSchedulerRunResponse.ProtoReflect.Descriptor instead.
 func (*StopSchedulerRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{48}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *StopSchedulerRunResponse) GetRun() *SchedulerRun {
@@ -5487,7 +5730,7 @@ type SchedulerRun struct {
 
 func (x *SchedulerRun) Reset() {
 	*x = SchedulerRun{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[49]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5499,7 +5742,7 @@ func (x *SchedulerRun) String() string {
 func (*SchedulerRun) ProtoMessage() {}
 
 func (x *SchedulerRun) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[49]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5512,7 +5755,7 @@ func (x *SchedulerRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerRun.ProtoReflect.Descriptor instead.
 func (*SchedulerRun) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{49}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *SchedulerRun) GetRunId() string {
@@ -5648,7 +5891,7 @@ type SetSchedulerEnabledRequest struct {
 
 func (x *SetSchedulerEnabledRequest) Reset() {
 	*x = SetSchedulerEnabledRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[50]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5660,7 +5903,7 @@ func (x *SetSchedulerEnabledRequest) String() string {
 func (*SetSchedulerEnabledRequest) ProtoMessage() {}
 
 func (x *SetSchedulerEnabledRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[50]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5673,7 +5916,7 @@ func (x *SetSchedulerEnabledRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSchedulerEnabledRequest.ProtoReflect.Descriptor instead.
 func (*SetSchedulerEnabledRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{50}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *SetSchedulerEnabledRequest) GetProject() *ProjectRef {
@@ -5707,7 +5950,7 @@ type SetSchedulerEnabledResponse struct {
 
 func (x *SetSchedulerEnabledResponse) Reset() {
 	*x = SetSchedulerEnabledResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[51]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5719,7 +5962,7 @@ func (x *SetSchedulerEnabledResponse) String() string {
 func (*SetSchedulerEnabledResponse) ProtoMessage() {}
 
 func (x *SetSchedulerEnabledResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[51]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5732,7 +5975,7 @@ func (x *SetSchedulerEnabledResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SetSchedulerEnabledResponse.ProtoReflect.Descriptor instead.
 func (*SetSchedulerEnabledResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{51}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *SetSchedulerEnabledResponse) GetScheduler() *ProjectScheduler {
@@ -5765,7 +6008,7 @@ type SetSchedulerTriggerEnabledRequest struct {
 
 func (x *SetSchedulerTriggerEnabledRequest) Reset() {
 	*x = SetSchedulerTriggerEnabledRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[52]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5777,7 +6020,7 @@ func (x *SetSchedulerTriggerEnabledRequest) String() string {
 func (*SetSchedulerTriggerEnabledRequest) ProtoMessage() {}
 
 func (x *SetSchedulerTriggerEnabledRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[52]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5790,7 +6033,7 @@ func (x *SetSchedulerTriggerEnabledRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use SetSchedulerTriggerEnabledRequest.ProtoReflect.Descriptor instead.
 func (*SetSchedulerTriggerEnabledRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{52}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *SetSchedulerTriggerEnabledRequest) GetProject() *ProjectRef {
@@ -5830,7 +6073,7 @@ type SetSchedulerTriggerEnabledResponse struct {
 
 func (x *SetSchedulerTriggerEnabledResponse) Reset() {
 	*x = SetSchedulerTriggerEnabledResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[53]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5842,7 +6085,7 @@ func (x *SetSchedulerTriggerEnabledResponse) String() string {
 func (*SetSchedulerTriggerEnabledResponse) ProtoMessage() {}
 
 func (x *SetSchedulerTriggerEnabledResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[53]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5855,7 +6098,7 @@ func (x *SetSchedulerTriggerEnabledResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use SetSchedulerTriggerEnabledResponse.ProtoReflect.Descriptor instead.
 func (*SetSchedulerTriggerEnabledResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{53}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *SetSchedulerTriggerEnabledResponse) GetTrigger() *ResolvedTrigger {
@@ -5876,7 +6119,7 @@ type ProjectValidationIssue struct {
 
 func (x *ProjectValidationIssue) Reset() {
 	*x = ProjectValidationIssue{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[54]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5888,7 +6131,7 @@ func (x *ProjectValidationIssue) String() string {
 func (*ProjectValidationIssue) ProtoMessage() {}
 
 func (x *ProjectValidationIssue) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[54]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5901,7 +6144,7 @@ func (x *ProjectValidationIssue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectValidationIssue.ProtoReflect.Descriptor instead.
 func (*ProjectValidationIssue) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{54}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ProjectValidationIssue) GetSeverity() ProjectValidationSeverity {
@@ -5938,7 +6181,7 @@ type ProjectChange struct {
 
 func (x *ProjectChange) Reset() {
 	*x = ProjectChange{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[55]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5950,7 +6193,7 @@ func (x *ProjectChange) String() string {
 func (*ProjectChange) ProtoMessage() {}
 
 func (x *ProjectChange) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[55]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5963,7 +6206,7 @@ func (x *ProjectChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectChange.ProtoReflect.Descriptor instead.
 func (*ProjectChange) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{55}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ProjectChange) GetAction() ProjectChangeAction {
@@ -6016,7 +6259,7 @@ type ProjectSpec struct {
 
 func (x *ProjectSpec) Reset() {
 	*x = ProjectSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[56]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6028,7 +6271,7 @@ func (x *ProjectSpec) String() string {
 func (*ProjectSpec) ProtoMessage() {}
 
 func (x *ProjectSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[56]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6041,7 +6284,7 @@ func (x *ProjectSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectSpec.ProtoReflect.Descriptor instead.
 func (*ProjectSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{56}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ProjectSpec) GetName() string {
@@ -6103,7 +6346,7 @@ type NamedWorkspaceSpec struct {
 
 func (x *NamedWorkspaceSpec) Reset() {
 	*x = NamedWorkspaceSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[57]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6115,7 +6358,7 @@ func (x *NamedWorkspaceSpec) String() string {
 func (*NamedWorkspaceSpec) ProtoMessage() {}
 
 func (x *NamedWorkspaceSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[57]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6128,7 +6371,7 @@ func (x *NamedWorkspaceSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NamedWorkspaceSpec.ProtoReflect.Descriptor instead.
 func (*NamedWorkspaceSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{57}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *NamedWorkspaceSpec) GetName() string {
@@ -6175,7 +6418,7 @@ type AgentSpec struct {
 
 func (x *AgentSpec) Reset() {
 	*x = AgentSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[58]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6187,7 +6430,7 @@ func (x *AgentSpec) String() string {
 func (*AgentSpec) ProtoMessage() {}
 
 func (x *AgentSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[58]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6200,7 +6443,7 @@ func (x *AgentSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentSpec.ProtoReflect.Descriptor instead.
 func (*AgentSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{58}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *AgentSpec) GetName() string {
@@ -6351,7 +6594,7 @@ type SandboxSpec struct {
 
 func (x *SandboxSpec) Reset() {
 	*x = SandboxSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[59]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6363,7 +6606,7 @@ func (x *SandboxSpec) String() string {
 func (*SandboxSpec) ProtoMessage() {}
 
 func (x *SandboxSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[59]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6376,7 +6619,7 @@ func (x *SandboxSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxSpec.ProtoReflect.Descriptor instead.
 func (*SandboxSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{59}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SandboxSpec) GetStoppedRuntimePolicy() string {
@@ -6409,7 +6652,7 @@ type SandboxNetworkSpec struct {
 
 func (x *SandboxNetworkSpec) Reset() {
 	*x = SandboxNetworkSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[60]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6421,7 +6664,7 @@ func (x *SandboxNetworkSpec) String() string {
 func (*SandboxNetworkSpec) ProtoMessage() {}
 
 func (x *SandboxNetworkSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[60]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6434,7 +6677,7 @@ func (x *SandboxNetworkSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxNetworkSpec.ProtoReflect.Descriptor instead.
 func (*SandboxNetworkSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{60}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *SandboxNetworkSpec) GetDefault() string {
@@ -6473,7 +6716,7 @@ type SandboxNetworkAllowSpec struct {
 
 func (x *SandboxNetworkAllowSpec) Reset() {
 	*x = SandboxNetworkAllowSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[61]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6485,7 +6728,7 @@ func (x *SandboxNetworkAllowSpec) String() string {
 func (*SandboxNetworkAllowSpec) ProtoMessage() {}
 
 func (x *SandboxNetworkAllowSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[61]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6498,7 +6741,7 @@ func (x *SandboxNetworkAllowSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxNetworkAllowSpec.ProtoReflect.Descriptor instead.
 func (*SandboxNetworkAllowSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{61}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *SandboxNetworkAllowSpec) GetHost() string {
@@ -6547,7 +6790,7 @@ type MCPServerSpec struct {
 
 func (x *MCPServerSpec) Reset() {
 	*x = MCPServerSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[62]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6559,7 +6802,7 @@ func (x *MCPServerSpec) String() string {
 func (*MCPServerSpec) ProtoMessage() {}
 
 func (x *MCPServerSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[62]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6572,7 +6815,7 @@ func (x *MCPServerSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerSpec.ProtoReflect.Descriptor instead.
 func (*MCPServerSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{62}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *MCPServerSpec) GetName() string {
@@ -6642,7 +6885,7 @@ type OctoBusServerSpec struct {
 
 func (x *OctoBusServerSpec) Reset() {
 	*x = OctoBusServerSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[63]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6654,7 +6897,7 @@ func (x *OctoBusServerSpec) String() string {
 func (*OctoBusServerSpec) ProtoMessage() {}
 
 func (x *OctoBusServerSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[63]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6667,7 +6910,7 @@ func (x *OctoBusServerSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OctoBusServerSpec.ProtoReflect.Descriptor instead.
 func (*OctoBusServerSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{63}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *OctoBusServerSpec) GetName() string {
@@ -6705,7 +6948,7 @@ type ProjectVolumeSpec struct {
 
 func (x *ProjectVolumeSpec) Reset() {
 	*x = ProjectVolumeSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[64]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6717,7 +6960,7 @@ func (x *ProjectVolumeSpec) String() string {
 func (*ProjectVolumeSpec) ProtoMessage() {}
 
 func (x *ProjectVolumeSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[64]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6730,7 +6973,7 @@ func (x *ProjectVolumeSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProjectVolumeSpec.ProtoReflect.Descriptor instead.
 func (*ProjectVolumeSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{64}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *ProjectVolumeSpec) GetKey() string {
@@ -6787,7 +7030,7 @@ type VolumeMountSpec struct {
 
 func (x *VolumeMountSpec) Reset() {
 	*x = VolumeMountSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[65]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6799,7 +7042,7 @@ func (x *VolumeMountSpec) String() string {
 func (*VolumeMountSpec) ProtoMessage() {}
 
 func (x *VolumeMountSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[65]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6812,7 +7055,7 @@ func (x *VolumeMountSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeMountSpec.ProtoReflect.Descriptor instead.
 func (*VolumeMountSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{65}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *VolumeMountSpec) GetType() VolumeMountType {
@@ -6859,7 +7102,7 @@ type BuildSpec struct {
 
 func (x *BuildSpec) Reset() {
 	*x = BuildSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[66]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6871,7 +7114,7 @@ func (x *BuildSpec) String() string {
 func (*BuildSpec) ProtoMessage() {}
 
 func (x *BuildSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[66]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6884,7 +7127,7 @@ func (x *BuildSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildSpec.ProtoReflect.Descriptor instead.
 func (*BuildSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{66}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *BuildSpec) GetContext() string {
@@ -6954,7 +7197,7 @@ type EnvVarSpec struct {
 
 func (x *EnvVarSpec) Reset() {
 	*x = EnvVarSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[67]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6966,7 +7209,7 @@ func (x *EnvVarSpec) String() string {
 func (*EnvVarSpec) ProtoMessage() {}
 
 func (x *EnvVarSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[67]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6979,7 +7222,7 @@ func (x *EnvVarSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnvVarSpec.ProtoReflect.Descriptor instead.
 func (*EnvVarSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{67}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *EnvVarSpec) GetName() string {
@@ -7020,7 +7263,7 @@ type EnvVarUpdateSpec struct {
 
 func (x *EnvVarUpdateSpec) Reset() {
 	*x = EnvVarUpdateSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[68]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7032,7 +7275,7 @@ func (x *EnvVarUpdateSpec) String() string {
 func (*EnvVarUpdateSpec) ProtoMessage() {}
 
 func (x *EnvVarUpdateSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[68]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7045,7 +7288,7 @@ func (x *EnvVarUpdateSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnvVarUpdateSpec.ProtoReflect.Descriptor instead.
 func (*EnvVarUpdateSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{68}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *EnvVarUpdateSpec) GetName() string {
@@ -7093,7 +7336,7 @@ type WorkspaceSpec struct {
 
 func (x *WorkspaceSpec) Reset() {
 	*x = WorkspaceSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[69]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7105,7 +7348,7 @@ func (x *WorkspaceSpec) String() string {
 func (*WorkspaceSpec) ProtoMessage() {}
 
 func (x *WorkspaceSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[69]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7118,7 +7361,7 @@ func (x *WorkspaceSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspaceSpec.ProtoReflect.Descriptor instead.
 func (*WorkspaceSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{69}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *WorkspaceSpec) GetProvider() string {
@@ -7223,7 +7466,7 @@ type SchedulerSpec struct {
 
 func (x *SchedulerSpec) Reset() {
 	*x = SchedulerSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[70]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7235,7 +7478,7 @@ func (x *SchedulerSpec) String() string {
 func (*SchedulerSpec) ProtoMessage() {}
 
 func (x *SchedulerSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[70]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7248,7 +7491,7 @@ func (x *SchedulerSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SchedulerSpec.ProtoReflect.Descriptor instead.
 func (*SchedulerSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{70}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *SchedulerSpec) GetEnabled() bool {
@@ -7335,7 +7578,7 @@ type TriggerSpec struct {
 
 func (x *TriggerSpec) Reset() {
 	*x = TriggerSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[71]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7347,7 +7590,7 @@ func (x *TriggerSpec) String() string {
 func (*TriggerSpec) ProtoMessage() {}
 
 func (x *TriggerSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[71]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7360,7 +7603,7 @@ func (x *TriggerSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerSpec.ProtoReflect.Descriptor instead.
 func (*TriggerSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{71}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *TriggerSpec) GetName() string {
@@ -7443,7 +7686,7 @@ type EventTriggerSpec struct {
 
 func (x *EventTriggerSpec) Reset() {
 	*x = EventTriggerSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[72]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7455,7 +7698,7 @@ func (x *EventTriggerSpec) String() string {
 func (*EventTriggerSpec) ProtoMessage() {}
 
 func (x *EventTriggerSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[72]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7468,7 +7711,7 @@ func (x *EventTriggerSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EventTriggerSpec.ProtoReflect.Descriptor instead.
 func (*EventTriggerSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{72}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *EventTriggerSpec) GetTopic() string {
@@ -7497,7 +7740,7 @@ type DriverSpec struct {
 
 func (x *DriverSpec) Reset() {
 	*x = DriverSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[73]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7509,7 +7752,7 @@ func (x *DriverSpec) String() string {
 func (*DriverSpec) ProtoMessage() {}
 
 func (x *DriverSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[73]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7522,7 +7765,7 @@ func (x *DriverSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DriverSpec.ProtoReflect.Descriptor instead.
 func (*DriverSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{73}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *DriverSpec) GetName() string {
@@ -7613,7 +7856,7 @@ type BoxliteDriverSpec struct {
 
 func (x *BoxliteDriverSpec) Reset() {
 	*x = BoxliteDriverSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[74]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7625,7 +7868,7 @@ func (x *BoxliteDriverSpec) String() string {
 func (*BoxliteDriverSpec) ProtoMessage() {}
 
 func (x *BoxliteDriverSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[74]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7638,7 +7881,7 @@ func (x *BoxliteDriverSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BoxliteDriverSpec.ProtoReflect.Descriptor instead.
 func (*BoxliteDriverSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{74}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *BoxliteDriverSpec) GetKernel() string {
@@ -7664,7 +7907,7 @@ type DockerDriverSpec struct {
 
 func (x *DockerDriverSpec) Reset() {
 	*x = DockerDriverSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[75]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7676,7 +7919,7 @@ func (x *DockerDriverSpec) String() string {
 func (*DockerDriverSpec) ProtoMessage() {}
 
 func (x *DockerDriverSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[75]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7689,7 +7932,7 @@ func (x *DockerDriverSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DockerDriverSpec.ProtoReflect.Descriptor instead.
 func (*DockerDriverSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{75}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *DockerDriverSpec) GetHost() string {
@@ -7708,7 +7951,7 @@ type MicrosandboxDriverSpec struct {
 
 func (x *MicrosandboxDriverSpec) Reset() {
 	*x = MicrosandboxDriverSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[76]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7720,7 +7963,7 @@ func (x *MicrosandboxDriverSpec) String() string {
 func (*MicrosandboxDriverSpec) ProtoMessage() {}
 
 func (x *MicrosandboxDriverSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[76]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7733,7 +7976,7 @@ func (x *MicrosandboxDriverSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MicrosandboxDriverSpec.ProtoReflect.Descriptor instead.
 func (*MicrosandboxDriverSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{76}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *MicrosandboxDriverSpec) GetProfile() string {
@@ -7753,7 +7996,7 @@ type K8SDriverSpec struct {
 
 func (x *K8SDriverSpec) Reset() {
 	*x = K8SDriverSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[77]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7765,7 +8008,7 @@ func (x *K8SDriverSpec) String() string {
 func (*K8SDriverSpec) ProtoMessage() {}
 
 func (x *K8SDriverSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[77]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7778,7 +8021,7 @@ func (x *K8SDriverSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use K8SDriverSpec.ProtoReflect.Descriptor instead.
 func (*K8SDriverSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{77}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *K8SDriverSpec) GetContext() string {
@@ -7823,7 +8066,7 @@ type RunAgentRequest struct {
 
 func (x *RunAgentRequest) Reset() {
 	*x = RunAgentRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[78]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7835,7 +8078,7 @@ func (x *RunAgentRequest) String() string {
 func (*RunAgentRequest) ProtoMessage() {}
 
 func (x *RunAgentRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[78]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7848,7 +8091,7 @@ func (x *RunAgentRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunAgentRequest.ProtoReflect.Descriptor instead.
 func (*RunAgentRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{78}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *RunAgentRequest) GetProjectId() string {
@@ -7980,7 +8223,7 @@ type RunAgentResponse struct {
 
 func (x *RunAgentResponse) Reset() {
 	*x = RunAgentResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[79]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[81]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7992,7 +8235,7 @@ func (x *RunAgentResponse) String() string {
 func (*RunAgentResponse) ProtoMessage() {}
 
 func (x *RunAgentResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[79]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[81]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8005,7 +8248,7 @@ func (x *RunAgentResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunAgentResponse.ProtoReflect.Descriptor instead.
 func (*RunAgentResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{79}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{81}
 }
 
 func (x *RunAgentResponse) GetRun() *RunDetail {
@@ -8038,7 +8281,7 @@ type StreamAgentRunResponse struct {
 
 func (x *StreamAgentRunResponse) Reset() {
 	*x = StreamAgentRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[80]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[82]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8050,7 +8293,7 @@ func (x *StreamAgentRunResponse) String() string {
 func (*StreamAgentRunResponse) ProtoMessage() {}
 
 func (x *StreamAgentRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[80]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[82]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8063,7 +8306,7 @@ func (x *StreamAgentRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamAgentRunResponse.ProtoReflect.Descriptor instead.
 func (*StreamAgentRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{80}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{82}
 }
 
 func (x *StreamAgentRunResponse) GetEventType() StreamAgentRunEventType {
@@ -8143,7 +8386,7 @@ type AttachAgentRunRequest struct {
 
 func (x *AttachAgentRunRequest) Reset() {
 	*x = AttachAgentRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[81]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[83]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8155,7 +8398,7 @@ func (x *AttachAgentRunRequest) String() string {
 func (*AttachAgentRunRequest) ProtoMessage() {}
 
 func (x *AttachAgentRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[81]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[83]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8168,7 +8411,7 @@ func (x *AttachAgentRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachAgentRunRequest.ProtoReflect.Descriptor instead.
 func (*AttachAgentRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{81}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{83}
 }
 
 func (x *AttachAgentRunRequest) GetClientFrameId() string {
@@ -8315,7 +8558,7 @@ type AttachAgentRunResponse struct {
 
 func (x *AttachAgentRunResponse) Reset() {
 	*x = AttachAgentRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[82]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[84]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8327,7 +8570,7 @@ func (x *AttachAgentRunResponse) String() string {
 func (*AttachAgentRunResponse) ProtoMessage() {}
 
 func (x *AttachAgentRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[82]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[84]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8340,7 +8583,7 @@ func (x *AttachAgentRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachAgentRunResponse.ProtoReflect.Descriptor instead.
 func (*AttachAgentRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{82}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{84}
 }
 
 func (x *AttachAgentRunResponse) GetServerFrameId() string {
@@ -8474,7 +8717,7 @@ type AttachAgentRunStart struct {
 
 func (x *AttachAgentRunStart) Reset() {
 	*x = AttachAgentRunStart{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[83]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[85]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8486,7 +8729,7 @@ func (x *AttachAgentRunStart) String() string {
 func (*AttachAgentRunStart) ProtoMessage() {}
 
 func (x *AttachAgentRunStart) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[83]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[85]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8499,7 +8742,7 @@ func (x *AttachAgentRunStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachAgentRunStart.ProtoReflect.Descriptor instead.
 func (*AttachAgentRunStart) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{83}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{85}
 }
 
 func (x *AttachAgentRunStart) GetRequest() *RunAgentRequest {
@@ -8564,7 +8807,7 @@ type TranscriptEvent struct {
 
 func (x *TranscriptEvent) Reset() {
 	*x = TranscriptEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[84]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[86]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8576,7 +8819,7 @@ func (x *TranscriptEvent) String() string {
 func (*TranscriptEvent) ProtoMessage() {}
 
 func (x *TranscriptEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[84]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[86]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8589,7 +8832,7 @@ func (x *TranscriptEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TranscriptEvent.ProtoReflect.Descriptor instead.
 func (*TranscriptEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{84}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{86}
 }
 
 func (x *TranscriptEvent) GetStream() StdioStream {
@@ -8637,7 +8880,7 @@ type GetRunRequest struct {
 
 func (x *GetRunRequest) Reset() {
 	*x = GetRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[85]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[87]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8649,7 +8892,7 @@ func (x *GetRunRequest) String() string {
 func (*GetRunRequest) ProtoMessage() {}
 
 func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[85]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[87]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8662,7 +8905,7 @@ func (x *GetRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunRequest.ProtoReflect.Descriptor instead.
 func (*GetRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{85}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{87}
 }
 
 func (x *GetRunRequest) GetRunId() string {
@@ -8688,7 +8931,7 @@ type GetRunResponse struct {
 
 func (x *GetRunResponse) Reset() {
 	*x = GetRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[86]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[88]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8700,7 +8943,7 @@ func (x *GetRunResponse) String() string {
 func (*GetRunResponse) ProtoMessage() {}
 
 func (x *GetRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[86]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[88]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8713,7 +8956,7 @@ func (x *GetRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetRunResponse.ProtoReflect.Descriptor instead.
 func (*GetRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{86}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{88}
 }
 
 func (x *GetRunResponse) GetRun() *RunDetail {
@@ -8762,7 +9005,7 @@ type ListRunsRequest struct {
 
 func (x *ListRunsRequest) Reset() {
 	*x = ListRunsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[87]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[89]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8774,7 +9017,7 @@ func (x *ListRunsRequest) String() string {
 func (*ListRunsRequest) ProtoMessage() {}
 
 func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[87]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[89]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8787,7 +9030,7 @@ func (x *ListRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsRequest.ProtoReflect.Descriptor instead.
 func (*ListRunsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{87}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{89}
 }
 
 func (x *ListRunsRequest) GetProjectId() string {
@@ -8896,7 +9139,7 @@ type ListRunsResponse struct {
 
 func (x *ListRunsResponse) Reset() {
 	*x = ListRunsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[88]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[90]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8908,7 +9151,7 @@ func (x *ListRunsResponse) String() string {
 func (*ListRunsResponse) ProtoMessage() {}
 
 func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[88]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[90]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8921,7 +9164,7 @@ func (x *ListRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunsResponse.ProtoReflect.Descriptor instead.
 func (*ListRunsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{88}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{90}
 }
 
 func (x *ListRunsResponse) GetRuns() []*RunSummary {
@@ -8961,7 +9204,7 @@ type FollowRunLogsRequest struct {
 
 func (x *FollowRunLogsRequest) Reset() {
 	*x = FollowRunLogsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[89]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[91]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -8973,7 +9216,7 @@ func (x *FollowRunLogsRequest) String() string {
 func (*FollowRunLogsRequest) ProtoMessage() {}
 
 func (x *FollowRunLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[89]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[91]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -8986,7 +9229,7 @@ func (x *FollowRunLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FollowRunLogsRequest.ProtoReflect.Descriptor instead.
 func (*FollowRunLogsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{89}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{91}
 }
 
 func (x *FollowRunLogsRequest) GetProjectId() string {
@@ -9053,7 +9296,7 @@ type RunLogChunk struct {
 
 func (x *RunLogChunk) Reset() {
 	*x = RunLogChunk{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[90]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[92]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9065,7 +9308,7 @@ func (x *RunLogChunk) String() string {
 func (*RunLogChunk) ProtoMessage() {}
 
 func (x *RunLogChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[90]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[92]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9078,7 +9321,7 @@ func (x *RunLogChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunLogChunk.ProtoReflect.Descriptor instead.
 func (*RunLogChunk) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{90}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{92}
 }
 
 func (x *RunLogChunk) GetData() string {
@@ -9140,7 +9383,7 @@ type StopRunRequest struct {
 
 func (x *StopRunRequest) Reset() {
 	*x = StopRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[91]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[93]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9152,7 +9395,7 @@ func (x *StopRunRequest) String() string {
 func (*StopRunRequest) ProtoMessage() {}
 
 func (x *StopRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[91]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[93]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9165,7 +9408,7 @@ func (x *StopRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRunRequest.ProtoReflect.Descriptor instead.
 func (*StopRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{91}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{93}
 }
 
 func (x *StopRunRequest) GetRunId() string {
@@ -9192,7 +9435,7 @@ type StopRunResponse struct {
 
 func (x *StopRunResponse) Reset() {
 	*x = StopRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[92]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[94]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9204,7 +9447,7 @@ func (x *StopRunResponse) String() string {
 func (*StopRunResponse) ProtoMessage() {}
 
 func (x *StopRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[92]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[94]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9217,7 +9460,7 @@ func (x *StopRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopRunResponse.ProtoReflect.Descriptor instead.
 func (*StopRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{92}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{94}
 }
 
 func (x *StopRunResponse) GetRun() *RunDetail {
@@ -9247,7 +9490,7 @@ type ListRunEventsRequest struct {
 
 func (x *ListRunEventsRequest) Reset() {
 	*x = ListRunEventsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[93]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[95]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9259,7 +9502,7 @@ func (x *ListRunEventsRequest) String() string {
 func (*ListRunEventsRequest) ProtoMessage() {}
 
 func (x *ListRunEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[93]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[95]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9272,7 +9515,7 @@ func (x *ListRunEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListRunEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{93}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{95}
 }
 
 func (x *ListRunEventsRequest) GetRunId() string {
@@ -9316,7 +9559,7 @@ type RunEvent struct {
 
 func (x *RunEvent) Reset() {
 	*x = RunEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[94]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[96]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9328,7 +9571,7 @@ func (x *RunEvent) String() string {
 func (*RunEvent) ProtoMessage() {}
 
 func (x *RunEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[94]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[96]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9341,7 +9584,7 @@ func (x *RunEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunEvent.ProtoReflect.Descriptor instead.
 func (*RunEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{94}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{96}
 }
 
 func (x *RunEvent) GetId() string {
@@ -9440,7 +9683,7 @@ type ListRunEventsResponse struct {
 
 func (x *ListRunEventsResponse) Reset() {
 	*x = ListRunEventsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[95]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[97]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9452,7 +9695,7 @@ func (x *ListRunEventsResponse) String() string {
 func (*ListRunEventsResponse) ProtoMessage() {}
 
 func (x *ListRunEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[95]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[97]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9465,7 +9708,7 @@ func (x *ListRunEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListRunEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListRunEventsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{95}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{97}
 }
 
 func (x *ListRunEventsResponse) GetEvents() []*RunEvent {
@@ -9502,7 +9745,7 @@ type ListSandboxRunEventsRequest struct {
 
 func (x *ListSandboxRunEventsRequest) Reset() {
 	*x = ListSandboxRunEventsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[96]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[98]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9514,7 +9757,7 @@ func (x *ListSandboxRunEventsRequest) String() string {
 func (*ListSandboxRunEventsRequest) ProtoMessage() {}
 
 func (x *ListSandboxRunEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[96]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[98]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9527,7 +9770,7 @@ func (x *ListSandboxRunEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxRunEventsRequest.ProtoReflect.Descriptor instead.
 func (*ListSandboxRunEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{96}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{98}
 }
 
 func (x *ListSandboxRunEventsRequest) GetSandboxId() string {
@@ -9563,7 +9806,7 @@ type ListSandboxRunEventsResponse struct {
 
 func (x *ListSandboxRunEventsResponse) Reset() {
 	*x = ListSandboxRunEventsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[97]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[99]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9575,7 +9818,7 @@ func (x *ListSandboxRunEventsResponse) String() string {
 func (*ListSandboxRunEventsResponse) ProtoMessage() {}
 
 func (x *ListSandboxRunEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[97]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[99]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9588,7 +9831,7 @@ func (x *ListSandboxRunEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxRunEventsResponse.ProtoReflect.Descriptor instead.
 func (*ListSandboxRunEventsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{97}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{99}
 }
 
 func (x *ListSandboxRunEventsResponse) GetEvents() []*RunEvent {
@@ -9622,7 +9865,7 @@ type RemoveSandboxRequest struct {
 
 func (x *RemoveSandboxRequest) Reset() {
 	*x = RemoveSandboxRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[98]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[100]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9634,7 +9877,7 @@ func (x *RemoveSandboxRequest) String() string {
 func (*RemoveSandboxRequest) ProtoMessage() {}
 
 func (x *RemoveSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[98]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[100]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9647,7 +9890,7 @@ func (x *RemoveSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSandboxRequest.ProtoReflect.Descriptor instead.
 func (*RemoveSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{98}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{100}
 }
 
 func (x *RemoveSandboxRequest) GetSandboxId() string {
@@ -9675,7 +9918,7 @@ type RemoveSandboxResponse struct {
 
 func (x *RemoveSandboxResponse) Reset() {
 	*x = RemoveSandboxResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[99]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[101]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9687,7 +9930,7 @@ func (x *RemoveSandboxResponse) String() string {
 func (*RemoveSandboxResponse) ProtoMessage() {}
 
 func (x *RemoveSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[99]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[101]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9700,7 +9943,7 @@ func (x *RemoveSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveSandboxResponse.ProtoReflect.Descriptor instead.
 func (*RemoveSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{99}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{101}
 }
 
 func (x *RemoveSandboxResponse) GetSandboxId() string {
@@ -9741,7 +9984,7 @@ type PruneSandboxesRequest struct {
 
 func (x *PruneSandboxesRequest) Reset() {
 	*x = PruneSandboxesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[100]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[102]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9753,7 +9996,7 @@ func (x *PruneSandboxesRequest) String() string {
 func (*PruneSandboxesRequest) ProtoMessage() {}
 
 func (x *PruneSandboxesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[100]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[102]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9766,7 +10009,7 @@ func (x *PruneSandboxesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneSandboxesRequest.ProtoReflect.Descriptor instead.
 func (*PruneSandboxesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{100}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{102}
 }
 
 func (x *PruneSandboxesRequest) GetProjectId() string {
@@ -9836,7 +10079,7 @@ type SandboxPruneCandidate struct {
 
 func (x *SandboxPruneCandidate) Reset() {
 	*x = SandboxPruneCandidate{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[101]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[103]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9848,7 +10091,7 @@ func (x *SandboxPruneCandidate) String() string {
 func (*SandboxPruneCandidate) ProtoMessage() {}
 
 func (x *SandboxPruneCandidate) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[101]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[103]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9861,7 +10104,7 @@ func (x *SandboxPruneCandidate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxPruneCandidate.ProtoReflect.Descriptor instead.
 func (*SandboxPruneCandidate) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{101}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{103}
 }
 
 func (x *SandboxPruneCandidate) GetKind() SandboxPruneCandidateKind {
@@ -9947,7 +10190,7 @@ type PruneSandboxesResponse struct {
 
 func (x *PruneSandboxesResponse) Reset() {
 	*x = PruneSandboxesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[102]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[104]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -9959,7 +10202,7 @@ func (x *PruneSandboxesResponse) String() string {
 func (*PruneSandboxesResponse) ProtoMessage() {}
 
 func (x *PruneSandboxesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[102]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[104]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -9972,7 +10215,7 @@ func (x *PruneSandboxesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneSandboxesResponse.ProtoReflect.Descriptor instead.
 func (*PruneSandboxesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{102}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{104}
 }
 
 func (x *PruneSandboxesResponse) GetDryRun() bool {
@@ -10019,7 +10262,7 @@ type GetSandboxStatsRequest struct {
 
 func (x *GetSandboxStatsRequest) Reset() {
 	*x = GetSandboxStatsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[103]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[105]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10031,7 +10274,7 @@ func (x *GetSandboxStatsRequest) String() string {
 func (*GetSandboxStatsRequest) ProtoMessage() {}
 
 func (x *GetSandboxStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[103]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[105]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10044,7 +10287,7 @@ func (x *GetSandboxStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxStatsRequest.ProtoReflect.Descriptor instead.
 func (*GetSandboxStatsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{103}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{105}
 }
 
 func (x *GetSandboxStatsRequest) GetSandboxId() string {
@@ -10063,7 +10306,7 @@ type GetSandboxStatsResponse struct {
 
 func (x *GetSandboxStatsResponse) Reset() {
 	*x = GetSandboxStatsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[104]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[106]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10075,7 +10318,7 @@ func (x *GetSandboxStatsResponse) String() string {
 func (*GetSandboxStatsResponse) ProtoMessage() {}
 
 func (x *GetSandboxStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[104]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[106]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10088,7 +10331,7 @@ func (x *GetSandboxStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxStatsResponse.ProtoReflect.Descriptor instead.
 func (*GetSandboxStatsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{104}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{106}
 }
 
 func (x *GetSandboxStatsResponse) GetStats() *SandboxStats {
@@ -10107,7 +10350,7 @@ type GetSandboxRequest struct {
 
 func (x *GetSandboxRequest) Reset() {
 	*x = GetSandboxRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[105]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[107]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10119,7 +10362,7 @@ func (x *GetSandboxRequest) String() string {
 func (*GetSandboxRequest) ProtoMessage() {}
 
 func (x *GetSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[105]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[107]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10132,7 +10375,7 @@ func (x *GetSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxRequest.ProtoReflect.Descriptor instead.
 func (*GetSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{105}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{107}
 }
 
 func (x *GetSandboxRequest) GetSandboxId() string {
@@ -10176,7 +10419,7 @@ type Sandbox struct {
 
 func (x *Sandbox) Reset() {
 	*x = Sandbox{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[106]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[108]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10188,7 +10431,7 @@ func (x *Sandbox) String() string {
 func (*Sandbox) ProtoMessage() {}
 
 func (x *Sandbox) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[106]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[108]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10201,7 +10444,7 @@ func (x *Sandbox) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Sandbox.ProtoReflect.Descriptor instead.
 func (*Sandbox) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{106}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{108}
 }
 
 func (x *Sandbox) GetSandboxId() string {
@@ -10394,7 +10637,7 @@ type SandboxWorkspaceDelivery struct {
 
 func (x *SandboxWorkspaceDelivery) Reset() {
 	*x = SandboxWorkspaceDelivery{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[107]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[109]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10406,7 +10649,7 @@ func (x *SandboxWorkspaceDelivery) String() string {
 func (*SandboxWorkspaceDelivery) ProtoMessage() {}
 
 func (x *SandboxWorkspaceDelivery) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[107]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[109]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10419,7 +10662,7 @@ func (x *SandboxWorkspaceDelivery) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxWorkspaceDelivery.ProtoReflect.Descriptor instead.
 func (*SandboxWorkspaceDelivery) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{107}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{109}
 }
 
 func (x *SandboxWorkspaceDelivery) GetMode() WorkspaceMode {
@@ -10460,7 +10703,7 @@ type SandboxTag struct {
 
 func (x *SandboxTag) Reset() {
 	*x = SandboxTag{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[108]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[110]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10472,7 +10715,7 @@ func (x *SandboxTag) String() string {
 func (*SandboxTag) ProtoMessage() {}
 
 func (x *SandboxTag) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[108]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[110]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10485,7 +10728,7 @@ func (x *SandboxTag) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxTag.ProtoReflect.Descriptor instead.
 func (*SandboxTag) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{108}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{110}
 }
 
 func (x *SandboxTag) GetName() string {
@@ -10517,7 +10760,7 @@ type ListSandboxesRequest struct {
 
 func (x *ListSandboxesRequest) Reset() {
 	*x = ListSandboxesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[109]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[111]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10529,7 +10772,7 @@ func (x *ListSandboxesRequest) String() string {
 func (*ListSandboxesRequest) ProtoMessage() {}
 
 func (x *ListSandboxesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[109]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[111]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10542,7 +10785,7 @@ func (x *ListSandboxesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxesRequest.ProtoReflect.Descriptor instead.
 func (*ListSandboxesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{109}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{111}
 }
 
 func (x *ListSandboxesRequest) GetLimit() uint32 {
@@ -10584,7 +10827,7 @@ type ListSandboxesResponse struct {
 
 func (x *ListSandboxesResponse) Reset() {
 	*x = ListSandboxesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[110]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[112]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10596,7 +10839,7 @@ func (x *ListSandboxesResponse) String() string {
 func (*ListSandboxesResponse) ProtoMessage() {}
 
 func (x *ListSandboxesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[110]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[112]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10609,7 +10852,7 @@ func (x *ListSandboxesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxesResponse.ProtoReflect.Descriptor instead.
 func (*ListSandboxesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{110}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{112}
 }
 
 func (x *ListSandboxesResponse) GetSandboxes() []*Sandbox {
@@ -10635,7 +10878,7 @@ type GetSandboxResponse struct {
 
 func (x *GetSandboxResponse) Reset() {
 	*x = GetSandboxResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[111]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[113]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10647,7 +10890,7 @@ func (x *GetSandboxResponse) String() string {
 func (*GetSandboxResponse) ProtoMessage() {}
 
 func (x *GetSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[111]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[113]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10660,7 +10903,7 @@ func (x *GetSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSandboxResponse.ProtoReflect.Descriptor instead.
 func (*GetSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{111}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{113}
 }
 
 func (x *GetSandboxResponse) GetSandbox() *Sandbox {
@@ -10681,7 +10924,7 @@ type StopSandboxRequest struct {
 
 func (x *StopSandboxRequest) Reset() {
 	*x = StopSandboxRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[112]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[114]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10693,7 +10936,7 @@ func (x *StopSandboxRequest) String() string {
 func (*StopSandboxRequest) ProtoMessage() {}
 
 func (x *StopSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[112]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[114]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10706,7 +10949,7 @@ func (x *StopSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSandboxRequest.ProtoReflect.Descriptor instead.
 func (*StopSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{112}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{114}
 }
 
 func (x *StopSandboxRequest) GetSandboxId() string {
@@ -10740,7 +10983,7 @@ type StopSandboxResponse struct {
 
 func (x *StopSandboxResponse) Reset() {
 	*x = StopSandboxResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[113]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[115]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10752,7 +10995,7 @@ func (x *StopSandboxResponse) String() string {
 func (*StopSandboxResponse) ProtoMessage() {}
 
 func (x *StopSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[113]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[115]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10765,7 +11008,7 @@ func (x *StopSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StopSandboxResponse.ProtoReflect.Descriptor instead.
 func (*StopSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{113}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{115}
 }
 
 func (x *StopSandboxResponse) GetSandbox() *Sandbox {
@@ -10791,7 +11034,7 @@ type ResumeSandboxRequest struct {
 
 func (x *ResumeSandboxRequest) Reset() {
 	*x = ResumeSandboxRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[114]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[116]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10803,7 +11046,7 @@ func (x *ResumeSandboxRequest) String() string {
 func (*ResumeSandboxRequest) ProtoMessage() {}
 
 func (x *ResumeSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[114]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[116]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10816,7 +11059,7 @@ func (x *ResumeSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSandboxRequest.ProtoReflect.Descriptor instead.
 func (*ResumeSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{114}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{116}
 }
 
 func (x *ResumeSandboxRequest) GetSandboxId() string {
@@ -10835,7 +11078,7 @@ type ResumeSandboxResponse struct {
 
 func (x *ResumeSandboxResponse) Reset() {
 	*x = ResumeSandboxResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[115]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[117]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10847,7 +11090,7 @@ func (x *ResumeSandboxResponse) String() string {
 func (*ResumeSandboxResponse) ProtoMessage() {}
 
 func (x *ResumeSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[115]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[117]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10860,7 +11103,7 @@ func (x *ResumeSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResumeSandboxResponse.ProtoReflect.Descriptor instead.
 func (*ResumeSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{115}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{117}
 }
 
 func (x *ResumeSandboxResponse) GetSandbox() *Sandbox {
@@ -10882,7 +11125,7 @@ type MetricValue struct {
 
 func (x *MetricValue) Reset() {
 	*x = MetricValue{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[116]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[118]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10894,7 +11137,7 @@ func (x *MetricValue) String() string {
 func (*MetricValue) ProtoMessage() {}
 
 func (x *MetricValue) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[116]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[118]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10907,7 +11150,7 @@ func (x *MetricValue) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetricValue.ProtoReflect.Descriptor instead.
 func (*MetricValue) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{116}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{118}
 }
 
 func (x *MetricValue) GetValue() float64 {
@@ -10958,7 +11201,7 @@ type SandboxStats struct {
 
 func (x *SandboxStats) Reset() {
 	*x = SandboxStats{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[117]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[119]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -10970,7 +11213,7 @@ func (x *SandboxStats) String() string {
 func (*SandboxStats) ProtoMessage() {}
 
 func (x *SandboxStats) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[117]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[119]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -10983,7 +11226,7 @@ func (x *SandboxStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxStats.ProtoReflect.Descriptor instead.
 func (*SandboxStats) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{117}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{119}
 }
 
 func (x *SandboxStats) GetSandboxId() string {
@@ -11101,7 +11344,7 @@ type RunSummary struct {
 
 func (x *RunSummary) Reset() {
 	*x = RunSummary{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[118]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[120]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11113,7 +11356,7 @@ func (x *RunSummary) String() string {
 func (*RunSummary) ProtoMessage() {}
 
 func (x *RunSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[118]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[120]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11126,7 +11369,7 @@ func (x *RunSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunSummary.ProtoReflect.Descriptor instead.
 func (*RunSummary) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{118}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{120}
 }
 
 func (x *RunSummary) GetRunId() string {
@@ -11304,7 +11547,7 @@ type RunDetail struct {
 
 func (x *RunDetail) Reset() {
 	*x = RunDetail{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[119]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[121]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11316,7 +11559,7 @@ func (x *RunDetail) String() string {
 func (*RunDetail) ProtoMessage() {}
 
 func (x *RunDetail) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[119]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[121]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11329,7 +11572,7 @@ func (x *RunDetail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunDetail.ProtoReflect.Descriptor instead.
 func (*RunDetail) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{119}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{121}
 }
 
 func (x *RunDetail) GetSummary() *RunSummary {
@@ -11435,7 +11678,7 @@ type ExecRequest struct {
 
 func (x *ExecRequest) Reset() {
 	*x = ExecRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[120]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[122]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11447,7 +11690,7 @@ func (x *ExecRequest) String() string {
 func (*ExecRequest) ProtoMessage() {}
 
 func (x *ExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[120]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[122]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11460,7 +11703,7 @@ func (x *ExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecRequest.ProtoReflect.Descriptor instead.
 func (*ExecRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{120}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{122}
 }
 
 func (x *ExecRequest) GetTarget() isExecRequest_Target {
@@ -11571,7 +11814,7 @@ type ExecSandboxSelector struct {
 
 func (x *ExecSandboxSelector) Reset() {
 	*x = ExecSandboxSelector{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[121]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[123]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11583,7 +11826,7 @@ func (x *ExecSandboxSelector) String() string {
 func (*ExecSandboxSelector) ProtoMessage() {}
 
 func (x *ExecSandboxSelector) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[121]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[123]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11596,7 +11839,7 @@ func (x *ExecSandboxSelector) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecSandboxSelector.ProtoReflect.Descriptor instead.
 func (*ExecSandboxSelector) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{121}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{123}
 }
 
 func (x *ExecSandboxSelector) GetProject() isExecSandboxSelector_Project {
@@ -11657,7 +11900,7 @@ type ExecCommand struct {
 
 func (x *ExecCommand) Reset() {
 	*x = ExecCommand{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[122]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[124]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11669,7 +11912,7 @@ func (x *ExecCommand) String() string {
 func (*ExecCommand) ProtoMessage() {}
 
 func (x *ExecCommand) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[122]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[124]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11682,7 +11925,7 @@ func (x *ExecCommand) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecCommand.ProtoReflect.Descriptor instead.
 func (*ExecCommand) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{122}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{124}
 }
 
 func (x *ExecCommand) GetCommand() string {
@@ -11708,7 +11951,7 @@ type ExecResponse struct {
 
 func (x *ExecResponse) Reset() {
 	*x = ExecResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[123]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[125]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11720,7 +11963,7 @@ func (x *ExecResponse) String() string {
 func (*ExecResponse) ProtoMessage() {}
 
 func (x *ExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[123]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[125]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11733,7 +11976,7 @@ func (x *ExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecResponse.ProtoReflect.Descriptor instead.
 func (*ExecResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{123}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{125}
 }
 
 func (x *ExecResponse) GetResult() *ExecResult {
@@ -11759,7 +12002,7 @@ type StreamExecResponse struct {
 
 func (x *StreamExecResponse) Reset() {
 	*x = StreamExecResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[124]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[126]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11771,7 +12014,7 @@ func (x *StreamExecResponse) String() string {
 func (*StreamExecResponse) ProtoMessage() {}
 
 func (x *StreamExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[124]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[126]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11784,7 +12027,7 @@ func (x *StreamExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamExecResponse.ProtoReflect.Descriptor instead.
 func (*StreamExecResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{124}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{126}
 }
 
 func (x *StreamExecResponse) GetEventType() StreamExecEventType {
@@ -11864,7 +12107,7 @@ type AttachExecRequest struct {
 
 func (x *AttachExecRequest) Reset() {
 	*x = AttachExecRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[125]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[127]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -11876,7 +12119,7 @@ func (x *AttachExecRequest) String() string {
 func (*AttachExecRequest) ProtoMessage() {}
 
 func (x *AttachExecRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[125]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[127]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -11889,7 +12132,7 @@ func (x *AttachExecRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachExecRequest.ProtoReflect.Descriptor instead.
 func (*AttachExecRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{125}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{127}
 }
 
 func (x *AttachExecRequest) GetClientFrameId() string {
@@ -12036,7 +12279,7 @@ type AttachExecResponse struct {
 
 func (x *AttachExecResponse) Reset() {
 	*x = AttachExecResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[126]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[128]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12048,7 +12291,7 @@ func (x *AttachExecResponse) String() string {
 func (*AttachExecResponse) ProtoMessage() {}
 
 func (x *AttachExecResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[126]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[128]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12061,7 +12304,7 @@ func (x *AttachExecResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachExecResponse.ProtoReflect.Descriptor instead.
 func (*AttachExecResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{126}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{128}
 }
 
 func (x *AttachExecResponse) GetServerFrameId() string {
@@ -12193,7 +12436,7 @@ type AttachExecStart struct {
 
 func (x *AttachExecStart) Reset() {
 	*x = AttachExecStart{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[127]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[129]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12205,7 +12448,7 @@ func (x *AttachExecStart) String() string {
 func (*AttachExecStart) ProtoMessage() {}
 
 func (x *AttachExecStart) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[127]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[129]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12218,7 +12461,7 @@ func (x *AttachExecStart) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachExecStart.ProtoReflect.Descriptor instead.
 func (*AttachExecStart) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{127}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{129}
 }
 
 func (x *AttachExecStart) GetRequest() *ExecRequest {
@@ -12273,7 +12516,7 @@ type AttachTerminalSize struct {
 
 func (x *AttachTerminalSize) Reset() {
 	*x = AttachTerminalSize{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[128]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[130]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12285,7 +12528,7 @@ func (x *AttachTerminalSize) String() string {
 func (*AttachTerminalSize) ProtoMessage() {}
 
 func (x *AttachTerminalSize) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[128]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[130]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12298,7 +12541,7 @@ func (x *AttachTerminalSize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachTerminalSize.ProtoReflect.Descriptor instead.
 func (*AttachTerminalSize) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{128}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{130}
 }
 
 func (x *AttachTerminalSize) GetRows() uint32 {
@@ -12324,7 +12567,7 @@ type AttachStdin struct {
 
 func (x *AttachStdin) Reset() {
 	*x = AttachStdin{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[129]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[131]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12336,7 +12579,7 @@ func (x *AttachStdin) String() string {
 func (*AttachStdin) ProtoMessage() {}
 
 func (x *AttachStdin) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[129]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[131]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12349,7 +12592,7 @@ func (x *AttachStdin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachStdin.ProtoReflect.Descriptor instead.
 func (*AttachStdin) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{129}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{131}
 }
 
 func (x *AttachStdin) GetData() []byte {
@@ -12367,7 +12610,7 @@ type AttachStdinEOF struct {
 
 func (x *AttachStdinEOF) Reset() {
 	*x = AttachStdinEOF{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[130]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[132]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12379,7 +12622,7 @@ func (x *AttachStdinEOF) String() string {
 func (*AttachStdinEOF) ProtoMessage() {}
 
 func (x *AttachStdinEOF) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[130]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[132]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12392,7 +12635,7 @@ func (x *AttachStdinEOF) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachStdinEOF.ProtoReflect.Descriptor instead.
 func (*AttachStdinEOF) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{130}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{132}
 }
 
 type AttachResize struct {
@@ -12404,7 +12647,7 @@ type AttachResize struct {
 
 func (x *AttachResize) Reset() {
 	*x = AttachResize{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[131]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[133]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12416,7 +12659,7 @@ func (x *AttachResize) String() string {
 func (*AttachResize) ProtoMessage() {}
 
 func (x *AttachResize) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[131]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[133]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12429,7 +12672,7 @@ func (x *AttachResize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachResize.ProtoReflect.Descriptor instead.
 func (*AttachResize) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{131}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{133}
 }
 
 func (x *AttachResize) GetTerminalSize() *AttachTerminalSize {
@@ -12448,7 +12691,7 @@ type AttachSignal struct {
 
 func (x *AttachSignal) Reset() {
 	*x = AttachSignal{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[132]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[134]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12460,7 +12703,7 @@ func (x *AttachSignal) String() string {
 func (*AttachSignal) ProtoMessage() {}
 
 func (x *AttachSignal) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[132]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[134]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12473,7 +12716,7 @@ func (x *AttachSignal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachSignal.ProtoReflect.Descriptor instead.
 func (*AttachSignal) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{132}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{134}
 }
 
 func (x *AttachSignal) GetSignal() string {
@@ -12493,7 +12736,7 @@ type AttachHumanMessage struct {
 
 func (x *AttachHumanMessage) Reset() {
 	*x = AttachHumanMessage{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[133]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[135]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12505,7 +12748,7 @@ func (x *AttachHumanMessage) String() string {
 func (*AttachHumanMessage) ProtoMessage() {}
 
 func (x *AttachHumanMessage) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[133]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[135]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12518,7 +12761,7 @@ func (x *AttachHumanMessage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachHumanMessage.ProtoReflect.Descriptor instead.
 func (*AttachHumanMessage) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{133}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{135}
 }
 
 func (x *AttachHumanMessage) GetText() string {
@@ -12544,7 +12787,7 @@ type AttachCancel struct {
 
 func (x *AttachCancel) Reset() {
 	*x = AttachCancel{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[134]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[136]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12556,7 +12799,7 @@ func (x *AttachCancel) String() string {
 func (*AttachCancel) ProtoMessage() {}
 
 func (x *AttachCancel) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[134]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[136]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12569,7 +12812,7 @@ func (x *AttachCancel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachCancel.ProtoReflect.Descriptor instead.
 func (*AttachCancel) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{134}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{136}
 }
 
 func (x *AttachCancel) GetReason() string {
@@ -12593,7 +12836,7 @@ type AttachStarted struct {
 
 func (x *AttachStarted) Reset() {
 	*x = AttachStarted{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[135]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[137]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12605,7 +12848,7 @@ func (x *AttachStarted) String() string {
 func (*AttachStarted) ProtoMessage() {}
 
 func (x *AttachStarted) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[135]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[137]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12618,7 +12861,7 @@ func (x *AttachStarted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachStarted.ProtoReflect.Descriptor instead.
 func (*AttachStarted) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{135}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{137}
 }
 
 func (x *AttachStarted) GetOperationId() string {
@@ -12675,7 +12918,7 @@ type AttachOutput struct {
 
 func (x *AttachOutput) Reset() {
 	*x = AttachOutput{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[136]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[138]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12687,7 +12930,7 @@ func (x *AttachOutput) String() string {
 func (*AttachOutput) ProtoMessage() {}
 
 func (x *AttachOutput) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[136]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[138]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12700,7 +12943,7 @@ func (x *AttachOutput) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachOutput.ProtoReflect.Descriptor instead.
 func (*AttachOutput) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{136}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{138}
 }
 
 func (x *AttachOutput) GetData() []byte {
@@ -12743,7 +12986,7 @@ type AttachAgentEvent struct {
 
 func (x *AttachAgentEvent) Reset() {
 	*x = AttachAgentEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[137]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[139]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12755,7 +12998,7 @@ func (x *AttachAgentEvent) String() string {
 func (*AttachAgentEvent) ProtoMessage() {}
 
 func (x *AttachAgentEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[137]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[139]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12768,7 +13011,7 @@ func (x *AttachAgentEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachAgentEvent.ProtoReflect.Descriptor instead.
 func (*AttachAgentEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{137}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{139}
 }
 
 func (x *AttachAgentEvent) GetName() string {
@@ -12810,7 +13053,7 @@ type AttachAgentTurnCompleted struct {
 
 func (x *AttachAgentTurnCompleted) Reset() {
 	*x = AttachAgentTurnCompleted{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[138]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[140]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12822,7 +13065,7 @@ func (x *AttachAgentTurnCompleted) String() string {
 func (*AttachAgentTurnCompleted) ProtoMessage() {}
 
 func (x *AttachAgentTurnCompleted) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[138]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[140]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12835,7 +13078,7 @@ func (x *AttachAgentTurnCompleted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachAgentTurnCompleted.ProtoReflect.Descriptor instead.
 func (*AttachAgentTurnCompleted) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{138}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{140}
 }
 
 func (x *AttachAgentTurnCompleted) GetRunId() string {
@@ -12874,7 +13117,7 @@ type AttachResult struct {
 
 func (x *AttachResult) Reset() {
 	*x = AttachResult{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[139]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[141]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12886,7 +13129,7 @@ func (x *AttachResult) String() string {
 func (*AttachResult) ProtoMessage() {}
 
 func (x *AttachResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[139]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[141]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12899,7 +13142,7 @@ func (x *AttachResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachResult.ProtoReflect.Descriptor instead.
 func (*AttachResult) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{139}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{141}
 }
 
 func (x *AttachResult) GetExitCode() int32 {
@@ -12963,7 +13206,7 @@ type AttachError struct {
 
 func (x *AttachError) Reset() {
 	*x = AttachError{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[140]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[142]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -12975,7 +13218,7 @@ func (x *AttachError) String() string {
 func (*AttachError) ProtoMessage() {}
 
 func (x *AttachError) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[140]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[142]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -12988,7 +13231,7 @@ func (x *AttachError) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttachError.ProtoReflect.Descriptor instead.
 func (*AttachError) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{140}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{142}
 }
 
 func (x *AttachError) GetCode() string {
@@ -13041,7 +13284,7 @@ type ExecResult struct {
 
 func (x *ExecResult) Reset() {
 	*x = ExecResult{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[141]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[143]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13053,7 +13296,7 @@ func (x *ExecResult) String() string {
 func (*ExecResult) ProtoMessage() {}
 
 func (x *ExecResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[141]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[143]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13066,7 +13309,7 @@ func (x *ExecResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExecResult.ProtoReflect.Descriptor instead.
 func (*ExecResult) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{141}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{143}
 }
 
 func (x *ExecResult) GetExecId() string {
@@ -13183,7 +13426,7 @@ type ListImagesRequest struct {
 
 func (x *ListImagesRequest) Reset() {
 	*x = ListImagesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[142]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[144]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13195,7 +13438,7 @@ func (x *ListImagesRequest) String() string {
 func (*ListImagesRequest) ProtoMessage() {}
 
 func (x *ListImagesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[142]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[144]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13208,7 +13451,7 @@ func (x *ListImagesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListImagesRequest.ProtoReflect.Descriptor instead.
 func (*ListImagesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{142}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{144}
 }
 
 func (x *ListImagesRequest) GetStore() ImageStoreKind {
@@ -13265,7 +13508,7 @@ type ListImagesResponse struct {
 
 func (x *ListImagesResponse) Reset() {
 	*x = ListImagesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[143]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[145]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13277,7 +13520,7 @@ func (x *ListImagesResponse) String() string {
 func (*ListImagesResponse) ProtoMessage() {}
 
 func (x *ListImagesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[143]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[145]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13290,7 +13533,7 @@ func (x *ListImagesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListImagesResponse.ProtoReflect.Descriptor instead.
 func (*ListImagesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{143}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{145}
 }
 
 func (x *ListImagesResponse) GetImages() []*Image {
@@ -13325,7 +13568,7 @@ type PullImageRequest struct {
 
 func (x *PullImageRequest) Reset() {
 	*x = PullImageRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[144]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[146]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13337,7 +13580,7 @@ func (x *PullImageRequest) String() string {
 func (*PullImageRequest) ProtoMessage() {}
 
 func (x *PullImageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[144]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[146]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13350,7 +13593,7 @@ func (x *PullImageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullImageRequest.ProtoReflect.Descriptor instead.
 func (*PullImageRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{144}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{146}
 }
 
 func (x *PullImageRequest) GetImageRef() string {
@@ -13387,7 +13630,7 @@ type PullImageResponse struct {
 
 func (x *PullImageResponse) Reset() {
 	*x = PullImageResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[145]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[147]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13399,7 +13642,7 @@ func (x *PullImageResponse) String() string {
 func (*PullImageResponse) ProtoMessage() {}
 
 func (x *PullImageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[145]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[147]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13412,7 +13655,7 @@ func (x *PullImageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PullImageResponse.ProtoReflect.Descriptor instead.
 func (*PullImageResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{145}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{147}
 }
 
 func (x *PullImageResponse) GetImage() *Image {
@@ -13461,7 +13704,7 @@ type InspectImageRequest struct {
 
 func (x *InspectImageRequest) Reset() {
 	*x = InspectImageRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[146]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[148]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13473,7 +13716,7 @@ func (x *InspectImageRequest) String() string {
 func (*InspectImageRequest) ProtoMessage() {}
 
 func (x *InspectImageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[146]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[148]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13486,7 +13729,7 @@ func (x *InspectImageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectImageRequest.ProtoReflect.Descriptor instead.
 func (*InspectImageRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{146}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{148}
 }
 
 func (x *InspectImageRequest) GetImageRef() string {
@@ -13520,7 +13763,7 @@ type InspectImageResponse struct {
 
 func (x *InspectImageResponse) Reset() {
 	*x = InspectImageResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[147]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[149]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13532,7 +13775,7 @@ func (x *InspectImageResponse) String() string {
 func (*InspectImageResponse) ProtoMessage() {}
 
 func (x *InspectImageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[147]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[149]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13545,7 +13788,7 @@ func (x *InspectImageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectImageResponse.ProtoReflect.Descriptor instead.
 func (*InspectImageResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{147}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{149}
 }
 
 func (x *InspectImageResponse) GetImage() *Image {
@@ -13574,7 +13817,7 @@ type RemoveImageRequest struct {
 
 func (x *RemoveImageRequest) Reset() {
 	*x = RemoveImageRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[148]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[150]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13586,7 +13829,7 @@ func (x *RemoveImageRequest) String() string {
 func (*RemoveImageRequest) ProtoMessage() {}
 
 func (x *RemoveImageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[148]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[150]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13599,7 +13842,7 @@ func (x *RemoveImageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveImageRequest.ProtoReflect.Descriptor instead.
 func (*RemoveImageRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{148}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{150}
 }
 
 func (x *RemoveImageRequest) GetImageRef() string {
@@ -13642,7 +13885,7 @@ type RemoveImageResponse struct {
 
 func (x *RemoveImageResponse) Reset() {
 	*x = RemoveImageResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[149]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[151]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13654,7 +13897,7 @@ func (x *RemoveImageResponse) String() string {
 func (*RemoveImageResponse) ProtoMessage() {}
 
 func (x *RemoveImageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[149]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[151]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13667,7 +13910,7 @@ func (x *RemoveImageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveImageResponse.ProtoReflect.Descriptor instead.
 func (*RemoveImageResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{149}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{151}
 }
 
 func (x *RemoveImageResponse) GetImageRef() string {
@@ -13715,7 +13958,7 @@ type BuildImageRequest struct {
 
 func (x *BuildImageRequest) Reset() {
 	*x = BuildImageRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[150]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[152]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13727,7 +13970,7 @@ func (x *BuildImageRequest) String() string {
 func (*BuildImageRequest) ProtoMessage() {}
 
 func (x *BuildImageRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[150]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[152]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13740,7 +13983,7 @@ func (x *BuildImageRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildImageRequest.ProtoReflect.Descriptor instead.
 func (*BuildImageRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{150}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{152}
 }
 
 func (x *BuildImageRequest) GetContextDir() string {
@@ -13821,7 +14064,7 @@ type BuildImageEvent struct {
 
 func (x *BuildImageEvent) Reset() {
 	*x = BuildImageEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[151]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[153]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13833,7 +14076,7 @@ func (x *BuildImageEvent) String() string {
 func (*BuildImageEvent) ProtoMessage() {}
 
 func (x *BuildImageEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[151]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[153]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13846,7 +14089,7 @@ func (x *BuildImageEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildImageEvent.ProtoReflect.Descriptor instead.
 func (*BuildImageEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{151}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{153}
 }
 
 func (x *BuildImageEvent) GetStatus() ImageOperationStatus {
@@ -13912,7 +14155,7 @@ type CacheFilter struct {
 
 func (x *CacheFilter) Reset() {
 	*x = CacheFilter{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[152]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[154]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -13924,7 +14167,7 @@ func (x *CacheFilter) String() string {
 func (*CacheFilter) ProtoMessage() {}
 
 func (x *CacheFilter) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[152]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[154]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -13937,7 +14180,7 @@ func (x *CacheFilter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheFilter.ProtoReflect.Descriptor instead.
 func (*CacheFilter) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{152}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{154}
 }
 
 func (x *CacheFilter) GetDriver() string {
@@ -13995,7 +14238,7 @@ type ListCachesRequest struct {
 
 func (x *ListCachesRequest) Reset() {
 	*x = ListCachesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[153]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[155]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14007,7 +14250,7 @@ func (x *ListCachesRequest) String() string {
 func (*ListCachesRequest) ProtoMessage() {}
 
 func (x *ListCachesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[153]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[155]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14020,7 +14263,7 @@ func (x *ListCachesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCachesRequest.ProtoReflect.Descriptor instead.
 func (*ListCachesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{153}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{155}
 }
 
 func (x *ListCachesRequest) GetFilter() *CacheFilter {
@@ -14056,7 +14299,7 @@ type ListCachesResponse struct {
 
 func (x *ListCachesResponse) Reset() {
 	*x = ListCachesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[154]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[156]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14068,7 +14311,7 @@ func (x *ListCachesResponse) String() string {
 func (*ListCachesResponse) ProtoMessage() {}
 
 func (x *ListCachesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[154]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[156]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14081,7 +14324,7 @@ func (x *ListCachesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCachesResponse.ProtoReflect.Descriptor instead.
 func (*ListCachesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{154}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{156}
 }
 
 func (x *ListCachesResponse) GetCaches() []*CacheItem {
@@ -14114,7 +14357,7 @@ type InspectCacheRequest struct {
 
 func (x *InspectCacheRequest) Reset() {
 	*x = InspectCacheRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[155]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[157]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14126,7 +14369,7 @@ func (x *InspectCacheRequest) String() string {
 func (*InspectCacheRequest) ProtoMessage() {}
 
 func (x *InspectCacheRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[155]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[157]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14139,7 +14382,7 @@ func (x *InspectCacheRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectCacheRequest.ProtoReflect.Descriptor instead.
 func (*InspectCacheRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{155}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{157}
 }
 
 func (x *InspectCacheRequest) GetCacheId() string {
@@ -14159,7 +14402,7 @@ type InspectCacheResponse struct {
 
 func (x *InspectCacheResponse) Reset() {
 	*x = InspectCacheResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[156]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[158]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14171,7 +14414,7 @@ func (x *InspectCacheResponse) String() string {
 func (*InspectCacheResponse) ProtoMessage() {}
 
 func (x *InspectCacheResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[156]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[158]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14184,7 +14427,7 @@ func (x *InspectCacheResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectCacheResponse.ProtoReflect.Descriptor instead.
 func (*InspectCacheResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{156}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{158}
 }
 
 func (x *InspectCacheResponse) GetCache() *CacheItem {
@@ -14211,7 +14454,7 @@ type PruneCachesRequest struct {
 
 func (x *PruneCachesRequest) Reset() {
 	*x = PruneCachesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[157]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[159]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14223,7 +14466,7 @@ func (x *PruneCachesRequest) String() string {
 func (*PruneCachesRequest) ProtoMessage() {}
 
 func (x *PruneCachesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[157]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[159]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14236,7 +14479,7 @@ func (x *PruneCachesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneCachesRequest.ProtoReflect.Descriptor instead.
 func (*PruneCachesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{157}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{159}
 }
 
 func (x *PruneCachesRequest) GetFilter() *CacheFilter {
@@ -14266,7 +14509,7 @@ type PruneCachesResponse struct {
 
 func (x *PruneCachesResponse) Reset() {
 	*x = PruneCachesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[158]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[160]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14278,7 +14521,7 @@ func (x *PruneCachesResponse) String() string {
 func (*PruneCachesResponse) ProtoMessage() {}
 
 func (x *PruneCachesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[158]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[160]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14291,7 +14534,7 @@ func (x *PruneCachesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneCachesResponse.ProtoReflect.Descriptor instead.
 func (*PruneCachesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{158}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{160}
 }
 
 func (x *PruneCachesResponse) GetDryRun() bool {
@@ -14339,7 +14582,7 @@ type RemoveCacheRequest struct {
 
 func (x *RemoveCacheRequest) Reset() {
 	*x = RemoveCacheRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[159]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[161]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14351,7 +14594,7 @@ func (x *RemoveCacheRequest) String() string {
 func (*RemoveCacheRequest) ProtoMessage() {}
 
 func (x *RemoveCacheRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[159]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[161]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14364,7 +14607,7 @@ func (x *RemoveCacheRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveCacheRequest.ProtoReflect.Descriptor instead.
 func (*RemoveCacheRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{159}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{161}
 }
 
 func (x *RemoveCacheRequest) GetCacheId() string {
@@ -14394,7 +14637,7 @@ type RemoveCacheResponse struct {
 
 func (x *RemoveCacheResponse) Reset() {
 	*x = RemoveCacheResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[160]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[162]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14406,7 +14649,7 @@ func (x *RemoveCacheResponse) String() string {
 func (*RemoveCacheResponse) ProtoMessage() {}
 
 func (x *RemoveCacheResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[160]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[162]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14419,7 +14662,7 @@ func (x *RemoveCacheResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveCacheResponse.ProtoReflect.Descriptor instead.
 func (*RemoveCacheResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{160}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{162}
 }
 
 func (x *RemoveCacheResponse) GetDryRun() bool {
@@ -14481,7 +14724,7 @@ type CacheItem struct {
 
 func (x *CacheItem) Reset() {
 	*x = CacheItem{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[161]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[163]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14493,7 +14736,7 @@ func (x *CacheItem) String() string {
 func (*CacheItem) ProtoMessage() {}
 
 func (x *CacheItem) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[161]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[163]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14506,7 +14749,7 @@ func (x *CacheItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheItem.ProtoReflect.Descriptor instead.
 func (*CacheItem) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{161}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{163}
 }
 
 func (x *CacheItem) GetCacheId() string {
@@ -14636,7 +14879,7 @@ type CacheReference struct {
 
 func (x *CacheReference) Reset() {
 	*x = CacheReference{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[162]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[164]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14648,7 +14891,7 @@ func (x *CacheReference) String() string {
 func (*CacheReference) ProtoMessage() {}
 
 func (x *CacheReference) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[162]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[164]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14661,7 +14904,7 @@ func (x *CacheReference) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheReference.ProtoReflect.Descriptor instead.
 func (*CacheReference) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{162}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{164}
 }
 
 func (x *CacheReference) GetType() string {
@@ -14728,7 +14971,7 @@ type ListVolumesRequest struct {
 
 func (x *ListVolumesRequest) Reset() {
 	*x = ListVolumesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[163]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[165]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14740,7 +14983,7 @@ func (x *ListVolumesRequest) String() string {
 func (*ListVolumesRequest) ProtoMessage() {}
 
 func (x *ListVolumesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[163]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[165]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14753,7 +14996,7 @@ func (x *ListVolumesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVolumesRequest.ProtoReflect.Descriptor instead.
 func (*ListVolumesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{163}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{165}
 }
 
 func (x *ListVolumesRequest) GetQuery() string {
@@ -14802,7 +15045,7 @@ type ListVolumesResponse struct {
 
 func (x *ListVolumesResponse) Reset() {
 	*x = ListVolumesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[164]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[166]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14814,7 +15057,7 @@ func (x *ListVolumesResponse) String() string {
 func (*ListVolumesResponse) ProtoMessage() {}
 
 func (x *ListVolumesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[164]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[166]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14827,7 +15070,7 @@ func (x *ListVolumesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListVolumesResponse.ProtoReflect.Descriptor instead.
 func (*ListVolumesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{164}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{166}
 }
 
 func (x *ListVolumesResponse) GetVolumes() []*Volume {
@@ -14856,7 +15099,7 @@ type CreateVolumeRequest struct {
 
 func (x *CreateVolumeRequest) Reset() {
 	*x = CreateVolumeRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[165]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[167]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14868,7 +15111,7 @@ func (x *CreateVolumeRequest) String() string {
 func (*CreateVolumeRequest) ProtoMessage() {}
 
 func (x *CreateVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[165]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[167]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14881,7 +15124,7 @@ func (x *CreateVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateVolumeRequest.ProtoReflect.Descriptor instead.
 func (*CreateVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{165}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{167}
 }
 
 func (x *CreateVolumeRequest) GetName() string {
@@ -14922,7 +15165,7 @@ type CreateVolumeResponse struct {
 
 func (x *CreateVolumeResponse) Reset() {
 	*x = CreateVolumeResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[166]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[168]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14934,7 +15177,7 @@ func (x *CreateVolumeResponse) String() string {
 func (*CreateVolumeResponse) ProtoMessage() {}
 
 func (x *CreateVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[166]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[168]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14947,7 +15190,7 @@ func (x *CreateVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateVolumeResponse.ProtoReflect.Descriptor instead.
 func (*CreateVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{166}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{168}
 }
 
 func (x *CreateVolumeResponse) GetVolume() *Volume {
@@ -14973,7 +15216,7 @@ type InspectVolumeRequest struct {
 
 func (x *InspectVolumeRequest) Reset() {
 	*x = InspectVolumeRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[167]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[169]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -14985,7 +15228,7 @@ func (x *InspectVolumeRequest) String() string {
 func (*InspectVolumeRequest) ProtoMessage() {}
 
 func (x *InspectVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[167]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[169]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -14998,7 +15241,7 @@ func (x *InspectVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectVolumeRequest.ProtoReflect.Descriptor instead.
 func (*InspectVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{167}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{169}
 }
 
 func (x *InspectVolumeRequest) GetName() string {
@@ -15017,7 +15260,7 @@ type InspectVolumeResponse struct {
 
 func (x *InspectVolumeResponse) Reset() {
 	*x = InspectVolumeResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[168]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[170]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15029,7 +15272,7 @@ func (x *InspectVolumeResponse) String() string {
 func (*InspectVolumeResponse) ProtoMessage() {}
 
 func (x *InspectVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[168]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[170]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15042,7 +15285,7 @@ func (x *InspectVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InspectVolumeResponse.ProtoReflect.Descriptor instead.
 func (*InspectVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{168}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{170}
 }
 
 func (x *InspectVolumeResponse) GetVolume() *Volume {
@@ -15062,7 +15305,7 @@ type RemoveVolumeRequest struct {
 
 func (x *RemoveVolumeRequest) Reset() {
 	*x = RemoveVolumeRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[169]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[171]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15074,7 +15317,7 @@ func (x *RemoveVolumeRequest) String() string {
 func (*RemoveVolumeRequest) ProtoMessage() {}
 
 func (x *RemoveVolumeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[169]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[171]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15087,7 +15330,7 @@ func (x *RemoveVolumeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveVolumeRequest.ProtoReflect.Descriptor instead.
 func (*RemoveVolumeRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{169}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{171}
 }
 
 func (x *RemoveVolumeRequest) GetName() string {
@@ -15114,7 +15357,7 @@ type RemoveVolumeResponse struct {
 
 func (x *RemoveVolumeResponse) Reset() {
 	*x = RemoveVolumeResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[170]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[172]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15126,7 +15369,7 @@ func (x *RemoveVolumeResponse) String() string {
 func (*RemoveVolumeResponse) ProtoMessage() {}
 
 func (x *RemoveVolumeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[170]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[172]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15139,7 +15382,7 @@ func (x *RemoveVolumeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RemoveVolumeResponse.ProtoReflect.Descriptor instead.
 func (*RemoveVolumeResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{170}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{172}
 }
 
 func (x *RemoveVolumeResponse) GetName() string {
@@ -15168,7 +15411,7 @@ type PruneVolumesRequest struct {
 
 func (x *PruneVolumesRequest) Reset() {
 	*x = PruneVolumesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[171]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[173]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15180,7 +15423,7 @@ func (x *PruneVolumesRequest) String() string {
 func (*PruneVolumesRequest) ProtoMessage() {}
 
 func (x *PruneVolumesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[171]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[173]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15193,7 +15436,7 @@ func (x *PruneVolumesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneVolumesRequest.ProtoReflect.Descriptor instead.
 func (*PruneVolumesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{171}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{173}
 }
 
 func (x *PruneVolumesRequest) GetQuery() string {
@@ -15236,7 +15479,7 @@ type PruneVolumesResponse struct {
 
 func (x *PruneVolumesResponse) Reset() {
 	*x = PruneVolumesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[172]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[174]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15248,7 +15491,7 @@ func (x *PruneVolumesResponse) String() string {
 func (*PruneVolumesResponse) ProtoMessage() {}
 
 func (x *PruneVolumesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[172]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[174]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15261,7 +15504,7 @@ func (x *PruneVolumesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PruneVolumesResponse.ProtoReflect.Descriptor instead.
 func (*PruneVolumesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{172}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{174}
 }
 
 func (x *PruneVolumesResponse) GetDryRun() bool {
@@ -15308,7 +15551,7 @@ type Volume struct {
 
 func (x *Volume) Reset() {
 	*x = Volume{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[173]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[175]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15320,7 +15563,7 @@ func (x *Volume) String() string {
 func (*Volume) ProtoMessage() {}
 
 func (x *Volume) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[173]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[175]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15333,7 +15576,7 @@ func (x *Volume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Volume.ProtoReflect.Descriptor instead.
 func (*Volume) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{173}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{175}
 }
 
 func (x *Volume) GetName() string {
@@ -15417,7 +15660,7 @@ type Image struct {
 
 func (x *Image) Reset() {
 	*x = Image{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[174]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[176]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15429,7 +15672,7 @@ func (x *Image) String() string {
 func (*Image) ProtoMessage() {}
 
 func (x *Image) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[174]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[176]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15442,7 +15685,7 @@ func (x *Image) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Image.ProtoReflect.Descriptor instead.
 func (*Image) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{174}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{176}
 }
 
 func (x *Image) GetImageId() string {
@@ -15576,7 +15819,7 @@ type ImagePlatform struct {
 
 func (x *ImagePlatform) Reset() {
 	*x = ImagePlatform{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[175]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[177]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15588,7 +15831,7 @@ func (x *ImagePlatform) String() string {
 func (*ImagePlatform) ProtoMessage() {}
 
 func (x *ImagePlatform) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[175]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[177]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15601,7 +15844,7 @@ func (x *ImagePlatform) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImagePlatform.ProtoReflect.Descriptor instead.
 func (*ImagePlatform) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{175}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{177}
 }
 
 func (x *ImagePlatform) GetOs() string {
@@ -15644,7 +15887,7 @@ type ImageStoreStatus struct {
 
 func (x *ImageStoreStatus) Reset() {
 	*x = ImageStoreStatus{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[176]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[178]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15656,7 +15899,7 @@ func (x *ImageStoreStatus) String() string {
 func (*ImageStoreStatus) ProtoMessage() {}
 
 func (x *ImageStoreStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[176]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[178]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15669,7 +15912,7 @@ func (x *ImageStoreStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImageStoreStatus.ProtoReflect.Descriptor instead.
 func (*ImageStoreStatus) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{176}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{178}
 }
 
 func (x *ImageStoreStatus) GetStore() ImageStoreKind {
@@ -15711,7 +15954,7 @@ type DockerImageStatus struct {
 
 func (x *DockerImageStatus) Reset() {
 	*x = DockerImageStatus{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[177]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[179]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15723,7 +15966,7 @@ func (x *DockerImageStatus) String() string {
 func (*DockerImageStatus) ProtoMessage() {}
 
 func (x *DockerImageStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[177]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[179]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15736,7 +15979,7 @@ func (x *DockerImageStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DockerImageStatus.ProtoReflect.Descriptor instead.
 func (*DockerImageStatus) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{177}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{179}
 }
 
 func (x *DockerImageStatus) GetLocal() bool {
@@ -15774,7 +16017,7 @@ type OCIImageStatus struct {
 
 func (x *OCIImageStatus) Reset() {
 	*x = OCIImageStatus{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[178]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[180]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15786,7 +16029,7 @@ func (x *OCIImageStatus) String() string {
 func (*OCIImageStatus) ProtoMessage() {}
 
 func (x *OCIImageStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[178]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[180]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15799,7 +16042,7 @@ func (x *OCIImageStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OCIImageStatus.ProtoReflect.Descriptor instead.
 func (*OCIImageStatus) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{178}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{180}
 }
 
 func (x *OCIImageStatus) GetLayoutCached() bool {
@@ -15857,7 +16100,7 @@ type ImagePullProgress struct {
 
 func (x *ImagePullProgress) Reset() {
 	*x = ImagePullProgress{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[179]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[181]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15869,7 +16112,7 @@ func (x *ImagePullProgress) String() string {
 func (*ImagePullProgress) ProtoMessage() {}
 
 func (x *ImagePullProgress) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[179]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[181]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15882,7 +16125,7 @@ func (x *ImagePullProgress) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ImagePullProgress.ProtoReflect.Descriptor instead.
 func (*ImagePullProgress) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{179}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{181}
 }
 
 func (x *ImagePullProgress) GetId() string {
@@ -15930,7 +16173,7 @@ type JupyterSpec struct {
 
 func (x *JupyterSpec) Reset() {
 	*x = JupyterSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[180]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[182]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15942,7 +16185,7 @@ func (x *JupyterSpec) String() string {
 func (*JupyterSpec) ProtoMessage() {}
 
 func (x *JupyterSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[180]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[182]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -15955,7 +16198,7 @@ func (x *JupyterSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JupyterSpec.ProtoReflect.Descriptor instead.
 func (*JupyterSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{180}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{182}
 }
 
 func (x *JupyterSpec) GetEnabled() bool {
@@ -15983,7 +16226,7 @@ type RunJupyterSpec struct {
 
 func (x *RunJupyterSpec) Reset() {
 	*x = RunJupyterSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[181]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[183]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -15995,7 +16238,7 @@ func (x *RunJupyterSpec) String() string {
 func (*RunJupyterSpec) ProtoMessage() {}
 
 func (x *RunJupyterSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[181]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[183]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16008,7 +16251,7 @@ func (x *RunJupyterSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunJupyterSpec.ProtoReflect.Descriptor instead.
 func (*RunJupyterSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{181}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{183}
 }
 
 func (x *RunJupyterSpec) GetEnabled() bool {
@@ -16043,7 +16286,7 @@ type StartAgentRunRequest struct {
 
 func (x *StartAgentRunRequest) Reset() {
 	*x = StartAgentRunRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[182]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[184]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16055,7 +16298,7 @@ func (x *StartAgentRunRequest) String() string {
 func (*StartAgentRunRequest) ProtoMessage() {}
 
 func (x *StartAgentRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[182]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[184]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16068,7 +16311,7 @@ func (x *StartAgentRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAgentRunRequest.ProtoReflect.Descriptor instead.
 func (*StartAgentRunRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{182}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{184}
 }
 
 func (x *StartAgentRunRequest) GetRun() *RunAgentRequest {
@@ -16096,7 +16339,7 @@ type StartAgentRunResponse struct {
 
 func (x *StartAgentRunResponse) Reset() {
 	*x = StartAgentRunResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[183]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[185]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16108,7 +16351,7 @@ func (x *StartAgentRunResponse) String() string {
 func (*StartAgentRunResponse) ProtoMessage() {}
 
 func (x *StartAgentRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[183]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[185]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16121,7 +16364,7 @@ func (x *StartAgentRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StartAgentRunResponse.ProtoReflect.Descriptor instead.
 func (*StartAgentRunResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{183}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{185}
 }
 
 func (x *StartAgentRunResponse) GetRun() *RunSummary {
@@ -16162,7 +16405,7 @@ type SkillSpec struct {
 
 func (x *SkillSpec) Reset() {
 	*x = SkillSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[184]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[186]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16174,7 +16417,7 @@ func (x *SkillSpec) String() string {
 func (*SkillSpec) ProtoMessage() {}
 
 func (x *SkillSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[184]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[186]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16187,7 +16430,7 @@ func (x *SkillSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkillSpec.ProtoReflect.Descriptor instead.
 func (*SkillSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{184}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{186}
 }
 
 func (x *SkillSpec) GetName() string {
@@ -16263,7 +16506,7 @@ type ResolveResourceIDRequest struct {
 
 func (x *ResolveResourceIDRequest) Reset() {
 	*x = ResolveResourceIDRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[185]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[187]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16275,7 +16518,7 @@ func (x *ResolveResourceIDRequest) String() string {
 func (*ResolveResourceIDRequest) ProtoMessage() {}
 
 func (x *ResolveResourceIDRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[185]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[187]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16288,7 +16531,7 @@ func (x *ResolveResourceIDRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveResourceIDRequest.ProtoReflect.Descriptor instead.
 func (*ResolveResourceIDRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{185}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{187}
 }
 
 func (x *ResolveResourceIDRequest) GetId() string {
@@ -16315,7 +16558,7 @@ type ResolveResourceIDResponse struct {
 
 func (x *ResolveResourceIDResponse) Reset() {
 	*x = ResolveResourceIDResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[186]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[188]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16327,7 +16570,7 @@ func (x *ResolveResourceIDResponse) String() string {
 func (*ResolveResourceIDResponse) ProtoMessage() {}
 
 func (x *ResolveResourceIDResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[186]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[188]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16340,7 +16583,7 @@ func (x *ResolveResourceIDResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveResourceIDResponse.ProtoReflect.Descriptor instead.
 func (*ResolveResourceIDResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{186}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{188}
 }
 
 func (x *ResolveResourceIDResponse) GetTargets() []*ResourceTarget {
@@ -16371,7 +16614,7 @@ type ResourceTarget struct {
 
 func (x *ResourceTarget) Reset() {
 	*x = ResourceTarget{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[187]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[189]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16383,7 +16626,7 @@ func (x *ResourceTarget) String() string {
 func (*ResourceTarget) ProtoMessage() {}
 
 func (x *ResourceTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[187]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[189]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16396,7 +16639,7 @@ func (x *ResourceTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResourceTarget.ProtoReflect.Descriptor instead.
 func (*ResourceTarget) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{187}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{189}
 }
 
 func (x *ResourceTarget) GetKind() ResourceKind {
@@ -16449,7 +16692,7 @@ type GetDashboardOverviewRequest struct {
 
 func (x *GetDashboardOverviewRequest) Reset() {
 	*x = GetDashboardOverviewRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[188]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[190]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16461,7 +16704,7 @@ func (x *GetDashboardOverviewRequest) String() string {
 func (*GetDashboardOverviewRequest) ProtoMessage() {}
 
 func (x *GetDashboardOverviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[188]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[190]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16474,7 +16717,7 @@ func (x *GetDashboardOverviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardOverviewRequest.ProtoReflect.Descriptor instead.
 func (*GetDashboardOverviewRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{188}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{190}
 }
 
 type WatchDashboardOverviewRequest struct {
@@ -16485,7 +16728,7 @@ type WatchDashboardOverviewRequest struct {
 
 func (x *WatchDashboardOverviewRequest) Reset() {
 	*x = WatchDashboardOverviewRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[189]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[191]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16497,7 +16740,7 @@ func (x *WatchDashboardOverviewRequest) String() string {
 func (*WatchDashboardOverviewRequest) ProtoMessage() {}
 
 func (x *WatchDashboardOverviewRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[189]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[191]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16510,7 +16753,7 @@ func (x *WatchDashboardOverviewRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchDashboardOverviewRequest.ProtoReflect.Descriptor instead.
 func (*WatchDashboardOverviewRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{189}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{191}
 }
 
 type RunOverview struct {
@@ -16524,7 +16767,7 @@ type RunOverview struct {
 
 func (x *RunOverview) Reset() {
 	*x = RunOverview{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[190]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[192]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16536,7 +16779,7 @@ func (x *RunOverview) String() string {
 func (*RunOverview) ProtoMessage() {}
 
 func (x *RunOverview) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[190]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[192]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16549,7 +16792,7 @@ func (x *RunOverview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunOverview.ProtoReflect.Descriptor instead.
 func (*RunOverview) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{190}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{192}
 }
 
 func (x *RunOverview) GetRunningCount() uint32 {
@@ -16583,7 +16826,7 @@ type DashboardOverview struct {
 
 func (x *DashboardOverview) Reset() {
 	*x = DashboardOverview{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[191]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[193]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16595,7 +16838,7 @@ func (x *DashboardOverview) String() string {
 func (*DashboardOverview) ProtoMessage() {}
 
 func (x *DashboardOverview) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[191]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[193]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16608,7 +16851,7 @@ func (x *DashboardOverview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DashboardOverview.ProtoReflect.Descriptor instead.
 func (*DashboardOverview) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{191}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{193}
 }
 
 func (x *DashboardOverview) GetRuns() *RunOverview {
@@ -16634,7 +16877,7 @@ type GetDashboardOverviewResponse struct {
 
 func (x *GetDashboardOverviewResponse) Reset() {
 	*x = GetDashboardOverviewResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[192]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[194]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16646,7 +16889,7 @@ func (x *GetDashboardOverviewResponse) String() string {
 func (*GetDashboardOverviewResponse) ProtoMessage() {}
 
 func (x *GetDashboardOverviewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[192]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[194]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16659,7 +16902,7 @@ func (x *GetDashboardOverviewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetDashboardOverviewResponse.ProtoReflect.Descriptor instead.
 func (*GetDashboardOverviewResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{192}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{194}
 }
 
 func (x *GetDashboardOverviewResponse) GetOverview() *DashboardOverview {
@@ -16679,7 +16922,7 @@ type WatchDashboardOverviewResponse struct {
 
 func (x *WatchDashboardOverviewResponse) Reset() {
 	*x = WatchDashboardOverviewResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[193]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[195]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16691,7 +16934,7 @@ func (x *WatchDashboardOverviewResponse) String() string {
 func (*WatchDashboardOverviewResponse) ProtoMessage() {}
 
 func (x *WatchDashboardOverviewResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[193]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[195]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16704,7 +16947,7 @@ func (x *WatchDashboardOverviewResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchDashboardOverviewResponse.ProtoReflect.Descriptor instead.
 func (*WatchDashboardOverviewResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{193}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{195}
 }
 
 func (x *WatchDashboardOverviewResponse) GetOverview() *DashboardOverview {
@@ -16729,7 +16972,7 @@ type GetGlobalEnvRequest struct {
 
 func (x *GetGlobalEnvRequest) Reset() {
 	*x = GetGlobalEnvRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[194]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[196]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16741,7 +16984,7 @@ func (x *GetGlobalEnvRequest) String() string {
 func (*GetGlobalEnvRequest) ProtoMessage() {}
 
 func (x *GetGlobalEnvRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[194]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[196]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16754,7 +16997,7 @@ func (x *GetGlobalEnvRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGlobalEnvRequest.ProtoReflect.Descriptor instead.
 func (*GetGlobalEnvRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{194}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{196}
 }
 
 type GetGlobalEnvResponse struct {
@@ -16766,7 +17009,7 @@ type GetGlobalEnvResponse struct {
 
 func (x *GetGlobalEnvResponse) Reset() {
 	*x = GetGlobalEnvResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[195]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[197]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16778,7 +17021,7 @@ func (x *GetGlobalEnvResponse) String() string {
 func (*GetGlobalEnvResponse) ProtoMessage() {}
 
 func (x *GetGlobalEnvResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[195]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[197]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16791,7 +17034,7 @@ func (x *GetGlobalEnvResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGlobalEnvResponse.ProtoReflect.Descriptor instead.
 func (*GetGlobalEnvResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{195}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{197}
 }
 
 func (x *GetGlobalEnvResponse) GetEnv() []*EnvVarSpec {
@@ -16814,7 +17057,7 @@ type UpdateGlobalEnvRequest struct {
 
 func (x *UpdateGlobalEnvRequest) Reset() {
 	*x = UpdateGlobalEnvRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[196]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[198]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16826,7 +17069,7 @@ func (x *UpdateGlobalEnvRequest) String() string {
 func (*UpdateGlobalEnvRequest) ProtoMessage() {}
 
 func (x *UpdateGlobalEnvRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[196]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[198]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16839,7 +17082,7 @@ func (x *UpdateGlobalEnvRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateGlobalEnvRequest.ProtoReflect.Descriptor instead.
 func (*UpdateGlobalEnvRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{196}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{198}
 }
 
 func (x *UpdateGlobalEnvRequest) GetEnv() []*EnvVarUpdateSpec {
@@ -16858,7 +17101,7 @@ type UpdateGlobalEnvResponse struct {
 
 func (x *UpdateGlobalEnvResponse) Reset() {
 	*x = UpdateGlobalEnvResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[197]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[199]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16870,7 +17113,7 @@ func (x *UpdateGlobalEnvResponse) String() string {
 func (*UpdateGlobalEnvResponse) ProtoMessage() {}
 
 func (x *UpdateGlobalEnvResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[197]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[199]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16883,7 +17126,7 @@ func (x *UpdateGlobalEnvResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateGlobalEnvResponse.ProtoReflect.Descriptor instead.
 func (*UpdateGlobalEnvResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{197}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{199}
 }
 
 func (x *UpdateGlobalEnvResponse) GetEnv() []*EnvVarSpec {
@@ -16901,7 +17144,7 @@ type GetCapabilityGatewayConfigRequest struct {
 
 func (x *GetCapabilityGatewayConfigRequest) Reset() {
 	*x = GetCapabilityGatewayConfigRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[198]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[200]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16913,7 +17156,7 @@ func (x *GetCapabilityGatewayConfigRequest) String() string {
 func (*GetCapabilityGatewayConfigRequest) ProtoMessage() {}
 
 func (x *GetCapabilityGatewayConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[198]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[200]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16926,7 +17169,7 @@ func (x *GetCapabilityGatewayConfigRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use GetCapabilityGatewayConfigRequest.ProtoReflect.Descriptor instead.
 func (*GetCapabilityGatewayConfigRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{198}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{200}
 }
 
 type CapabilityGatewayConfig struct {
@@ -16939,7 +17182,7 @@ type CapabilityGatewayConfig struct {
 
 func (x *CapabilityGatewayConfig) Reset() {
 	*x = CapabilityGatewayConfig{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[199]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[201]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -16951,7 +17194,7 @@ func (x *CapabilityGatewayConfig) String() string {
 func (*CapabilityGatewayConfig) ProtoMessage() {}
 
 func (x *CapabilityGatewayConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[199]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[201]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -16964,7 +17207,7 @@ func (x *CapabilityGatewayConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityGatewayConfig.ProtoReflect.Descriptor instead.
 func (*CapabilityGatewayConfig) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{199}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{201}
 }
 
 func (x *CapabilityGatewayConfig) GetAddr() string {
@@ -16990,7 +17233,7 @@ type GetCapabilityGatewayConfigResponse struct {
 
 func (x *GetCapabilityGatewayConfigResponse) Reset() {
 	*x = GetCapabilityGatewayConfigResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[200]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[202]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17002,7 +17245,7 @@ func (x *GetCapabilityGatewayConfigResponse) String() string {
 func (*GetCapabilityGatewayConfigResponse) ProtoMessage() {}
 
 func (x *GetCapabilityGatewayConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[200]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[202]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17015,7 +17258,7 @@ func (x *GetCapabilityGatewayConfigResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use GetCapabilityGatewayConfigResponse.ProtoReflect.Descriptor instead.
 func (*GetCapabilityGatewayConfigResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{200}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{202}
 }
 
 func (x *GetCapabilityGatewayConfigResponse) GetConfig() *CapabilityGatewayConfig {
@@ -17037,7 +17280,7 @@ type UpdateCapabilityGatewayConfigRequest struct {
 
 func (x *UpdateCapabilityGatewayConfigRequest) Reset() {
 	*x = UpdateCapabilityGatewayConfigRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[201]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[203]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17049,7 +17292,7 @@ func (x *UpdateCapabilityGatewayConfigRequest) String() string {
 func (*UpdateCapabilityGatewayConfigRequest) ProtoMessage() {}
 
 func (x *UpdateCapabilityGatewayConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[201]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[203]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17062,7 +17305,7 @@ func (x *UpdateCapabilityGatewayConfigRequest) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use UpdateCapabilityGatewayConfigRequest.ProtoReflect.Descriptor instead.
 func (*UpdateCapabilityGatewayConfigRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{201}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{203}
 }
 
 func (x *UpdateCapabilityGatewayConfigRequest) GetAddr() string {
@@ -17088,7 +17331,7 @@ type UpdateCapabilityGatewayConfigResponse struct {
 
 func (x *UpdateCapabilityGatewayConfigResponse) Reset() {
 	*x = UpdateCapabilityGatewayConfigResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[202]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[204]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17100,7 +17343,7 @@ func (x *UpdateCapabilityGatewayConfigResponse) String() string {
 func (*UpdateCapabilityGatewayConfigResponse) ProtoMessage() {}
 
 func (x *UpdateCapabilityGatewayConfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[202]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[204]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17113,7 +17356,7 @@ func (x *UpdateCapabilityGatewayConfigResponse) ProtoReflect() protoreflect.Mess
 
 // Deprecated: Use UpdateCapabilityGatewayConfigResponse.ProtoReflect.Descriptor instead.
 func (*UpdateCapabilityGatewayConfigResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{202}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{204}
 }
 
 func (x *UpdateCapabilityGatewayConfigResponse) GetConfig() *CapabilityGatewayConfig {
@@ -17131,7 +17374,7 @@ type GetEventDeliveryScopeRequest struct {
 
 func (x *GetEventDeliveryScopeRequest) Reset() {
 	*x = GetEventDeliveryScopeRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[203]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[205]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17143,7 +17386,7 @@ func (x *GetEventDeliveryScopeRequest) String() string {
 func (*GetEventDeliveryScopeRequest) ProtoMessage() {}
 
 func (x *GetEventDeliveryScopeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[203]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[205]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17156,7 +17399,7 @@ func (x *GetEventDeliveryScopeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventDeliveryScopeRequest.ProtoReflect.Descriptor instead.
 func (*GetEventDeliveryScopeRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{203}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{205}
 }
 
 type GetEventDeliveryScopeResponse struct {
@@ -17168,7 +17411,7 @@ type GetEventDeliveryScopeResponse struct {
 
 func (x *GetEventDeliveryScopeResponse) Reset() {
 	*x = GetEventDeliveryScopeResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[204]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[206]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17180,7 +17423,7 @@ func (x *GetEventDeliveryScopeResponse) String() string {
 func (*GetEventDeliveryScopeResponse) ProtoMessage() {}
 
 func (x *GetEventDeliveryScopeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[204]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[206]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17193,7 +17436,7 @@ func (x *GetEventDeliveryScopeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEventDeliveryScopeResponse.ProtoReflect.Descriptor instead.
 func (*GetEventDeliveryScopeResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{204}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{206}
 }
 
 func (x *GetEventDeliveryScopeResponse) GetScope() EventDeliveryScope {
@@ -17218,7 +17461,7 @@ type WorkspacePreset struct {
 
 func (x *WorkspacePreset) Reset() {
 	*x = WorkspacePreset{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[205]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[207]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17230,7 +17473,7 @@ func (x *WorkspacePreset) String() string {
 func (*WorkspacePreset) ProtoMessage() {}
 
 func (x *WorkspacePreset) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[205]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[207]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17243,7 +17486,7 @@ func (x *WorkspacePreset) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspacePreset.ProtoReflect.Descriptor instead.
 func (*WorkspacePreset) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{205}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{207}
 }
 
 func (x *WorkspacePreset) GetId() string {
@@ -17307,7 +17550,7 @@ type ListWorkspacePresetsRequest struct {
 
 func (x *ListWorkspacePresetsRequest) Reset() {
 	*x = ListWorkspacePresetsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[206]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[208]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17319,7 +17562,7 @@ func (x *ListWorkspacePresetsRequest) String() string {
 func (*ListWorkspacePresetsRequest) ProtoMessage() {}
 
 func (x *ListWorkspacePresetsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[206]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[208]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17332,7 +17575,7 @@ func (x *ListWorkspacePresetsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacePresetsRequest.ProtoReflect.Descriptor instead.
 func (*ListWorkspacePresetsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{206}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{208}
 }
 
 func (x *ListWorkspacePresetsRequest) GetOffset() uint32 {
@@ -17360,7 +17603,7 @@ type ListWorkspacePresetsResponse struct {
 
 func (x *ListWorkspacePresetsResponse) Reset() {
 	*x = ListWorkspacePresetsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[207]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[209]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17372,7 +17615,7 @@ func (x *ListWorkspacePresetsResponse) String() string {
 func (*ListWorkspacePresetsResponse) ProtoMessage() {}
 
 func (x *ListWorkspacePresetsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[207]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[209]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17385,7 +17628,7 @@ func (x *ListWorkspacePresetsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListWorkspacePresetsResponse.ProtoReflect.Descriptor instead.
 func (*ListWorkspacePresetsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{207}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{209}
 }
 
 func (x *ListWorkspacePresetsResponse) GetPresets() []*WorkspacePreset {
@@ -17414,7 +17657,7 @@ type CreateWorkspacePresetRequest struct {
 
 func (x *CreateWorkspacePresetRequest) Reset() {
 	*x = CreateWorkspacePresetRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[208]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[210]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17426,7 +17669,7 @@ func (x *CreateWorkspacePresetRequest) String() string {
 func (*CreateWorkspacePresetRequest) ProtoMessage() {}
 
 func (x *CreateWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[208]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[210]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17439,7 +17682,7 @@ func (x *CreateWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkspacePresetRequest.ProtoReflect.Descriptor instead.
 func (*CreateWorkspacePresetRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{208}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{210}
 }
 
 func (x *CreateWorkspacePresetRequest) GetName() string {
@@ -17489,7 +17732,7 @@ type UpdateWorkspacePresetRequest struct {
 
 func (x *UpdateWorkspacePresetRequest) Reset() {
 	*x = UpdateWorkspacePresetRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[209]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[211]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17501,7 +17744,7 @@ func (x *UpdateWorkspacePresetRequest) String() string {
 func (*UpdateWorkspacePresetRequest) ProtoMessage() {}
 
 func (x *UpdateWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[209]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[211]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17514,7 +17757,7 @@ func (x *UpdateWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateWorkspacePresetRequest.ProtoReflect.Descriptor instead.
 func (*UpdateWorkspacePresetRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{209}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{211}
 }
 
 func (x *UpdateWorkspacePresetRequest) GetPresetId() string {
@@ -17561,7 +17804,7 @@ type DeleteWorkspacePresetRequest struct {
 
 func (x *DeleteWorkspacePresetRequest) Reset() {
 	*x = DeleteWorkspacePresetRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[210]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[212]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17573,7 +17816,7 @@ func (x *DeleteWorkspacePresetRequest) String() string {
 func (*DeleteWorkspacePresetRequest) ProtoMessage() {}
 
 func (x *DeleteWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[210]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[212]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17586,7 +17829,7 @@ func (x *DeleteWorkspacePresetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkspacePresetRequest.ProtoReflect.Descriptor instead.
 func (*DeleteWorkspacePresetRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{210}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{212}
 }
 
 func (x *DeleteWorkspacePresetRequest) GetPresetId() string {
@@ -17604,7 +17847,7 @@ type DeleteWorkspacePresetResponse struct {
 
 func (x *DeleteWorkspacePresetResponse) Reset() {
 	*x = DeleteWorkspacePresetResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[211]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[213]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17616,7 +17859,7 @@ func (x *DeleteWorkspacePresetResponse) String() string {
 func (*DeleteWorkspacePresetResponse) ProtoMessage() {}
 
 func (x *DeleteWorkspacePresetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[211]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[213]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17629,7 +17872,7 @@ func (x *DeleteWorkspacePresetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteWorkspacePresetResponse.ProtoReflect.Descriptor instead.
 func (*DeleteWorkspacePresetResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{211}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{213}
 }
 
 type WorkspacePresetResponse struct {
@@ -17641,7 +17884,7 @@ type WorkspacePresetResponse struct {
 
 func (x *WorkspacePresetResponse) Reset() {
 	*x = WorkspacePresetResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[212]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[214]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17653,7 +17896,7 @@ func (x *WorkspacePresetResponse) String() string {
 func (*WorkspacePresetResponse) ProtoMessage() {}
 
 func (x *WorkspacePresetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[212]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[214]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17666,7 +17909,7 @@ func (x *WorkspacePresetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkspacePresetResponse.ProtoReflect.Descriptor instead.
 func (*WorkspacePresetResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{212}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{214}
 }
 
 func (x *WorkspacePresetResponse) GetPreset() *WorkspacePreset {
@@ -17684,7 +17927,7 @@ type GetCapabilityStatusRequest struct {
 
 func (x *GetCapabilityStatusRequest) Reset() {
 	*x = GetCapabilityStatusRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[213]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[215]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17696,7 +17939,7 @@ func (x *GetCapabilityStatusRequest) String() string {
 func (*GetCapabilityStatusRequest) ProtoMessage() {}
 
 func (x *GetCapabilityStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[213]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[215]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17709,7 +17952,7 @@ func (x *GetCapabilityStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapabilityStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetCapabilityStatusRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{213}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{215}
 }
 
 type CapabilityStatusResponse struct {
@@ -17728,7 +17971,7 @@ type CapabilityStatusResponse struct {
 
 func (x *CapabilityStatusResponse) Reset() {
 	*x = CapabilityStatusResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[214]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[216]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17740,7 +17983,7 @@ func (x *CapabilityStatusResponse) String() string {
 func (*CapabilityStatusResponse) ProtoMessage() {}
 
 func (x *CapabilityStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[214]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[216]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17753,7 +17996,7 @@ func (x *CapabilityStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityStatusResponse.ProtoReflect.Descriptor instead.
 func (*CapabilityStatusResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{214}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{216}
 }
 
 func (x *CapabilityStatusResponse) GetConfigured() bool {
@@ -17824,7 +18067,7 @@ type ListCapabilitySetsRequest struct {
 
 func (x *ListCapabilitySetsRequest) Reset() {
 	*x = ListCapabilitySetsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[215]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[217]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17836,7 +18079,7 @@ func (x *ListCapabilitySetsRequest) String() string {
 func (*ListCapabilitySetsRequest) ProtoMessage() {}
 
 func (x *ListCapabilitySetsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[215]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[217]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17849,7 +18092,7 @@ func (x *ListCapabilitySetsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCapabilitySetsRequest.ProtoReflect.Descriptor instead.
 func (*ListCapabilitySetsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{215}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{217}
 }
 
 func (x *ListCapabilitySetsRequest) GetOffset() uint32 {
@@ -17878,7 +18121,7 @@ type CapabilitySet struct {
 
 func (x *CapabilitySet) Reset() {
 	*x = CapabilitySet{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[216]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[218]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17890,7 +18133,7 @@ func (x *CapabilitySet) String() string {
 func (*CapabilitySet) ProtoMessage() {}
 
 func (x *CapabilitySet) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[216]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[218]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17903,7 +18146,7 @@ func (x *CapabilitySet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilitySet.ProtoReflect.Descriptor instead.
 func (*CapabilitySet) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{216}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{218}
 }
 
 func (x *CapabilitySet) GetId() string {
@@ -17945,7 +18188,7 @@ type ListCapabilitySetsResponse struct {
 
 func (x *ListCapabilitySetsResponse) Reset() {
 	*x = ListCapabilitySetsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[217]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[219]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -17957,7 +18200,7 @@ func (x *ListCapabilitySetsResponse) String() string {
 func (*ListCapabilitySetsResponse) ProtoMessage() {}
 
 func (x *ListCapabilitySetsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[217]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[219]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -17970,7 +18213,7 @@ func (x *ListCapabilitySetsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListCapabilitySetsResponse.ProtoReflect.Descriptor instead.
 func (*ListCapabilitySetsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{217}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{219}
 }
 
 func (x *ListCapabilitySetsResponse) GetCapsets() []*CapabilitySet {
@@ -17996,7 +18239,7 @@ type GetCapabilityCatalogRequest struct {
 
 func (x *GetCapabilityCatalogRequest) Reset() {
 	*x = GetCapabilityCatalogRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[218]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[220]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18008,7 +18251,7 @@ func (x *GetCapabilityCatalogRequest) String() string {
 func (*GetCapabilityCatalogRequest) ProtoMessage() {}
 
 func (x *GetCapabilityCatalogRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[218]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[220]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18021,7 +18264,7 @@ func (x *GetCapabilityCatalogRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapabilityCatalogRequest.ProtoReflect.Descriptor instead.
 func (*GetCapabilityCatalogRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{218}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{220}
 }
 
 func (x *GetCapabilityCatalogRequest) GetCapsetId() string {
@@ -18047,7 +18290,7 @@ type CapabilityEndpoint struct {
 
 func (x *CapabilityEndpoint) Reset() {
 	*x = CapabilityEndpoint{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[219]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[221]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18059,7 +18302,7 @@ func (x *CapabilityEndpoint) String() string {
 func (*CapabilityEndpoint) ProtoMessage() {}
 
 func (x *CapabilityEndpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[219]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[221]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18072,7 +18315,7 @@ func (x *CapabilityEndpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityEndpoint.ProtoReflect.Descriptor instead.
 func (*CapabilityEndpoint) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{219}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{221}
 }
 
 func (x *CapabilityEndpoint) GetProtocol() string {
@@ -18147,7 +18390,7 @@ type CapabilityMethod struct {
 
 func (x *CapabilityMethod) Reset() {
 	*x = CapabilityMethod{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[220]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[222]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18159,7 +18402,7 @@ func (x *CapabilityMethod) String() string {
 func (*CapabilityMethod) ProtoMessage() {}
 
 func (x *CapabilityMethod) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[220]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[222]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18172,7 +18415,7 @@ func (x *CapabilityMethod) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityMethod.ProtoReflect.Descriptor instead.
 func (*CapabilityMethod) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{220}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{222}
 }
 
 func (x *CapabilityMethod) GetServiceId() string {
@@ -18243,7 +18486,7 @@ type GetCapabilityCatalogResponse struct {
 
 func (x *GetCapabilityCatalogResponse) Reset() {
 	*x = GetCapabilityCatalogResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[221]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[223]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18255,7 +18498,7 @@ func (x *GetCapabilityCatalogResponse) String() string {
 func (*GetCapabilityCatalogResponse) ProtoMessage() {}
 
 func (x *GetCapabilityCatalogResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[221]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[223]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18268,7 +18511,7 @@ func (x *GetCapabilityCatalogResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetCapabilityCatalogResponse.ProtoReflect.Descriptor instead.
 func (*GetCapabilityCatalogResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{221}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{223}
 }
 
 func (x *GetCapabilityCatalogResponse) GetCapsetId() string {
@@ -18312,7 +18555,7 @@ type ListSandboxHistoryRequest struct {
 
 func (x *ListSandboxHistoryRequest) Reset() {
 	*x = ListSandboxHistoryRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[222]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[224]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18324,7 +18567,7 @@ func (x *ListSandboxHistoryRequest) String() string {
 func (*ListSandboxHistoryRequest) ProtoMessage() {}
 
 func (x *ListSandboxHistoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[222]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[224]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18337,7 +18580,7 @@ func (x *ListSandboxHistoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxHistoryRequest.ProtoReflect.Descriptor instead.
 func (*ListSandboxHistoryRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{222}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{224}
 }
 
 func (x *ListSandboxHistoryRequest) GetSandboxId() string {
@@ -18382,7 +18625,7 @@ type SandboxHistoryCell struct {
 
 func (x *SandboxHistoryCell) Reset() {
 	*x = SandboxHistoryCell{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[223]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[225]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18394,7 +18637,7 @@ func (x *SandboxHistoryCell) String() string {
 func (*SandboxHistoryCell) ProtoMessage() {}
 
 func (x *SandboxHistoryCell) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[223]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[225]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18407,7 +18650,7 @@ func (x *SandboxHistoryCell) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxHistoryCell.ProtoReflect.Descriptor instead.
 func (*SandboxHistoryCell) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{223}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{225}
 }
 
 func (x *SandboxHistoryCell) GetId() string {
@@ -18514,7 +18757,7 @@ type SandboxHistoryEvent struct {
 
 func (x *SandboxHistoryEvent) Reset() {
 	*x = SandboxHistoryEvent{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[224]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[226]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18526,7 +18769,7 @@ func (x *SandboxHistoryEvent) String() string {
 func (*SandboxHistoryEvent) ProtoMessage() {}
 
 func (x *SandboxHistoryEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[224]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[226]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18539,7 +18782,7 @@ func (x *SandboxHistoryEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxHistoryEvent.ProtoReflect.Descriptor instead.
 func (*SandboxHistoryEvent) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{224}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{226}
 }
 
 func (x *SandboxHistoryEvent) GetId() string {
@@ -18590,7 +18833,7 @@ type ListSandboxHistoryResponse struct {
 
 func (x *ListSandboxHistoryResponse) Reset() {
 	*x = ListSandboxHistoryResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[225]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[227]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18602,7 +18845,7 @@ func (x *ListSandboxHistoryResponse) String() string {
 func (*ListSandboxHistoryResponse) ProtoMessage() {}
 
 func (x *ListSandboxHistoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[225]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[227]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18615,7 +18858,7 @@ func (x *ListSandboxHistoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListSandboxHistoryResponse.ProtoReflect.Descriptor instead.
 func (*ListSandboxHistoryResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{225}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{227}
 }
 
 func (x *ListSandboxHistoryResponse) GetCells() []*SandboxHistoryCell {
@@ -18655,7 +18898,7 @@ type WatchSandboxRequest struct {
 
 func (x *WatchSandboxRequest) Reset() {
 	*x = WatchSandboxRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[226]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[228]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18667,7 +18910,7 @@ func (x *WatchSandboxRequest) String() string {
 func (*WatchSandboxRequest) ProtoMessage() {}
 
 func (x *WatchSandboxRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[226]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[228]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18680,7 +18923,7 @@ func (x *WatchSandboxRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchSandboxRequest.ProtoReflect.Descriptor instead.
 func (*WatchSandboxRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{226}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{228}
 }
 
 func (x *WatchSandboxRequest) GetSandboxId() string {
@@ -18705,7 +18948,7 @@ type WatchSandboxResponse struct {
 
 func (x *WatchSandboxResponse) Reset() {
 	*x = WatchSandboxResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[227]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[229]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18717,7 +18960,7 @@ func (x *WatchSandboxResponse) String() string {
 func (*WatchSandboxResponse) ProtoMessage() {}
 
 func (x *WatchSandboxResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[227]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[229]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18730,7 +18973,7 @@ func (x *WatchSandboxResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchSandboxResponse.ProtoReflect.Descriptor instead.
 func (*WatchSandboxResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{227}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{229}
 }
 
 func (x *WatchSandboxResponse) GetEventType() SandboxWatchEventType {
@@ -18793,7 +19036,7 @@ type GenerateLLMRequest struct {
 
 func (x *GenerateLLMRequest) Reset() {
 	*x = GenerateLLMRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[228]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[230]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18805,7 +19048,7 @@ func (x *GenerateLLMRequest) String() string {
 func (*GenerateLLMRequest) ProtoMessage() {}
 
 func (x *GenerateLLMRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[228]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[230]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18818,7 +19061,7 @@ func (x *GenerateLLMRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateLLMRequest.ProtoReflect.Descriptor instead.
 func (*GenerateLLMRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{228}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{230}
 }
 
 func (x *GenerateLLMRequest) GetPrompt() string {
@@ -18855,7 +19098,7 @@ type GenerateLLMResponse struct {
 
 func (x *GenerateLLMResponse) Reset() {
 	*x = GenerateLLMResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[229]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[231]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18867,7 +19110,7 @@ func (x *GenerateLLMResponse) String() string {
 func (*GenerateLLMResponse) ProtoMessage() {}
 
 func (x *GenerateLLMResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[229]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[231]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18880,7 +19123,7 @@ func (x *GenerateLLMResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerateLLMResponse.ProtoReflect.Descriptor instead.
 func (*GenerateLLMResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{229}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{231}
 }
 
 func (x *GenerateLLMResponse) GetText() string {
@@ -18935,7 +19178,7 @@ type StreamProjectSchedulerEventsRequest struct {
 
 func (x *StreamProjectSchedulerEventsRequest) Reset() {
 	*x = StreamProjectSchedulerEventsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[230]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[232]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -18947,7 +19190,7 @@ func (x *StreamProjectSchedulerEventsRequest) String() string {
 func (*StreamProjectSchedulerEventsRequest) ProtoMessage() {}
 
 func (x *StreamProjectSchedulerEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[230]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[232]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -18960,7 +19203,7 @@ func (x *StreamProjectSchedulerEventsRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use StreamProjectSchedulerEventsRequest.ProtoReflect.Descriptor instead.
 func (*StreamProjectSchedulerEventsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{230}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{232}
 }
 
 func (x *StreamProjectSchedulerEventsRequest) GetProject() *ProjectRef {
@@ -19017,7 +19260,7 @@ type StreamProjectSchedulerEventsResponse struct {
 
 func (x *StreamProjectSchedulerEventsResponse) Reset() {
 	*x = StreamProjectSchedulerEventsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[231]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[233]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19029,7 +19272,7 @@ func (x *StreamProjectSchedulerEventsResponse) String() string {
 func (*StreamProjectSchedulerEventsResponse) ProtoMessage() {}
 
 func (x *StreamProjectSchedulerEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[231]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[233]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19042,7 +19285,7 @@ func (x *StreamProjectSchedulerEventsResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use StreamProjectSchedulerEventsResponse.ProtoReflect.Descriptor instead.
 func (*StreamProjectSchedulerEventsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{231}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{233}
 }
 
 func (x *StreamProjectSchedulerEventsResponse) GetEvents() []*SchedulerEvent {
@@ -19089,7 +19332,7 @@ type StreamSchedulerRunsRequest struct {
 
 func (x *StreamSchedulerRunsRequest) Reset() {
 	*x = StreamSchedulerRunsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[232]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[234]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19101,7 +19344,7 @@ func (x *StreamSchedulerRunsRequest) String() string {
 func (*StreamSchedulerRunsRequest) ProtoMessage() {}
 
 func (x *StreamSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[232]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[234]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19114,7 +19357,7 @@ func (x *StreamSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamSchedulerRunsRequest.ProtoReflect.Descriptor instead.
 func (*StreamSchedulerRunsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{232}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{234}
 }
 
 func (x *StreamSchedulerRunsRequest) GetProject() *ProjectRef {
@@ -19172,7 +19415,7 @@ type StreamSchedulerRunsResponse struct {
 
 func (x *StreamSchedulerRunsResponse) Reset() {
 	*x = StreamSchedulerRunsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[233]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[235]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19184,7 +19427,7 @@ func (x *StreamSchedulerRunsResponse) String() string {
 func (*StreamSchedulerRunsResponse) ProtoMessage() {}
 
 func (x *StreamSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[233]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[235]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19197,7 +19440,7 @@ func (x *StreamSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamSchedulerRunsResponse.ProtoReflect.Descriptor instead.
 func (*StreamSchedulerRunsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{233}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{235}
 }
 
 func (x *StreamSchedulerRunsResponse) GetRuns() []*SchedulerRun {
@@ -19247,7 +19490,7 @@ type BatchGetLatestSchedulerRunsRequest struct {
 
 func (x *BatchGetLatestSchedulerRunsRequest) Reset() {
 	*x = BatchGetLatestSchedulerRunsRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[234]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[236]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19259,7 +19502,7 @@ func (x *BatchGetLatestSchedulerRunsRequest) String() string {
 func (*BatchGetLatestSchedulerRunsRequest) ProtoMessage() {}
 
 func (x *BatchGetLatestSchedulerRunsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[234]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[236]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19272,7 +19515,7 @@ func (x *BatchGetLatestSchedulerRunsRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use BatchGetLatestSchedulerRunsRequest.ProtoReflect.Descriptor instead.
 func (*BatchGetLatestSchedulerRunsRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{234}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{236}
 }
 
 func (x *BatchGetLatestSchedulerRunsRequest) GetProject() *ProjectRef {
@@ -19301,7 +19544,7 @@ type SandboxSchedulerRun struct {
 
 func (x *SandboxSchedulerRun) Reset() {
 	*x = SandboxSchedulerRun{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[235]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[237]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19313,7 +19556,7 @@ func (x *SandboxSchedulerRun) String() string {
 func (*SandboxSchedulerRun) ProtoMessage() {}
 
 func (x *SandboxSchedulerRun) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[235]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[237]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19326,7 +19569,7 @@ func (x *SandboxSchedulerRun) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SandboxSchedulerRun.ProtoReflect.Descriptor instead.
 func (*SandboxSchedulerRun) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{235}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{237}
 }
 
 func (x *SandboxSchedulerRun) GetSandboxId() string {
@@ -19354,7 +19597,7 @@ type BatchGetLatestSchedulerRunsResponse struct {
 
 func (x *BatchGetLatestSchedulerRunsResponse) Reset() {
 	*x = BatchGetLatestSchedulerRunsResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[236]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[238]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19366,7 +19609,7 @@ func (x *BatchGetLatestSchedulerRunsResponse) String() string {
 func (*BatchGetLatestSchedulerRunsResponse) ProtoMessage() {}
 
 func (x *BatchGetLatestSchedulerRunsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[236]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[238]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19379,7 +19622,7 @@ func (x *BatchGetLatestSchedulerRunsResponse) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use BatchGetLatestSchedulerRunsResponse.ProtoReflect.Descriptor instead.
 func (*BatchGetLatestSchedulerRunsResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{236}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{238}
 }
 
 func (x *BatchGetLatestSchedulerRunsResponse) GetResults() []*SandboxSchedulerRun {
@@ -19411,7 +19654,7 @@ type LLMProvider struct {
 
 func (x *LLMProvider) Reset() {
 	*x = LLMProvider{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[237]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[239]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19423,7 +19666,7 @@ func (x *LLMProvider) String() string {
 func (*LLMProvider) ProtoMessage() {}
 
 func (x *LLMProvider) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[237]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[239]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19436,7 +19679,7 @@ func (x *LLMProvider) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLMProvider.ProtoReflect.Descriptor instead.
 func (*LLMProvider) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{237}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{239}
 }
 
 func (x *LLMProvider) GetId() string {
@@ -19528,7 +19771,7 @@ type LLMProviderSpec struct {
 
 func (x *LLMProviderSpec) Reset() {
 	*x = LLMProviderSpec{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[238]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[240]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19540,7 +19783,7 @@ func (x *LLMProviderSpec) String() string {
 func (*LLMProviderSpec) ProtoMessage() {}
 
 func (x *LLMProviderSpec) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[238]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[240]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19553,7 +19796,7 @@ func (x *LLMProviderSpec) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LLMProviderSpec.ProtoReflect.Descriptor instead.
 func (*LLMProviderSpec) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{238}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{240}
 }
 
 func (x *LLMProviderSpec) GetId() string {
@@ -19614,7 +19857,7 @@ type CreateProviderRequest struct {
 
 func (x *CreateProviderRequest) Reset() {
 	*x = CreateProviderRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[239]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[241]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19626,7 +19869,7 @@ func (x *CreateProviderRequest) String() string {
 func (*CreateProviderRequest) ProtoMessage() {}
 
 func (x *CreateProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[239]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[241]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19639,7 +19882,7 @@ func (x *CreateProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateProviderRequest.ProtoReflect.Descriptor instead.
 func (*CreateProviderRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{239}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{241}
 }
 
 func (x *CreateProviderRequest) GetProvider() *LLMProviderSpec {
@@ -19658,7 +19901,7 @@ type CreateProviderResponse struct {
 
 func (x *CreateProviderResponse) Reset() {
 	*x = CreateProviderResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[240]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[242]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19670,7 +19913,7 @@ func (x *CreateProviderResponse) String() string {
 func (*CreateProviderResponse) ProtoMessage() {}
 
 func (x *CreateProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[240]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[242]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19683,7 +19926,7 @@ func (x *CreateProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateProviderResponse.ProtoReflect.Descriptor instead.
 func (*CreateProviderResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{240}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{242}
 }
 
 func (x *CreateProviderResponse) GetProvider() *LLMProvider {
@@ -19702,7 +19945,7 @@ type GetProviderRequest struct {
 
 func (x *GetProviderRequest) Reset() {
 	*x = GetProviderRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[241]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[243]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19714,7 +19957,7 @@ func (x *GetProviderRequest) String() string {
 func (*GetProviderRequest) ProtoMessage() {}
 
 func (x *GetProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[241]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[243]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19727,7 +19970,7 @@ func (x *GetProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProviderRequest.ProtoReflect.Descriptor instead.
 func (*GetProviderRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{241}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{243}
 }
 
 func (x *GetProviderRequest) GetId() string {
@@ -19746,7 +19989,7 @@ type GetProviderResponse struct {
 
 func (x *GetProviderResponse) Reset() {
 	*x = GetProviderResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[242]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[244]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19758,7 +20001,7 @@ func (x *GetProviderResponse) String() string {
 func (*GetProviderResponse) ProtoMessage() {}
 
 func (x *GetProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[242]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[244]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19771,7 +20014,7 @@ func (x *GetProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProviderResponse.ProtoReflect.Descriptor instead.
 func (*GetProviderResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{242}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{244}
 }
 
 func (x *GetProviderResponse) GetProvider() *LLMProvider {
@@ -19792,7 +20035,7 @@ type ListProvidersRequest struct {
 
 func (x *ListProvidersRequest) Reset() {
 	*x = ListProvidersRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[243]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[245]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19804,7 +20047,7 @@ func (x *ListProvidersRequest) String() string {
 func (*ListProvidersRequest) ProtoMessage() {}
 
 func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[243]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[245]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19817,7 +20060,7 @@ func (x *ListProvidersRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersRequest.ProtoReflect.Descriptor instead.
 func (*ListProvidersRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{243}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{245}
 }
 
 func (x *ListProvidersRequest) GetOffset() uint32 {
@@ -19844,7 +20087,7 @@ type ListProvidersResponse struct {
 
 func (x *ListProvidersResponse) Reset() {
 	*x = ListProvidersResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[244]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[246]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19856,7 +20099,7 @@ func (x *ListProvidersResponse) String() string {
 func (*ListProvidersResponse) ProtoMessage() {}
 
 func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[244]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[246]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19869,7 +20112,7 @@ func (x *ListProvidersResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListProvidersResponse.ProtoReflect.Descriptor instead.
 func (*ListProvidersResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{244}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{246}
 }
 
 func (x *ListProvidersResponse) GetProviders() []*LLMProvider {
@@ -19895,7 +20138,7 @@ type UpdateProviderRequest struct {
 
 func (x *UpdateProviderRequest) Reset() {
 	*x = UpdateProviderRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[245]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[247]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19907,7 +20150,7 @@ func (x *UpdateProviderRequest) String() string {
 func (*UpdateProviderRequest) ProtoMessage() {}
 
 func (x *UpdateProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[245]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[247]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19920,7 +20163,7 @@ func (x *UpdateProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateProviderRequest.ProtoReflect.Descriptor instead.
 func (*UpdateProviderRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{245}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{247}
 }
 
 func (x *UpdateProviderRequest) GetProvider() *LLMProviderSpec {
@@ -19939,7 +20182,7 @@ type UpdateProviderResponse struct {
 
 func (x *UpdateProviderResponse) Reset() {
 	*x = UpdateProviderResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[246]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[248]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19951,7 +20194,7 @@ func (x *UpdateProviderResponse) String() string {
 func (*UpdateProviderResponse) ProtoMessage() {}
 
 func (x *UpdateProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[246]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[248]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -19964,7 +20207,7 @@ func (x *UpdateProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateProviderResponse.ProtoReflect.Descriptor instead.
 func (*UpdateProviderResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{246}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{248}
 }
 
 func (x *UpdateProviderResponse) GetProvider() *LLMProvider {
@@ -19984,7 +20227,7 @@ type DeleteProviderRequest struct {
 
 func (x *DeleteProviderRequest) Reset() {
 	*x = DeleteProviderRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[247]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[249]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -19996,7 +20239,7 @@ func (x *DeleteProviderRequest) String() string {
 func (*DeleteProviderRequest) ProtoMessage() {}
 
 func (x *DeleteProviderRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[247]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[249]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20009,7 +20252,7 @@ func (x *DeleteProviderRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteProviderRequest.ProtoReflect.Descriptor instead.
 func (*DeleteProviderRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{247}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{249}
 }
 
 func (x *DeleteProviderRequest) GetId() string {
@@ -20027,7 +20270,7 @@ type DeleteProviderResponse struct {
 
 func (x *DeleteProviderResponse) Reset() {
 	*x = DeleteProviderResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[248]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[250]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20039,7 +20282,7 @@ func (x *DeleteProviderResponse) String() string {
 func (*DeleteProviderResponse) ProtoMessage() {}
 
 func (x *DeleteProviderResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[248]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[250]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20052,7 +20295,7 @@ func (x *DeleteProviderResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteProviderResponse.ProtoReflect.Descriptor instead.
 func (*DeleteProviderResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{248}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{250}
 }
 
 type GetEngineCapabilitiesRequest struct {
@@ -20063,7 +20306,7 @@ type GetEngineCapabilitiesRequest struct {
 
 func (x *GetEngineCapabilitiesRequest) Reset() {
 	*x = GetEngineCapabilitiesRequest{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[249]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[251]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20075,7 +20318,7 @@ func (x *GetEngineCapabilitiesRequest) String() string {
 func (*GetEngineCapabilitiesRequest) ProtoMessage() {}
 
 func (x *GetEngineCapabilitiesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[249]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[251]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20088,7 +20331,7 @@ func (x *GetEngineCapabilitiesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEngineCapabilitiesRequest.ProtoReflect.Descriptor instead.
 func (*GetEngineCapabilitiesRequest) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{249}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{251}
 }
 
 // EngineCapability is one dimension of the engine's capability matrix.
@@ -20134,7 +20377,7 @@ type EngineCapability struct {
 
 func (x *EngineCapability) Reset() {
 	*x = EngineCapability{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[250]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[252]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20146,7 +20389,7 @@ func (x *EngineCapability) String() string {
 func (*EngineCapability) ProtoMessage() {}
 
 func (x *EngineCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[250]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[252]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20159,7 +20402,7 @@ func (x *EngineCapability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineCapability.ProtoReflect.Descriptor instead.
 func (*EngineCapability) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{250}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{252}
 }
 
 func (x *EngineCapability) GetDimension() string {
@@ -20249,7 +20492,7 @@ type EngineObservedCapability struct {
 
 func (x *EngineObservedCapability) Reset() {
 	*x = EngineObservedCapability{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[251]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[253]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20261,7 +20504,7 @@ func (x *EngineObservedCapability) String() string {
 func (*EngineObservedCapability) ProtoMessage() {}
 
 func (x *EngineObservedCapability) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[251]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[253]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20274,7 +20517,7 @@ func (x *EngineObservedCapability) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineObservedCapability.ProtoReflect.Descriptor instead.
 func (*EngineObservedCapability) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{251}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{253}
 }
 
 func (x *EngineObservedCapability) GetDimension() string {
@@ -20344,7 +20587,7 @@ type EngineDriverCapabilities struct {
 
 func (x *EngineDriverCapabilities) Reset() {
 	*x = EngineDriverCapabilities{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[252]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[254]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20356,7 +20599,7 @@ func (x *EngineDriverCapabilities) String() string {
 func (*EngineDriverCapabilities) ProtoMessage() {}
 
 func (x *EngineDriverCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[252]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[254]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20369,7 +20612,7 @@ func (x *EngineDriverCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineDriverCapabilities.ProtoReflect.Descriptor instead.
 func (*EngineDriverCapabilities) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{252}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{254}
 }
 
 func (x *EngineDriverCapabilities) GetDriver() string {
@@ -20401,7 +20644,7 @@ type EngineProviderCapabilities struct {
 
 func (x *EngineProviderCapabilities) Reset() {
 	*x = EngineProviderCapabilities{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[253]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[255]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20413,7 +20656,7 @@ func (x *EngineProviderCapabilities) String() string {
 func (*EngineProviderCapabilities) ProtoMessage() {}
 
 func (x *EngineProviderCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[253]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[255]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20426,7 +20669,7 @@ func (x *EngineProviderCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineProviderCapabilities.ProtoReflect.Descriptor instead.
 func (*EngineProviderCapabilities) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{253}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{255}
 }
 
 func (x *EngineProviderCapabilities) GetProvider() string {
@@ -20462,7 +20705,7 @@ type EngineProviderFeature struct {
 
 func (x *EngineProviderFeature) Reset() {
 	*x = EngineProviderFeature{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[254]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[256]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20474,7 +20717,7 @@ func (x *EngineProviderFeature) String() string {
 func (*EngineProviderFeature) ProtoMessage() {}
 
 func (x *EngineProviderFeature) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[254]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[256]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20487,7 +20730,7 @@ func (x *EngineProviderFeature) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EngineProviderFeature.ProtoReflect.Descriptor instead.
 func (*EngineProviderFeature) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{254}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{256}
 }
 
 func (x *EngineProviderFeature) GetFeature() string {
@@ -20533,7 +20776,7 @@ type GetEngineCapabilitiesResponse struct {
 
 func (x *GetEngineCapabilitiesResponse) Reset() {
 	*x = GetEngineCapabilitiesResponse{}
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[255]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[257]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -20545,7 +20788,7 @@ func (x *GetEngineCapabilitiesResponse) String() string {
 func (*GetEngineCapabilitiesResponse) ProtoMessage() {}
 
 func (x *GetEngineCapabilitiesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[255]
+	mi := &file_agentcompose_v2_agentcompose_proto_msgTypes[257]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -20558,7 +20801,7 @@ func (x *GetEngineCapabilitiesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEngineCapabilitiesResponse.ProtoReflect.Descriptor instead.
 func (*GetEngineCapabilitiesResponse) Descriptor() ([]byte, []int) {
-	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{255}
+	return file_agentcompose_v2_agentcompose_proto_rawDescGZIP(), []int{257}
 }
 
 func (x *GetEngineCapabilitiesResponse) GetDrivers() []*EngineDriverCapabilities {
@@ -20611,23 +20854,44 @@ const file_agentcompose_v2_agentcompose_proto_rawDesc = "" +
 	"\x16ValidateProjectRequest\x120\n" +
 	"\x04spec\x18\x01 \x01(\v2\x1c.agentcompose.v2.ProjectSpecR\x04spec\x126\n" +
 	"\x06source\x18\x02 \x01(\v2\x1e.agentcompose.v2.ProjectSourceR\x06source\x12.\n" +
-	"\x13submitted_spec_hash\x18\x03 \x01(\tR\x11submittedSpecHash\"\x8d\x01\n" +
+	"\x13submitted_spec_hash\x18\x03 \x01(\tR\x11submittedSpecHash\"\xe3\x01\n" +
 	"\x17ValidateProjectResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12?\n" +
 	"\x06issues\x18\x02 \x03(\v2'.agentcompose.v2.ProjectValidationIssueR\x06issues\x12\x1b\n" +
-	"\tspec_hash\x18\x03 \x01(\tR\bspecHash\"\xc8\x01\n" +
+	"\tspec_hash\x18\x03 \x01(\tR\bspecHash\x12T\n" +
+	"\x10network_policies\x18\x04 \x03(\v2).agentcompose.v2.AgentNetworkPolicyReportR\x0fnetworkPolicies\"\xc8\x01\n" +
 	"\x13ApplyProjectRequest\x120\n" +
 	"\x04spec\x18\x01 \x01(\v2\x1c.agentcompose.v2.ProjectSpecR\x04spec\x126\n" +
 	"\x06source\x18\x02 \x01(\v2\x1e.agentcompose.v2.ProjectSourceR\x06source\x12.\n" +
 	"\x13submitted_spec_hash\x18\x03 \x01(\tR\x11submittedSpecHash\x12\x17\n" +
-	"\adry_run\x18\x04 \x01(\bR\x06dryRun\"\xbb\x02\n" +
+	"\adry_run\x18\x04 \x01(\bR\x06dryRun\"\x91\x03\n" +
 	"\x14ApplyProjectResponse\x122\n" +
 	"\aproject\x18\x01 \x01(\v2\x18.agentcompose.v2.ProjectR\aproject\x12<\n" +
 	"\brevision\x18\x02 \x01(\v2 .agentcompose.v2.ProjectRevisionR\brevision\x128\n" +
 	"\achanges\x18\x03 \x03(\v2\x1e.agentcompose.v2.ProjectChangeR\achanges\x12?\n" +
 	"\x06issues\x18\x04 \x03(\v2'.agentcompose.v2.ProjectValidationIssueR\x06issues\x12\x18\n" +
 	"\aapplied\x18\x05 \x01(\bR\aapplied\x12\x1c\n" +
-	"\tunchanged\x18\x06 \x01(\bR\tunchanged\"\xd4\x01\n" +
+	"\tunchanged\x18\x06 \x01(\bR\tunchanged\x12T\n" +
+	"\x10network_policies\x18\a \x03(\v2).agentcompose.v2.AgentNetworkPolicyReportR\x0fnetworkPolicies\"\x87\x03\n" +
+	"\x18AgentNetworkPolicyReport\x12\x14\n" +
+	"\x05agent\x18\x01 \x01(\tR\x05agent\x12\x16\n" +
+	"\x06driver\x18\x02 \x01(\tR\x06driver\x12\x1a\n" +
+	"\bdeclared\x18\x03 \x01(\bR\bdeclared\x12\x1c\n" +
+	"\trestricts\x18\x04 \x01(\bR\trestricts\x12\x18\n" +
+	"\adefault\x18\x05 \x01(\tR\adefault\x12?\n" +
+	"\x05allow\x18\x06 \x03(\v2).agentcompose.v2.DeclaredNetworkAllowanceR\x05allow\x12\x1a\n" +
+	"\bmediated\x18\a \x01(\bR\bmediated\x12\x1a\n" +
+	"\benforced\x18\b \x01(\bR\benforced\x12\x1a\n" +
+	"\bstrength\x18\t \x01(\tR\bstrength\x12\x1c\n" +
+	"\tmechanism\x18\n" +
+	" \x01(\tR\tmechanism\x12\x1c\n" +
+	"\tunapplied\x18\v \x03(\tR\tunapplied\x12\x18\n" +
+	"\awarning\x18\f \x01(\tR\awarning\"y\n" +
+	"\x18DeclaredNetworkAllowance\x12\x1a\n" +
+	"\bendpoint\x18\x01 \x01(\tR\bendpoint\x12 \n" +
+	"\vinspectable\x18\x02 \x01(\bR\vinspectable\x12\x1f\n" +
+	"\vallowed_ips\x18\x03 \x03(\tR\n" +
+	"allowedIps\"\xd4\x01\n" +
 	"\x13PatchProjectRequest\x125\n" +
 	"\aproject\x18\x01 \x01(\v2\x1b.agentcompose.v2.ProjectRefR\aproject\x12;\n" +
 	"\x1aexpected_current_spec_hash\x18\x02 \x01(\tR\x17expectedCurrentSpecHash\x120\n" +
@@ -22560,7 +22824,7 @@ func file_agentcompose_v2_agentcompose_proto_rawDescGZIP() []byte {
 }
 
 var file_agentcompose_v2_agentcompose_proto_enumTypes = make([]protoimpl.EnumInfo, 37)
-var file_agentcompose_v2_agentcompose_proto_msgTypes = make([]protoimpl.MessageInfo, 271)
+var file_agentcompose_v2_agentcompose_proto_msgTypes = make([]protoimpl.MessageInfo, 273)
 var file_agentcompose_v2_agentcompose_proto_goTypes = []any{
 	(ProjectValidationSeverity)(0),                // 0: agentcompose.v2.ProjectValidationSeverity
 	(ProjectChangeAction)(0),                      // 1: agentcompose.v2.ProjectChangeAction
@@ -22603,795 +22867,800 @@ var file_agentcompose_v2_agentcompose_proto_goTypes = []any{
 	(*ValidateProjectResponse)(nil),               // 38: agentcompose.v2.ValidateProjectResponse
 	(*ApplyProjectRequest)(nil),                   // 39: agentcompose.v2.ApplyProjectRequest
 	(*ApplyProjectResponse)(nil),                  // 40: agentcompose.v2.ApplyProjectResponse
-	(*PatchProjectRequest)(nil),                   // 41: agentcompose.v2.PatchProjectRequest
-	(*GetProjectRequest)(nil),                     // 42: agentcompose.v2.GetProjectRequest
-	(*GetProjectResponse)(nil),                    // 43: agentcompose.v2.GetProjectResponse
-	(*ListProjectsRequest)(nil),                   // 44: agentcompose.v2.ListProjectsRequest
-	(*ListProjectsResponse)(nil),                  // 45: agentcompose.v2.ListProjectsResponse
-	(*RemoveProjectRequest)(nil),                  // 46: agentcompose.v2.RemoveProjectRequest
-	(*RemoveProjectResponse)(nil),                 // 47: agentcompose.v2.RemoveProjectResponse
-	(*WatchProjectRequest)(nil),                   // 48: agentcompose.v2.WatchProjectRequest
-	(*WatchProjectResponse)(nil),                  // 49: agentcompose.v2.WatchProjectResponse
-	(*ProjectRef)(nil),                            // 50: agentcompose.v2.ProjectRef
-	(*ProjectSource)(nil),                         // 51: agentcompose.v2.ProjectSource
-	(*Project)(nil),                               // 52: agentcompose.v2.Project
-	(*ProjectSummary)(nil),                        // 53: agentcompose.v2.ProjectSummary
-	(*ProjectRevision)(nil),                       // 54: agentcompose.v2.ProjectRevision
-	(*ProjectAgent)(nil),                          // 55: agentcompose.v2.ProjectAgent
-	(*ProjectAgentCurrentRun)(nil),                // 56: agentcompose.v2.ProjectAgentCurrentRun
-	(*ProjectAgentLatestRun)(nil),                 // 57: agentcompose.v2.ProjectAgentLatestRun
-	(*ProjectScheduler)(nil),                      // 58: agentcompose.v2.ProjectScheduler
-	(*GetSchedulerRequest)(nil),                   // 59: agentcompose.v2.GetSchedulerRequest
-	(*GetSchedulerResponse)(nil),                  // 60: agentcompose.v2.GetSchedulerResponse
-	(*ResolvedTrigger)(nil),                       // 61: agentcompose.v2.ResolvedTrigger
-	(*ListSchedulersRequest)(nil),                 // 62: agentcompose.v2.ListSchedulersRequest
-	(*SchedulerSummary)(nil),                      // 63: agentcompose.v2.SchedulerSummary
-	(*ListSchedulersResponse)(nil),                // 64: agentcompose.v2.ListSchedulersResponse
-	(*ListSchedulerEventsRequest)(nil),            // 65: agentcompose.v2.ListSchedulerEventsRequest
-	(*SchedulerEvent)(nil),                        // 66: agentcompose.v2.SchedulerEvent
-	(*ListSchedulerEventsResponse)(nil),           // 67: agentcompose.v2.ListSchedulerEventsResponse
-	(*ListProjectSchedulerEventsRequest)(nil),     // 68: agentcompose.v2.ListProjectSchedulerEventsRequest
-	(*ListProjectSchedulerEventsResponse)(nil),    // 69: agentcompose.v2.ListProjectSchedulerEventsResponse
-	(*InvokeSchedulerRequest)(nil),                // 70: agentcompose.v2.InvokeSchedulerRequest
-	(*InvokeSchedulerResponse)(nil),               // 71: agentcompose.v2.InvokeSchedulerResponse
-	(*RunSchedulerRequest)(nil),                   // 72: agentcompose.v2.RunSchedulerRequest
-	(*RunSchedulerResponse)(nil),                  // 73: agentcompose.v2.RunSchedulerResponse
-	(*StartSchedulerRunRequest)(nil),              // 74: agentcompose.v2.StartSchedulerRunRequest
-	(*StartSchedulerRunResponse)(nil),             // 75: agentcompose.v2.StartSchedulerRunResponse
-	(*GetSchedulerRunRequest)(nil),                // 76: agentcompose.v2.GetSchedulerRunRequest
-	(*GetSchedulerRunResponse)(nil),               // 77: agentcompose.v2.GetSchedulerRunResponse
-	(*ListSchedulerRunsRequest)(nil),              // 78: agentcompose.v2.ListSchedulerRunsRequest
-	(*ListSchedulerRunsResponse)(nil),             // 79: agentcompose.v2.ListSchedulerRunsResponse
-	(*PruneSchedulerRunsRequest)(nil),             // 80: agentcompose.v2.PruneSchedulerRunsRequest
-	(*SchedulerRunPruneStats)(nil),                // 81: agentcompose.v2.SchedulerRunPruneStats
-	(*SchedulerRunPruneResidue)(nil),              // 82: agentcompose.v2.SchedulerRunPruneResidue
-	(*PruneSchedulerRunsResponse)(nil),            // 83: agentcompose.v2.PruneSchedulerRunsResponse
-	(*StopSchedulerRunRequest)(nil),               // 84: agentcompose.v2.StopSchedulerRunRequest
-	(*StopSchedulerRunResponse)(nil),              // 85: agentcompose.v2.StopSchedulerRunResponse
-	(*SchedulerRun)(nil),                          // 86: agentcompose.v2.SchedulerRun
-	(*SetSchedulerEnabledRequest)(nil),            // 87: agentcompose.v2.SetSchedulerEnabledRequest
-	(*SetSchedulerEnabledResponse)(nil),           // 88: agentcompose.v2.SetSchedulerEnabledResponse
-	(*SetSchedulerTriggerEnabledRequest)(nil),     // 89: agentcompose.v2.SetSchedulerTriggerEnabledRequest
-	(*SetSchedulerTriggerEnabledResponse)(nil),    // 90: agentcompose.v2.SetSchedulerTriggerEnabledResponse
-	(*ProjectValidationIssue)(nil),                // 91: agentcompose.v2.ProjectValidationIssue
-	(*ProjectChange)(nil),                         // 92: agentcompose.v2.ProjectChange
-	(*ProjectSpec)(nil),                           // 93: agentcompose.v2.ProjectSpec
-	(*NamedWorkspaceSpec)(nil),                    // 94: agentcompose.v2.NamedWorkspaceSpec
-	(*AgentSpec)(nil),                             // 95: agentcompose.v2.AgentSpec
-	(*SandboxSpec)(nil),                           // 96: agentcompose.v2.SandboxSpec
-	(*SandboxNetworkSpec)(nil),                    // 97: agentcompose.v2.SandboxNetworkSpec
-	(*SandboxNetworkAllowSpec)(nil),               // 98: agentcompose.v2.SandboxNetworkAllowSpec
-	(*MCPServerSpec)(nil),                         // 99: agentcompose.v2.MCPServerSpec
-	(*OctoBusServerSpec)(nil),                     // 100: agentcompose.v2.OctoBusServerSpec
-	(*ProjectVolumeSpec)(nil),                     // 101: agentcompose.v2.ProjectVolumeSpec
-	(*VolumeMountSpec)(nil),                       // 102: agentcompose.v2.VolumeMountSpec
-	(*BuildSpec)(nil),                             // 103: agentcompose.v2.BuildSpec
-	(*EnvVarSpec)(nil),                            // 104: agentcompose.v2.EnvVarSpec
-	(*EnvVarUpdateSpec)(nil),                      // 105: agentcompose.v2.EnvVarUpdateSpec
-	(*WorkspaceSpec)(nil),                         // 106: agentcompose.v2.WorkspaceSpec
-	(*SchedulerSpec)(nil),                         // 107: agentcompose.v2.SchedulerSpec
-	(*TriggerSpec)(nil),                           // 108: agentcompose.v2.TriggerSpec
-	(*EventTriggerSpec)(nil),                      // 109: agentcompose.v2.EventTriggerSpec
-	(*DriverSpec)(nil),                            // 110: agentcompose.v2.DriverSpec
-	(*BoxliteDriverSpec)(nil),                     // 111: agentcompose.v2.BoxliteDriverSpec
-	(*DockerDriverSpec)(nil),                      // 112: agentcompose.v2.DockerDriverSpec
-	(*MicrosandboxDriverSpec)(nil),                // 113: agentcompose.v2.MicrosandboxDriverSpec
-	(*K8SDriverSpec)(nil),                         // 114: agentcompose.v2.K8sDriverSpec
-	(*RunAgentRequest)(nil),                       // 115: agentcompose.v2.RunAgentRequest
-	(*RunAgentResponse)(nil),                      // 116: agentcompose.v2.RunAgentResponse
-	(*StreamAgentRunResponse)(nil),                // 117: agentcompose.v2.StreamAgentRunResponse
-	(*AttachAgentRunRequest)(nil),                 // 118: agentcompose.v2.AttachAgentRunRequest
-	(*AttachAgentRunResponse)(nil),                // 119: agentcompose.v2.AttachAgentRunResponse
-	(*AttachAgentRunStart)(nil),                   // 120: agentcompose.v2.AttachAgentRunStart
-	(*TranscriptEvent)(nil),                       // 121: agentcompose.v2.TranscriptEvent
-	(*GetRunRequest)(nil),                         // 122: agentcompose.v2.GetRunRequest
-	(*GetRunResponse)(nil),                        // 123: agentcompose.v2.GetRunResponse
-	(*ListRunsRequest)(nil),                       // 124: agentcompose.v2.ListRunsRequest
-	(*ListRunsResponse)(nil),                      // 125: agentcompose.v2.ListRunsResponse
-	(*FollowRunLogsRequest)(nil),                  // 126: agentcompose.v2.FollowRunLogsRequest
-	(*RunLogChunk)(nil),                           // 127: agentcompose.v2.RunLogChunk
-	(*StopRunRequest)(nil),                        // 128: agentcompose.v2.StopRunRequest
-	(*StopRunResponse)(nil),                       // 129: agentcompose.v2.StopRunResponse
-	(*ListRunEventsRequest)(nil),                  // 130: agentcompose.v2.ListRunEventsRequest
-	(*RunEvent)(nil),                              // 131: agentcompose.v2.RunEvent
-	(*ListRunEventsResponse)(nil),                 // 132: agentcompose.v2.ListRunEventsResponse
-	(*ListSandboxRunEventsRequest)(nil),           // 133: agentcompose.v2.ListSandboxRunEventsRequest
-	(*ListSandboxRunEventsResponse)(nil),          // 134: agentcompose.v2.ListSandboxRunEventsResponse
-	(*RemoveSandboxRequest)(nil),                  // 135: agentcompose.v2.RemoveSandboxRequest
-	(*RemoveSandboxResponse)(nil),                 // 136: agentcompose.v2.RemoveSandboxResponse
-	(*PruneSandboxesRequest)(nil),                 // 137: agentcompose.v2.PruneSandboxesRequest
-	(*SandboxPruneCandidate)(nil),                 // 138: agentcompose.v2.SandboxPruneCandidate
-	(*PruneSandboxesResponse)(nil),                // 139: agentcompose.v2.PruneSandboxesResponse
-	(*GetSandboxStatsRequest)(nil),                // 140: agentcompose.v2.GetSandboxStatsRequest
-	(*GetSandboxStatsResponse)(nil),               // 141: agentcompose.v2.GetSandboxStatsResponse
-	(*GetSandboxRequest)(nil),                     // 142: agentcompose.v2.GetSandboxRequest
-	(*Sandbox)(nil),                               // 143: agentcompose.v2.Sandbox
-	(*SandboxWorkspaceDelivery)(nil),              // 144: agentcompose.v2.SandboxWorkspaceDelivery
-	(*SandboxTag)(nil),                            // 145: agentcompose.v2.SandboxTag
-	(*ListSandboxesRequest)(nil),                  // 146: agentcompose.v2.ListSandboxesRequest
-	(*ListSandboxesResponse)(nil),                 // 147: agentcompose.v2.ListSandboxesResponse
-	(*GetSandboxResponse)(nil),                    // 148: agentcompose.v2.GetSandboxResponse
-	(*StopSandboxRequest)(nil),                    // 149: agentcompose.v2.StopSandboxRequest
-	(*StopSandboxResponse)(nil),                   // 150: agentcompose.v2.StopSandboxResponse
-	(*ResumeSandboxRequest)(nil),                  // 151: agentcompose.v2.ResumeSandboxRequest
-	(*ResumeSandboxResponse)(nil),                 // 152: agentcompose.v2.ResumeSandboxResponse
-	(*MetricValue)(nil),                           // 153: agentcompose.v2.MetricValue
-	(*SandboxStats)(nil),                          // 154: agentcompose.v2.SandboxStats
-	(*RunSummary)(nil),                            // 155: agentcompose.v2.RunSummary
-	(*RunDetail)(nil),                             // 156: agentcompose.v2.RunDetail
-	(*ExecRequest)(nil),                           // 157: agentcompose.v2.ExecRequest
-	(*ExecSandboxSelector)(nil),                   // 158: agentcompose.v2.ExecSandboxSelector
-	(*ExecCommand)(nil),                           // 159: agentcompose.v2.ExecCommand
-	(*ExecResponse)(nil),                          // 160: agentcompose.v2.ExecResponse
-	(*StreamExecResponse)(nil),                    // 161: agentcompose.v2.StreamExecResponse
-	(*AttachExecRequest)(nil),                     // 162: agentcompose.v2.AttachExecRequest
-	(*AttachExecResponse)(nil),                    // 163: agentcompose.v2.AttachExecResponse
-	(*AttachExecStart)(nil),                       // 164: agentcompose.v2.AttachExecStart
-	(*AttachTerminalSize)(nil),                    // 165: agentcompose.v2.AttachTerminalSize
-	(*AttachStdin)(nil),                           // 166: agentcompose.v2.AttachStdin
-	(*AttachStdinEOF)(nil),                        // 167: agentcompose.v2.AttachStdinEOF
-	(*AttachResize)(nil),                          // 168: agentcompose.v2.AttachResize
-	(*AttachSignal)(nil),                          // 169: agentcompose.v2.AttachSignal
-	(*AttachHumanMessage)(nil),                    // 170: agentcompose.v2.AttachHumanMessage
-	(*AttachCancel)(nil),                          // 171: agentcompose.v2.AttachCancel
-	(*AttachStarted)(nil),                         // 172: agentcompose.v2.AttachStarted
-	(*AttachOutput)(nil),                          // 173: agentcompose.v2.AttachOutput
-	(*AttachAgentEvent)(nil),                      // 174: agentcompose.v2.AttachAgentEvent
-	(*AttachAgentTurnCompleted)(nil),              // 175: agentcompose.v2.AttachAgentTurnCompleted
-	(*AttachResult)(nil),                          // 176: agentcompose.v2.AttachResult
-	(*AttachError)(nil),                           // 177: agentcompose.v2.AttachError
-	(*ExecResult)(nil),                            // 178: agentcompose.v2.ExecResult
-	(*ListImagesRequest)(nil),                     // 179: agentcompose.v2.ListImagesRequest
-	(*ListImagesResponse)(nil),                    // 180: agentcompose.v2.ListImagesResponse
-	(*PullImageRequest)(nil),                      // 181: agentcompose.v2.PullImageRequest
-	(*PullImageResponse)(nil),                     // 182: agentcompose.v2.PullImageResponse
-	(*InspectImageRequest)(nil),                   // 183: agentcompose.v2.InspectImageRequest
-	(*InspectImageResponse)(nil),                  // 184: agentcompose.v2.InspectImageResponse
-	(*RemoveImageRequest)(nil),                    // 185: agentcompose.v2.RemoveImageRequest
-	(*RemoveImageResponse)(nil),                   // 186: agentcompose.v2.RemoveImageResponse
-	(*BuildImageRequest)(nil),                     // 187: agentcompose.v2.BuildImageRequest
-	(*BuildImageEvent)(nil),                       // 188: agentcompose.v2.BuildImageEvent
-	(*CacheFilter)(nil),                           // 189: agentcompose.v2.CacheFilter
-	(*ListCachesRequest)(nil),                     // 190: agentcompose.v2.ListCachesRequest
-	(*ListCachesResponse)(nil),                    // 191: agentcompose.v2.ListCachesResponse
-	(*InspectCacheRequest)(nil),                   // 192: agentcompose.v2.InspectCacheRequest
-	(*InspectCacheResponse)(nil),                  // 193: agentcompose.v2.InspectCacheResponse
-	(*PruneCachesRequest)(nil),                    // 194: agentcompose.v2.PruneCachesRequest
-	(*PruneCachesResponse)(nil),                   // 195: agentcompose.v2.PruneCachesResponse
-	(*RemoveCacheRequest)(nil),                    // 196: agentcompose.v2.RemoveCacheRequest
-	(*RemoveCacheResponse)(nil),                   // 197: agentcompose.v2.RemoveCacheResponse
-	(*CacheItem)(nil),                             // 198: agentcompose.v2.CacheItem
-	(*CacheReference)(nil),                        // 199: agentcompose.v2.CacheReference
-	(*ListVolumesRequest)(nil),                    // 200: agentcompose.v2.ListVolumesRequest
-	(*ListVolumesResponse)(nil),                   // 201: agentcompose.v2.ListVolumesResponse
-	(*CreateVolumeRequest)(nil),                   // 202: agentcompose.v2.CreateVolumeRequest
-	(*CreateVolumeResponse)(nil),                  // 203: agentcompose.v2.CreateVolumeResponse
-	(*InspectVolumeRequest)(nil),                  // 204: agentcompose.v2.InspectVolumeRequest
-	(*InspectVolumeResponse)(nil),                 // 205: agentcompose.v2.InspectVolumeResponse
-	(*RemoveVolumeRequest)(nil),                   // 206: agentcompose.v2.RemoveVolumeRequest
-	(*RemoveVolumeResponse)(nil),                  // 207: agentcompose.v2.RemoveVolumeResponse
-	(*PruneVolumesRequest)(nil),                   // 208: agentcompose.v2.PruneVolumesRequest
-	(*PruneVolumesResponse)(nil),                  // 209: agentcompose.v2.PruneVolumesResponse
-	(*Volume)(nil),                                // 210: agentcompose.v2.Volume
-	(*Image)(nil),                                 // 211: agentcompose.v2.Image
-	(*ImagePlatform)(nil),                         // 212: agentcompose.v2.ImagePlatform
-	(*ImageStoreStatus)(nil),                      // 213: agentcompose.v2.ImageStoreStatus
-	(*DockerImageStatus)(nil),                     // 214: agentcompose.v2.DockerImageStatus
-	(*OCIImageStatus)(nil),                        // 215: agentcompose.v2.OCIImageStatus
-	(*ImagePullProgress)(nil),                     // 216: agentcompose.v2.ImagePullProgress
-	(*JupyterSpec)(nil),                           // 217: agentcompose.v2.JupyterSpec
-	(*RunJupyterSpec)(nil),                        // 218: agentcompose.v2.RunJupyterSpec
-	(*StartAgentRunRequest)(nil),                  // 219: agentcompose.v2.StartAgentRunRequest
-	(*StartAgentRunResponse)(nil),                 // 220: agentcompose.v2.StartAgentRunResponse
-	(*SkillSpec)(nil),                             // 221: agentcompose.v2.SkillSpec
-	(*ResolveResourceIDRequest)(nil),              // 222: agentcompose.v2.ResolveResourceIDRequest
-	(*ResolveResourceIDResponse)(nil),             // 223: agentcompose.v2.ResolveResourceIDResponse
-	(*ResourceTarget)(nil),                        // 224: agentcompose.v2.ResourceTarget
-	(*GetDashboardOverviewRequest)(nil),           // 225: agentcompose.v2.GetDashboardOverviewRequest
-	(*WatchDashboardOverviewRequest)(nil),         // 226: agentcompose.v2.WatchDashboardOverviewRequest
-	(*RunOverview)(nil),                           // 227: agentcompose.v2.RunOverview
-	(*DashboardOverview)(nil),                     // 228: agentcompose.v2.DashboardOverview
-	(*GetDashboardOverviewResponse)(nil),          // 229: agentcompose.v2.GetDashboardOverviewResponse
-	(*WatchDashboardOverviewResponse)(nil),        // 230: agentcompose.v2.WatchDashboardOverviewResponse
-	(*GetGlobalEnvRequest)(nil),                   // 231: agentcompose.v2.GetGlobalEnvRequest
-	(*GetGlobalEnvResponse)(nil),                  // 232: agentcompose.v2.GetGlobalEnvResponse
-	(*UpdateGlobalEnvRequest)(nil),                // 233: agentcompose.v2.UpdateGlobalEnvRequest
-	(*UpdateGlobalEnvResponse)(nil),               // 234: agentcompose.v2.UpdateGlobalEnvResponse
-	(*GetCapabilityGatewayConfigRequest)(nil),     // 235: agentcompose.v2.GetCapabilityGatewayConfigRequest
-	(*CapabilityGatewayConfig)(nil),               // 236: agentcompose.v2.CapabilityGatewayConfig
-	(*GetCapabilityGatewayConfigResponse)(nil),    // 237: agentcompose.v2.GetCapabilityGatewayConfigResponse
-	(*UpdateCapabilityGatewayConfigRequest)(nil),  // 238: agentcompose.v2.UpdateCapabilityGatewayConfigRequest
-	(*UpdateCapabilityGatewayConfigResponse)(nil), // 239: agentcompose.v2.UpdateCapabilityGatewayConfigResponse
-	(*GetEventDeliveryScopeRequest)(nil),          // 240: agentcompose.v2.GetEventDeliveryScopeRequest
-	(*GetEventDeliveryScopeResponse)(nil),         // 241: agentcompose.v2.GetEventDeliveryScopeResponse
-	(*WorkspacePreset)(nil),                       // 242: agentcompose.v2.WorkspacePreset
-	(*ListWorkspacePresetsRequest)(nil),           // 243: agentcompose.v2.ListWorkspacePresetsRequest
-	(*ListWorkspacePresetsResponse)(nil),          // 244: agentcompose.v2.ListWorkspacePresetsResponse
-	(*CreateWorkspacePresetRequest)(nil),          // 245: agentcompose.v2.CreateWorkspacePresetRequest
-	(*UpdateWorkspacePresetRequest)(nil),          // 246: agentcompose.v2.UpdateWorkspacePresetRequest
-	(*DeleteWorkspacePresetRequest)(nil),          // 247: agentcompose.v2.DeleteWorkspacePresetRequest
-	(*DeleteWorkspacePresetResponse)(nil),         // 248: agentcompose.v2.DeleteWorkspacePresetResponse
-	(*WorkspacePresetResponse)(nil),               // 249: agentcompose.v2.WorkspacePresetResponse
-	(*GetCapabilityStatusRequest)(nil),            // 250: agentcompose.v2.GetCapabilityStatusRequest
-	(*CapabilityStatusResponse)(nil),              // 251: agentcompose.v2.CapabilityStatusResponse
-	(*ListCapabilitySetsRequest)(nil),             // 252: agentcompose.v2.ListCapabilitySetsRequest
-	(*CapabilitySet)(nil),                         // 253: agentcompose.v2.CapabilitySet
-	(*ListCapabilitySetsResponse)(nil),            // 254: agentcompose.v2.ListCapabilitySetsResponse
-	(*GetCapabilityCatalogRequest)(nil),           // 255: agentcompose.v2.GetCapabilityCatalogRequest
-	(*CapabilityEndpoint)(nil),                    // 256: agentcompose.v2.CapabilityEndpoint
-	(*CapabilityMethod)(nil),                      // 257: agentcompose.v2.CapabilityMethod
-	(*GetCapabilityCatalogResponse)(nil),          // 258: agentcompose.v2.GetCapabilityCatalogResponse
-	(*ListSandboxHistoryRequest)(nil),             // 259: agentcompose.v2.ListSandboxHistoryRequest
-	(*SandboxHistoryCell)(nil),                    // 260: agentcompose.v2.SandboxHistoryCell
-	(*SandboxHistoryEvent)(nil),                   // 261: agentcompose.v2.SandboxHistoryEvent
-	(*ListSandboxHistoryResponse)(nil),            // 262: agentcompose.v2.ListSandboxHistoryResponse
-	(*WatchSandboxRequest)(nil),                   // 263: agentcompose.v2.WatchSandboxRequest
-	(*WatchSandboxResponse)(nil),                  // 264: agentcompose.v2.WatchSandboxResponse
-	(*GenerateLLMRequest)(nil),                    // 265: agentcompose.v2.GenerateLLMRequest
-	(*GenerateLLMResponse)(nil),                   // 266: agentcompose.v2.GenerateLLMResponse
-	(*StreamProjectSchedulerEventsRequest)(nil),   // 267: agentcompose.v2.StreamProjectSchedulerEventsRequest
-	(*StreamProjectSchedulerEventsResponse)(nil),  // 268: agentcompose.v2.StreamProjectSchedulerEventsResponse
-	(*StreamSchedulerRunsRequest)(nil),            // 269: agentcompose.v2.StreamSchedulerRunsRequest
-	(*StreamSchedulerRunsResponse)(nil),           // 270: agentcompose.v2.StreamSchedulerRunsResponse
-	(*BatchGetLatestSchedulerRunsRequest)(nil),    // 271: agentcompose.v2.BatchGetLatestSchedulerRunsRequest
-	(*SandboxSchedulerRun)(nil),                   // 272: agentcompose.v2.SandboxSchedulerRun
-	(*BatchGetLatestSchedulerRunsResponse)(nil),   // 273: agentcompose.v2.BatchGetLatestSchedulerRunsResponse
-	(*LLMProvider)(nil),                           // 274: agentcompose.v2.LLMProvider
-	(*LLMProviderSpec)(nil),                       // 275: agentcompose.v2.LLMProviderSpec
-	(*CreateProviderRequest)(nil),                 // 276: agentcompose.v2.CreateProviderRequest
-	(*CreateProviderResponse)(nil),                // 277: agentcompose.v2.CreateProviderResponse
-	(*GetProviderRequest)(nil),                    // 278: agentcompose.v2.GetProviderRequest
-	(*GetProviderResponse)(nil),                   // 279: agentcompose.v2.GetProviderResponse
-	(*ListProvidersRequest)(nil),                  // 280: agentcompose.v2.ListProvidersRequest
-	(*ListProvidersResponse)(nil),                 // 281: agentcompose.v2.ListProvidersResponse
-	(*UpdateProviderRequest)(nil),                 // 282: agentcompose.v2.UpdateProviderRequest
-	(*UpdateProviderResponse)(nil),                // 283: agentcompose.v2.UpdateProviderResponse
-	(*DeleteProviderRequest)(nil),                 // 284: agentcompose.v2.DeleteProviderRequest
-	(*DeleteProviderResponse)(nil),                // 285: agentcompose.v2.DeleteProviderResponse
-	(*GetEngineCapabilitiesRequest)(nil),          // 286: agentcompose.v2.GetEngineCapabilitiesRequest
-	(*EngineCapability)(nil),                      // 287: agentcompose.v2.EngineCapability
-	(*EngineObservedCapability)(nil),              // 288: agentcompose.v2.EngineObservedCapability
-	(*EngineDriverCapabilities)(nil),              // 289: agentcompose.v2.EngineDriverCapabilities
-	(*EngineProviderCapabilities)(nil),            // 290: agentcompose.v2.EngineProviderCapabilities
-	(*EngineProviderFeature)(nil),                 // 291: agentcompose.v2.EngineProviderFeature
-	(*GetEngineCapabilitiesResponse)(nil),         // 292: agentcompose.v2.GetEngineCapabilitiesResponse
-	nil,                                           // 293: agentcompose.v2.ProjectVolumeSpec.LabelsEntry
-	nil,                                           // 294: agentcompose.v2.ProjectVolumeSpec.OptionsEntry
-	nil,                                           // 295: agentcompose.v2.BuildSpec.ArgsEntry
-	nil,                                           // 296: agentcompose.v2.RunAgentRequest.LabelsEntry
-	nil,                                           // 297: agentcompose.v2.ListRunsRequest.LabelsEntry
-	nil,                                           // 298: agentcompose.v2.RunDetail.LabelsEntry
-	nil,                                           // 299: agentcompose.v2.AttachHumanMessage.MetadataEntry
-	nil,                                           // 300: agentcompose.v2.AttachError.DetailsEntry
-	nil,                                           // 301: agentcompose.v2.BuildImageRequest.BuildArgsEntry
-	nil,                                           // 302: agentcompose.v2.CreateVolumeRequest.LabelsEntry
-	nil,                                           // 303: agentcompose.v2.CreateVolumeRequest.OptionsEntry
-	nil,                                           // 304: agentcompose.v2.Volume.LabelsEntry
-	nil,                                           // 305: agentcompose.v2.Volume.OptionsEntry
-	nil,                                           // 306: agentcompose.v2.Image.LabelsEntry
-	nil,                                           // 307: agentcompose.v2.CapabilityEndpoint.MetadataEntry
-	(*timestamppb.Timestamp)(nil),                 // 308: google.protobuf.Timestamp
-	(*durationpb.Duration)(nil),                   // 309: google.protobuf.Duration
+	(*AgentNetworkPolicyReport)(nil),              // 41: agentcompose.v2.AgentNetworkPolicyReport
+	(*DeclaredNetworkAllowance)(nil),              // 42: agentcompose.v2.DeclaredNetworkAllowance
+	(*PatchProjectRequest)(nil),                   // 43: agentcompose.v2.PatchProjectRequest
+	(*GetProjectRequest)(nil),                     // 44: agentcompose.v2.GetProjectRequest
+	(*GetProjectResponse)(nil),                    // 45: agentcompose.v2.GetProjectResponse
+	(*ListProjectsRequest)(nil),                   // 46: agentcompose.v2.ListProjectsRequest
+	(*ListProjectsResponse)(nil),                  // 47: agentcompose.v2.ListProjectsResponse
+	(*RemoveProjectRequest)(nil),                  // 48: agentcompose.v2.RemoveProjectRequest
+	(*RemoveProjectResponse)(nil),                 // 49: agentcompose.v2.RemoveProjectResponse
+	(*WatchProjectRequest)(nil),                   // 50: agentcompose.v2.WatchProjectRequest
+	(*WatchProjectResponse)(nil),                  // 51: agentcompose.v2.WatchProjectResponse
+	(*ProjectRef)(nil),                            // 52: agentcompose.v2.ProjectRef
+	(*ProjectSource)(nil),                         // 53: agentcompose.v2.ProjectSource
+	(*Project)(nil),                               // 54: agentcompose.v2.Project
+	(*ProjectSummary)(nil),                        // 55: agentcompose.v2.ProjectSummary
+	(*ProjectRevision)(nil),                       // 56: agentcompose.v2.ProjectRevision
+	(*ProjectAgent)(nil),                          // 57: agentcompose.v2.ProjectAgent
+	(*ProjectAgentCurrentRun)(nil),                // 58: agentcompose.v2.ProjectAgentCurrentRun
+	(*ProjectAgentLatestRun)(nil),                 // 59: agentcompose.v2.ProjectAgentLatestRun
+	(*ProjectScheduler)(nil),                      // 60: agentcompose.v2.ProjectScheduler
+	(*GetSchedulerRequest)(nil),                   // 61: agentcompose.v2.GetSchedulerRequest
+	(*GetSchedulerResponse)(nil),                  // 62: agentcompose.v2.GetSchedulerResponse
+	(*ResolvedTrigger)(nil),                       // 63: agentcompose.v2.ResolvedTrigger
+	(*ListSchedulersRequest)(nil),                 // 64: agentcompose.v2.ListSchedulersRequest
+	(*SchedulerSummary)(nil),                      // 65: agentcompose.v2.SchedulerSummary
+	(*ListSchedulersResponse)(nil),                // 66: agentcompose.v2.ListSchedulersResponse
+	(*ListSchedulerEventsRequest)(nil),            // 67: agentcompose.v2.ListSchedulerEventsRequest
+	(*SchedulerEvent)(nil),                        // 68: agentcompose.v2.SchedulerEvent
+	(*ListSchedulerEventsResponse)(nil),           // 69: agentcompose.v2.ListSchedulerEventsResponse
+	(*ListProjectSchedulerEventsRequest)(nil),     // 70: agentcompose.v2.ListProjectSchedulerEventsRequest
+	(*ListProjectSchedulerEventsResponse)(nil),    // 71: agentcompose.v2.ListProjectSchedulerEventsResponse
+	(*InvokeSchedulerRequest)(nil),                // 72: agentcompose.v2.InvokeSchedulerRequest
+	(*InvokeSchedulerResponse)(nil),               // 73: agentcompose.v2.InvokeSchedulerResponse
+	(*RunSchedulerRequest)(nil),                   // 74: agentcompose.v2.RunSchedulerRequest
+	(*RunSchedulerResponse)(nil),                  // 75: agentcompose.v2.RunSchedulerResponse
+	(*StartSchedulerRunRequest)(nil),              // 76: agentcompose.v2.StartSchedulerRunRequest
+	(*StartSchedulerRunResponse)(nil),             // 77: agentcompose.v2.StartSchedulerRunResponse
+	(*GetSchedulerRunRequest)(nil),                // 78: agentcompose.v2.GetSchedulerRunRequest
+	(*GetSchedulerRunResponse)(nil),               // 79: agentcompose.v2.GetSchedulerRunResponse
+	(*ListSchedulerRunsRequest)(nil),              // 80: agentcompose.v2.ListSchedulerRunsRequest
+	(*ListSchedulerRunsResponse)(nil),             // 81: agentcompose.v2.ListSchedulerRunsResponse
+	(*PruneSchedulerRunsRequest)(nil),             // 82: agentcompose.v2.PruneSchedulerRunsRequest
+	(*SchedulerRunPruneStats)(nil),                // 83: agentcompose.v2.SchedulerRunPruneStats
+	(*SchedulerRunPruneResidue)(nil),              // 84: agentcompose.v2.SchedulerRunPruneResidue
+	(*PruneSchedulerRunsResponse)(nil),            // 85: agentcompose.v2.PruneSchedulerRunsResponse
+	(*StopSchedulerRunRequest)(nil),               // 86: agentcompose.v2.StopSchedulerRunRequest
+	(*StopSchedulerRunResponse)(nil),              // 87: agentcompose.v2.StopSchedulerRunResponse
+	(*SchedulerRun)(nil),                          // 88: agentcompose.v2.SchedulerRun
+	(*SetSchedulerEnabledRequest)(nil),            // 89: agentcompose.v2.SetSchedulerEnabledRequest
+	(*SetSchedulerEnabledResponse)(nil),           // 90: agentcompose.v2.SetSchedulerEnabledResponse
+	(*SetSchedulerTriggerEnabledRequest)(nil),     // 91: agentcompose.v2.SetSchedulerTriggerEnabledRequest
+	(*SetSchedulerTriggerEnabledResponse)(nil),    // 92: agentcompose.v2.SetSchedulerTriggerEnabledResponse
+	(*ProjectValidationIssue)(nil),                // 93: agentcompose.v2.ProjectValidationIssue
+	(*ProjectChange)(nil),                         // 94: agentcompose.v2.ProjectChange
+	(*ProjectSpec)(nil),                           // 95: agentcompose.v2.ProjectSpec
+	(*NamedWorkspaceSpec)(nil),                    // 96: agentcompose.v2.NamedWorkspaceSpec
+	(*AgentSpec)(nil),                             // 97: agentcompose.v2.AgentSpec
+	(*SandboxSpec)(nil),                           // 98: agentcompose.v2.SandboxSpec
+	(*SandboxNetworkSpec)(nil),                    // 99: agentcompose.v2.SandboxNetworkSpec
+	(*SandboxNetworkAllowSpec)(nil),               // 100: agentcompose.v2.SandboxNetworkAllowSpec
+	(*MCPServerSpec)(nil),                         // 101: agentcompose.v2.MCPServerSpec
+	(*OctoBusServerSpec)(nil),                     // 102: agentcompose.v2.OctoBusServerSpec
+	(*ProjectVolumeSpec)(nil),                     // 103: agentcompose.v2.ProjectVolumeSpec
+	(*VolumeMountSpec)(nil),                       // 104: agentcompose.v2.VolumeMountSpec
+	(*BuildSpec)(nil),                             // 105: agentcompose.v2.BuildSpec
+	(*EnvVarSpec)(nil),                            // 106: agentcompose.v2.EnvVarSpec
+	(*EnvVarUpdateSpec)(nil),                      // 107: agentcompose.v2.EnvVarUpdateSpec
+	(*WorkspaceSpec)(nil),                         // 108: agentcompose.v2.WorkspaceSpec
+	(*SchedulerSpec)(nil),                         // 109: agentcompose.v2.SchedulerSpec
+	(*TriggerSpec)(nil),                           // 110: agentcompose.v2.TriggerSpec
+	(*EventTriggerSpec)(nil),                      // 111: agentcompose.v2.EventTriggerSpec
+	(*DriverSpec)(nil),                            // 112: agentcompose.v2.DriverSpec
+	(*BoxliteDriverSpec)(nil),                     // 113: agentcompose.v2.BoxliteDriverSpec
+	(*DockerDriverSpec)(nil),                      // 114: agentcompose.v2.DockerDriverSpec
+	(*MicrosandboxDriverSpec)(nil),                // 115: agentcompose.v2.MicrosandboxDriverSpec
+	(*K8SDriverSpec)(nil),                         // 116: agentcompose.v2.K8sDriverSpec
+	(*RunAgentRequest)(nil),                       // 117: agentcompose.v2.RunAgentRequest
+	(*RunAgentResponse)(nil),                      // 118: agentcompose.v2.RunAgentResponse
+	(*StreamAgentRunResponse)(nil),                // 119: agentcompose.v2.StreamAgentRunResponse
+	(*AttachAgentRunRequest)(nil),                 // 120: agentcompose.v2.AttachAgentRunRequest
+	(*AttachAgentRunResponse)(nil),                // 121: agentcompose.v2.AttachAgentRunResponse
+	(*AttachAgentRunStart)(nil),                   // 122: agentcompose.v2.AttachAgentRunStart
+	(*TranscriptEvent)(nil),                       // 123: agentcompose.v2.TranscriptEvent
+	(*GetRunRequest)(nil),                         // 124: agentcompose.v2.GetRunRequest
+	(*GetRunResponse)(nil),                        // 125: agentcompose.v2.GetRunResponse
+	(*ListRunsRequest)(nil),                       // 126: agentcompose.v2.ListRunsRequest
+	(*ListRunsResponse)(nil),                      // 127: agentcompose.v2.ListRunsResponse
+	(*FollowRunLogsRequest)(nil),                  // 128: agentcompose.v2.FollowRunLogsRequest
+	(*RunLogChunk)(nil),                           // 129: agentcompose.v2.RunLogChunk
+	(*StopRunRequest)(nil),                        // 130: agentcompose.v2.StopRunRequest
+	(*StopRunResponse)(nil),                       // 131: agentcompose.v2.StopRunResponse
+	(*ListRunEventsRequest)(nil),                  // 132: agentcompose.v2.ListRunEventsRequest
+	(*RunEvent)(nil),                              // 133: agentcompose.v2.RunEvent
+	(*ListRunEventsResponse)(nil),                 // 134: agentcompose.v2.ListRunEventsResponse
+	(*ListSandboxRunEventsRequest)(nil),           // 135: agentcompose.v2.ListSandboxRunEventsRequest
+	(*ListSandboxRunEventsResponse)(nil),          // 136: agentcompose.v2.ListSandboxRunEventsResponse
+	(*RemoveSandboxRequest)(nil),                  // 137: agentcompose.v2.RemoveSandboxRequest
+	(*RemoveSandboxResponse)(nil),                 // 138: agentcompose.v2.RemoveSandboxResponse
+	(*PruneSandboxesRequest)(nil),                 // 139: agentcompose.v2.PruneSandboxesRequest
+	(*SandboxPruneCandidate)(nil),                 // 140: agentcompose.v2.SandboxPruneCandidate
+	(*PruneSandboxesResponse)(nil),                // 141: agentcompose.v2.PruneSandboxesResponse
+	(*GetSandboxStatsRequest)(nil),                // 142: agentcompose.v2.GetSandboxStatsRequest
+	(*GetSandboxStatsResponse)(nil),               // 143: agentcompose.v2.GetSandboxStatsResponse
+	(*GetSandboxRequest)(nil),                     // 144: agentcompose.v2.GetSandboxRequest
+	(*Sandbox)(nil),                               // 145: agentcompose.v2.Sandbox
+	(*SandboxWorkspaceDelivery)(nil),              // 146: agentcompose.v2.SandboxWorkspaceDelivery
+	(*SandboxTag)(nil),                            // 147: agentcompose.v2.SandboxTag
+	(*ListSandboxesRequest)(nil),                  // 148: agentcompose.v2.ListSandboxesRequest
+	(*ListSandboxesResponse)(nil),                 // 149: agentcompose.v2.ListSandboxesResponse
+	(*GetSandboxResponse)(nil),                    // 150: agentcompose.v2.GetSandboxResponse
+	(*StopSandboxRequest)(nil),                    // 151: agentcompose.v2.StopSandboxRequest
+	(*StopSandboxResponse)(nil),                   // 152: agentcompose.v2.StopSandboxResponse
+	(*ResumeSandboxRequest)(nil),                  // 153: agentcompose.v2.ResumeSandboxRequest
+	(*ResumeSandboxResponse)(nil),                 // 154: agentcompose.v2.ResumeSandboxResponse
+	(*MetricValue)(nil),                           // 155: agentcompose.v2.MetricValue
+	(*SandboxStats)(nil),                          // 156: agentcompose.v2.SandboxStats
+	(*RunSummary)(nil),                            // 157: agentcompose.v2.RunSummary
+	(*RunDetail)(nil),                             // 158: agentcompose.v2.RunDetail
+	(*ExecRequest)(nil),                           // 159: agentcompose.v2.ExecRequest
+	(*ExecSandboxSelector)(nil),                   // 160: agentcompose.v2.ExecSandboxSelector
+	(*ExecCommand)(nil),                           // 161: agentcompose.v2.ExecCommand
+	(*ExecResponse)(nil),                          // 162: agentcompose.v2.ExecResponse
+	(*StreamExecResponse)(nil),                    // 163: agentcompose.v2.StreamExecResponse
+	(*AttachExecRequest)(nil),                     // 164: agentcompose.v2.AttachExecRequest
+	(*AttachExecResponse)(nil),                    // 165: agentcompose.v2.AttachExecResponse
+	(*AttachExecStart)(nil),                       // 166: agentcompose.v2.AttachExecStart
+	(*AttachTerminalSize)(nil),                    // 167: agentcompose.v2.AttachTerminalSize
+	(*AttachStdin)(nil),                           // 168: agentcompose.v2.AttachStdin
+	(*AttachStdinEOF)(nil),                        // 169: agentcompose.v2.AttachStdinEOF
+	(*AttachResize)(nil),                          // 170: agentcompose.v2.AttachResize
+	(*AttachSignal)(nil),                          // 171: agentcompose.v2.AttachSignal
+	(*AttachHumanMessage)(nil),                    // 172: agentcompose.v2.AttachHumanMessage
+	(*AttachCancel)(nil),                          // 173: agentcompose.v2.AttachCancel
+	(*AttachStarted)(nil),                         // 174: agentcompose.v2.AttachStarted
+	(*AttachOutput)(nil),                          // 175: agentcompose.v2.AttachOutput
+	(*AttachAgentEvent)(nil),                      // 176: agentcompose.v2.AttachAgentEvent
+	(*AttachAgentTurnCompleted)(nil),              // 177: agentcompose.v2.AttachAgentTurnCompleted
+	(*AttachResult)(nil),                          // 178: agentcompose.v2.AttachResult
+	(*AttachError)(nil),                           // 179: agentcompose.v2.AttachError
+	(*ExecResult)(nil),                            // 180: agentcompose.v2.ExecResult
+	(*ListImagesRequest)(nil),                     // 181: agentcompose.v2.ListImagesRequest
+	(*ListImagesResponse)(nil),                    // 182: agentcompose.v2.ListImagesResponse
+	(*PullImageRequest)(nil),                      // 183: agentcompose.v2.PullImageRequest
+	(*PullImageResponse)(nil),                     // 184: agentcompose.v2.PullImageResponse
+	(*InspectImageRequest)(nil),                   // 185: agentcompose.v2.InspectImageRequest
+	(*InspectImageResponse)(nil),                  // 186: agentcompose.v2.InspectImageResponse
+	(*RemoveImageRequest)(nil),                    // 187: agentcompose.v2.RemoveImageRequest
+	(*RemoveImageResponse)(nil),                   // 188: agentcompose.v2.RemoveImageResponse
+	(*BuildImageRequest)(nil),                     // 189: agentcompose.v2.BuildImageRequest
+	(*BuildImageEvent)(nil),                       // 190: agentcompose.v2.BuildImageEvent
+	(*CacheFilter)(nil),                           // 191: agentcompose.v2.CacheFilter
+	(*ListCachesRequest)(nil),                     // 192: agentcompose.v2.ListCachesRequest
+	(*ListCachesResponse)(nil),                    // 193: agentcompose.v2.ListCachesResponse
+	(*InspectCacheRequest)(nil),                   // 194: agentcompose.v2.InspectCacheRequest
+	(*InspectCacheResponse)(nil),                  // 195: agentcompose.v2.InspectCacheResponse
+	(*PruneCachesRequest)(nil),                    // 196: agentcompose.v2.PruneCachesRequest
+	(*PruneCachesResponse)(nil),                   // 197: agentcompose.v2.PruneCachesResponse
+	(*RemoveCacheRequest)(nil),                    // 198: agentcompose.v2.RemoveCacheRequest
+	(*RemoveCacheResponse)(nil),                   // 199: agentcompose.v2.RemoveCacheResponse
+	(*CacheItem)(nil),                             // 200: agentcompose.v2.CacheItem
+	(*CacheReference)(nil),                        // 201: agentcompose.v2.CacheReference
+	(*ListVolumesRequest)(nil),                    // 202: agentcompose.v2.ListVolumesRequest
+	(*ListVolumesResponse)(nil),                   // 203: agentcompose.v2.ListVolumesResponse
+	(*CreateVolumeRequest)(nil),                   // 204: agentcompose.v2.CreateVolumeRequest
+	(*CreateVolumeResponse)(nil),                  // 205: agentcompose.v2.CreateVolumeResponse
+	(*InspectVolumeRequest)(nil),                  // 206: agentcompose.v2.InspectVolumeRequest
+	(*InspectVolumeResponse)(nil),                 // 207: agentcompose.v2.InspectVolumeResponse
+	(*RemoveVolumeRequest)(nil),                   // 208: agentcompose.v2.RemoveVolumeRequest
+	(*RemoveVolumeResponse)(nil),                  // 209: agentcompose.v2.RemoveVolumeResponse
+	(*PruneVolumesRequest)(nil),                   // 210: agentcompose.v2.PruneVolumesRequest
+	(*PruneVolumesResponse)(nil),                  // 211: agentcompose.v2.PruneVolumesResponse
+	(*Volume)(nil),                                // 212: agentcompose.v2.Volume
+	(*Image)(nil),                                 // 213: agentcompose.v2.Image
+	(*ImagePlatform)(nil),                         // 214: agentcompose.v2.ImagePlatform
+	(*ImageStoreStatus)(nil),                      // 215: agentcompose.v2.ImageStoreStatus
+	(*DockerImageStatus)(nil),                     // 216: agentcompose.v2.DockerImageStatus
+	(*OCIImageStatus)(nil),                        // 217: agentcompose.v2.OCIImageStatus
+	(*ImagePullProgress)(nil),                     // 218: agentcompose.v2.ImagePullProgress
+	(*JupyterSpec)(nil),                           // 219: agentcompose.v2.JupyterSpec
+	(*RunJupyterSpec)(nil),                        // 220: agentcompose.v2.RunJupyterSpec
+	(*StartAgentRunRequest)(nil),                  // 221: agentcompose.v2.StartAgentRunRequest
+	(*StartAgentRunResponse)(nil),                 // 222: agentcompose.v2.StartAgentRunResponse
+	(*SkillSpec)(nil),                             // 223: agentcompose.v2.SkillSpec
+	(*ResolveResourceIDRequest)(nil),              // 224: agentcompose.v2.ResolveResourceIDRequest
+	(*ResolveResourceIDResponse)(nil),             // 225: agentcompose.v2.ResolveResourceIDResponse
+	(*ResourceTarget)(nil),                        // 226: agentcompose.v2.ResourceTarget
+	(*GetDashboardOverviewRequest)(nil),           // 227: agentcompose.v2.GetDashboardOverviewRequest
+	(*WatchDashboardOverviewRequest)(nil),         // 228: agentcompose.v2.WatchDashboardOverviewRequest
+	(*RunOverview)(nil),                           // 229: agentcompose.v2.RunOverview
+	(*DashboardOverview)(nil),                     // 230: agentcompose.v2.DashboardOverview
+	(*GetDashboardOverviewResponse)(nil),          // 231: agentcompose.v2.GetDashboardOverviewResponse
+	(*WatchDashboardOverviewResponse)(nil),        // 232: agentcompose.v2.WatchDashboardOverviewResponse
+	(*GetGlobalEnvRequest)(nil),                   // 233: agentcompose.v2.GetGlobalEnvRequest
+	(*GetGlobalEnvResponse)(nil),                  // 234: agentcompose.v2.GetGlobalEnvResponse
+	(*UpdateGlobalEnvRequest)(nil),                // 235: agentcompose.v2.UpdateGlobalEnvRequest
+	(*UpdateGlobalEnvResponse)(nil),               // 236: agentcompose.v2.UpdateGlobalEnvResponse
+	(*GetCapabilityGatewayConfigRequest)(nil),     // 237: agentcompose.v2.GetCapabilityGatewayConfigRequest
+	(*CapabilityGatewayConfig)(nil),               // 238: agentcompose.v2.CapabilityGatewayConfig
+	(*GetCapabilityGatewayConfigResponse)(nil),    // 239: agentcompose.v2.GetCapabilityGatewayConfigResponse
+	(*UpdateCapabilityGatewayConfigRequest)(nil),  // 240: agentcompose.v2.UpdateCapabilityGatewayConfigRequest
+	(*UpdateCapabilityGatewayConfigResponse)(nil), // 241: agentcompose.v2.UpdateCapabilityGatewayConfigResponse
+	(*GetEventDeliveryScopeRequest)(nil),          // 242: agentcompose.v2.GetEventDeliveryScopeRequest
+	(*GetEventDeliveryScopeResponse)(nil),         // 243: agentcompose.v2.GetEventDeliveryScopeResponse
+	(*WorkspacePreset)(nil),                       // 244: agentcompose.v2.WorkspacePreset
+	(*ListWorkspacePresetsRequest)(nil),           // 245: agentcompose.v2.ListWorkspacePresetsRequest
+	(*ListWorkspacePresetsResponse)(nil),          // 246: agentcompose.v2.ListWorkspacePresetsResponse
+	(*CreateWorkspacePresetRequest)(nil),          // 247: agentcompose.v2.CreateWorkspacePresetRequest
+	(*UpdateWorkspacePresetRequest)(nil),          // 248: agentcompose.v2.UpdateWorkspacePresetRequest
+	(*DeleteWorkspacePresetRequest)(nil),          // 249: agentcompose.v2.DeleteWorkspacePresetRequest
+	(*DeleteWorkspacePresetResponse)(nil),         // 250: agentcompose.v2.DeleteWorkspacePresetResponse
+	(*WorkspacePresetResponse)(nil),               // 251: agentcompose.v2.WorkspacePresetResponse
+	(*GetCapabilityStatusRequest)(nil),            // 252: agentcompose.v2.GetCapabilityStatusRequest
+	(*CapabilityStatusResponse)(nil),              // 253: agentcompose.v2.CapabilityStatusResponse
+	(*ListCapabilitySetsRequest)(nil),             // 254: agentcompose.v2.ListCapabilitySetsRequest
+	(*CapabilitySet)(nil),                         // 255: agentcompose.v2.CapabilitySet
+	(*ListCapabilitySetsResponse)(nil),            // 256: agentcompose.v2.ListCapabilitySetsResponse
+	(*GetCapabilityCatalogRequest)(nil),           // 257: agentcompose.v2.GetCapabilityCatalogRequest
+	(*CapabilityEndpoint)(nil),                    // 258: agentcompose.v2.CapabilityEndpoint
+	(*CapabilityMethod)(nil),                      // 259: agentcompose.v2.CapabilityMethod
+	(*GetCapabilityCatalogResponse)(nil),          // 260: agentcompose.v2.GetCapabilityCatalogResponse
+	(*ListSandboxHistoryRequest)(nil),             // 261: agentcompose.v2.ListSandboxHistoryRequest
+	(*SandboxHistoryCell)(nil),                    // 262: agentcompose.v2.SandboxHistoryCell
+	(*SandboxHistoryEvent)(nil),                   // 263: agentcompose.v2.SandboxHistoryEvent
+	(*ListSandboxHistoryResponse)(nil),            // 264: agentcompose.v2.ListSandboxHistoryResponse
+	(*WatchSandboxRequest)(nil),                   // 265: agentcompose.v2.WatchSandboxRequest
+	(*WatchSandboxResponse)(nil),                  // 266: agentcompose.v2.WatchSandboxResponse
+	(*GenerateLLMRequest)(nil),                    // 267: agentcompose.v2.GenerateLLMRequest
+	(*GenerateLLMResponse)(nil),                   // 268: agentcompose.v2.GenerateLLMResponse
+	(*StreamProjectSchedulerEventsRequest)(nil),   // 269: agentcompose.v2.StreamProjectSchedulerEventsRequest
+	(*StreamProjectSchedulerEventsResponse)(nil),  // 270: agentcompose.v2.StreamProjectSchedulerEventsResponse
+	(*StreamSchedulerRunsRequest)(nil),            // 271: agentcompose.v2.StreamSchedulerRunsRequest
+	(*StreamSchedulerRunsResponse)(nil),           // 272: agentcompose.v2.StreamSchedulerRunsResponse
+	(*BatchGetLatestSchedulerRunsRequest)(nil),    // 273: agentcompose.v2.BatchGetLatestSchedulerRunsRequest
+	(*SandboxSchedulerRun)(nil),                   // 274: agentcompose.v2.SandboxSchedulerRun
+	(*BatchGetLatestSchedulerRunsResponse)(nil),   // 275: agentcompose.v2.BatchGetLatestSchedulerRunsResponse
+	(*LLMProvider)(nil),                           // 276: agentcompose.v2.LLMProvider
+	(*LLMProviderSpec)(nil),                       // 277: agentcompose.v2.LLMProviderSpec
+	(*CreateProviderRequest)(nil),                 // 278: agentcompose.v2.CreateProviderRequest
+	(*CreateProviderResponse)(nil),                // 279: agentcompose.v2.CreateProviderResponse
+	(*GetProviderRequest)(nil),                    // 280: agentcompose.v2.GetProviderRequest
+	(*GetProviderResponse)(nil),                   // 281: agentcompose.v2.GetProviderResponse
+	(*ListProvidersRequest)(nil),                  // 282: agentcompose.v2.ListProvidersRequest
+	(*ListProvidersResponse)(nil),                 // 283: agentcompose.v2.ListProvidersResponse
+	(*UpdateProviderRequest)(nil),                 // 284: agentcompose.v2.UpdateProviderRequest
+	(*UpdateProviderResponse)(nil),                // 285: agentcompose.v2.UpdateProviderResponse
+	(*DeleteProviderRequest)(nil),                 // 286: agentcompose.v2.DeleteProviderRequest
+	(*DeleteProviderResponse)(nil),                // 287: agentcompose.v2.DeleteProviderResponse
+	(*GetEngineCapabilitiesRequest)(nil),          // 288: agentcompose.v2.GetEngineCapabilitiesRequest
+	(*EngineCapability)(nil),                      // 289: agentcompose.v2.EngineCapability
+	(*EngineObservedCapability)(nil),              // 290: agentcompose.v2.EngineObservedCapability
+	(*EngineDriverCapabilities)(nil),              // 291: agentcompose.v2.EngineDriverCapabilities
+	(*EngineProviderCapabilities)(nil),            // 292: agentcompose.v2.EngineProviderCapabilities
+	(*EngineProviderFeature)(nil),                 // 293: agentcompose.v2.EngineProviderFeature
+	(*GetEngineCapabilitiesResponse)(nil),         // 294: agentcompose.v2.GetEngineCapabilitiesResponse
+	nil,                                           // 295: agentcompose.v2.ProjectVolumeSpec.LabelsEntry
+	nil,                                           // 296: agentcompose.v2.ProjectVolumeSpec.OptionsEntry
+	nil,                                           // 297: agentcompose.v2.BuildSpec.ArgsEntry
+	nil,                                           // 298: agentcompose.v2.RunAgentRequest.LabelsEntry
+	nil,                                           // 299: agentcompose.v2.ListRunsRequest.LabelsEntry
+	nil,                                           // 300: agentcompose.v2.RunDetail.LabelsEntry
+	nil,                                           // 301: agentcompose.v2.AttachHumanMessage.MetadataEntry
+	nil,                                           // 302: agentcompose.v2.AttachError.DetailsEntry
+	nil,                                           // 303: agentcompose.v2.BuildImageRequest.BuildArgsEntry
+	nil,                                           // 304: agentcompose.v2.CreateVolumeRequest.LabelsEntry
+	nil,                                           // 305: agentcompose.v2.CreateVolumeRequest.OptionsEntry
+	nil,                                           // 306: agentcompose.v2.Volume.LabelsEntry
+	nil,                                           // 307: agentcompose.v2.Volume.OptionsEntry
+	nil,                                           // 308: agentcompose.v2.Image.LabelsEntry
+	nil,                                           // 309: agentcompose.v2.CapabilityEndpoint.MetadataEntry
+	(*timestamppb.Timestamp)(nil),                 // 310: google.protobuf.Timestamp
+	(*durationpb.Duration)(nil),                   // 311: google.protobuf.Duration
 }
 var file_agentcompose_v2_agentcompose_proto_depIdxs = []int32{
-	93,  // 0: agentcompose.v2.ValidateProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
-	51,  // 1: agentcompose.v2.ValidateProjectRequest.source:type_name -> agentcompose.v2.ProjectSource
-	91,  // 2: agentcompose.v2.ValidateProjectResponse.issues:type_name -> agentcompose.v2.ProjectValidationIssue
-	93,  // 3: agentcompose.v2.ApplyProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
-	51,  // 4: agentcompose.v2.ApplyProjectRequest.source:type_name -> agentcompose.v2.ProjectSource
-	52,  // 5: agentcompose.v2.ApplyProjectResponse.project:type_name -> agentcompose.v2.Project
-	54,  // 6: agentcompose.v2.ApplyProjectResponse.revision:type_name -> agentcompose.v2.ProjectRevision
-	92,  // 7: agentcompose.v2.ApplyProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
-	91,  // 8: agentcompose.v2.ApplyProjectResponse.issues:type_name -> agentcompose.v2.ProjectValidationIssue
-	50,  // 9: agentcompose.v2.PatchProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
-	93,  // 10: agentcompose.v2.PatchProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
-	50,  // 11: agentcompose.v2.GetProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
-	52,  // 12: agentcompose.v2.GetProjectResponse.project:type_name -> agentcompose.v2.Project
-	53,  // 13: agentcompose.v2.ListProjectsResponse.projects:type_name -> agentcompose.v2.ProjectSummary
-	50,  // 14: agentcompose.v2.RemoveProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
-	52,  // 15: agentcompose.v2.RemoveProjectResponse.project:type_name -> agentcompose.v2.Project
-	92,  // 16: agentcompose.v2.RemoveProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
-	50,  // 17: agentcompose.v2.WatchProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
-	2,   // 18: agentcompose.v2.WatchProjectResponse.type:type_name -> agentcompose.v2.ProjectWatchEventType
-	52,  // 19: agentcompose.v2.WatchProjectResponse.project:type_name -> agentcompose.v2.Project
-	54,  // 20: agentcompose.v2.WatchProjectResponse.revision:type_name -> agentcompose.v2.ProjectRevision
-	92,  // 21: agentcompose.v2.WatchProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
-	53,  // 22: agentcompose.v2.Project.summary:type_name -> agentcompose.v2.ProjectSummary
-	93,  // 23: agentcompose.v2.Project.spec:type_name -> agentcompose.v2.ProjectSpec
-	55,  // 24: agentcompose.v2.Project.agents:type_name -> agentcompose.v2.ProjectAgent
-	58,  // 25: agentcompose.v2.Project.schedulers:type_name -> agentcompose.v2.ProjectScheduler
-	308, // 26: agentcompose.v2.ProjectSummary.created_at:type_name -> google.protobuf.Timestamp
-	308, // 27: agentcompose.v2.ProjectSummary.updated_at:type_name -> google.protobuf.Timestamp
-	308, // 28: agentcompose.v2.ProjectSummary.removed_at:type_name -> google.protobuf.Timestamp
-	93,  // 29: agentcompose.v2.ProjectRevision.spec:type_name -> agentcompose.v2.ProjectSpec
-	308, // 30: agentcompose.v2.ProjectRevision.created_at:type_name -> google.protobuf.Timestamp
-	14,  // 31: agentcompose.v2.ProjectAgent.availability:type_name -> agentcompose.v2.ProjectAgentAvailability
-	15,  // 32: agentcompose.v2.ProjectAgent.health:type_name -> agentcompose.v2.ProjectAgentHealth
-	56,  // 33: agentcompose.v2.ProjectAgent.current_run:type_name -> agentcompose.v2.ProjectAgentCurrentRun
-	57,  // 34: agentcompose.v2.ProjectAgent.latest_run:type_name -> agentcompose.v2.ProjectAgentLatestRun
-	32,  // 35: agentcompose.v2.ProjectAgent.model_source:type_name -> agentcompose.v2.AgentModelSource
-	3,   // 36: agentcompose.v2.ProjectAgentLatestRun.status:type_name -> agentcompose.v2.RunStatus
-	4,   // 37: agentcompose.v2.ProjectAgentLatestRun.source:type_name -> agentcompose.v2.RunSource
-	308, // 38: agentcompose.v2.ProjectAgentLatestRun.at:type_name -> google.protobuf.Timestamp
-	50,  // 39: agentcompose.v2.GetSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
-	58,  // 40: agentcompose.v2.GetSchedulerResponse.scheduler:type_name -> agentcompose.v2.ProjectScheduler
-	107, // 41: agentcompose.v2.GetSchedulerResponse.spec:type_name -> agentcompose.v2.SchedulerSpec
-	61,  // 42: agentcompose.v2.GetSchedulerResponse.triggers:type_name -> agentcompose.v2.ResolvedTrigger
-	108, // 43: agentcompose.v2.ResolvedTrigger.spec:type_name -> agentcompose.v2.TriggerSpec
-	308, // 44: agentcompose.v2.ResolvedTrigger.next_fire_at:type_name -> google.protobuf.Timestamp
-	308, // 45: agentcompose.v2.ResolvedTrigger.last_fired_at:type_name -> google.protobuf.Timestamp
-	308, // 46: agentcompose.v2.SchedulerSummary.latest_run_at:type_name -> google.protobuf.Timestamp
-	63,  // 47: agentcompose.v2.ListSchedulersResponse.schedulers:type_name -> agentcompose.v2.SchedulerSummary
-	50,  // 48: agentcompose.v2.ListSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	308, // 49: agentcompose.v2.SchedulerEvent.created_at:type_name -> google.protobuf.Timestamp
-	66,  // 50: agentcompose.v2.ListSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
-	50,  // 51: agentcompose.v2.ListProjectSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	66,  // 52: agentcompose.v2.ListProjectSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
-	50,  // 53: agentcompose.v2.InvokeSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
-	50,  // 54: agentcompose.v2.RunSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
-	86,  // 55: agentcompose.v2.RunSchedulerResponse.run:type_name -> agentcompose.v2.SchedulerRun
-	50,  // 56: agentcompose.v2.StartSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
-	86,  // 57: agentcompose.v2.StartSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
-	50,  // 58: agentcompose.v2.GetSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
-	86,  // 59: agentcompose.v2.GetSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
-	50,  // 60: agentcompose.v2.ListSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	5,   // 61: agentcompose.v2.ListSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
-	86,  // 62: agentcompose.v2.ListSchedulerRunsResponse.runs:type_name -> agentcompose.v2.SchedulerRun
-	50,  // 63: agentcompose.v2.PruneSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	5,   // 64: agentcompose.v2.PruneSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
-	81,  // 65: agentcompose.v2.PruneSchedulerRunsResponse.matched:type_name -> agentcompose.v2.SchedulerRunPruneStats
-	81,  // 66: agentcompose.v2.PruneSchedulerRunsResponse.removed:type_name -> agentcompose.v2.SchedulerRunPruneStats
-	82,  // 67: agentcompose.v2.PruneSchedulerRunsResponse.residues:type_name -> agentcompose.v2.SchedulerRunPruneResidue
-	50,  // 68: agentcompose.v2.StopSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
-	86,  // 69: agentcompose.v2.StopSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
-	12,  // 70: agentcompose.v2.SchedulerRun.trigger_kind:type_name -> agentcompose.v2.TriggerKind
-	5,   // 71: agentcompose.v2.SchedulerRun.status:type_name -> agentcompose.v2.SchedulerRunStatus
-	308, // 72: agentcompose.v2.SchedulerRun.started_at:type_name -> google.protobuf.Timestamp
-	308, // 73: agentcompose.v2.SchedulerRun.completed_at:type_name -> google.protobuf.Timestamp
-	50,  // 74: agentcompose.v2.SetSchedulerEnabledRequest.project:type_name -> agentcompose.v2.ProjectRef
-	58,  // 75: agentcompose.v2.SetSchedulerEnabledResponse.scheduler:type_name -> agentcompose.v2.ProjectScheduler
-	50,  // 76: agentcompose.v2.SetSchedulerTriggerEnabledRequest.project:type_name -> agentcompose.v2.ProjectRef
-	61,  // 77: agentcompose.v2.SetSchedulerTriggerEnabledResponse.trigger:type_name -> agentcompose.v2.ResolvedTrigger
-	0,   // 78: agentcompose.v2.ProjectValidationIssue.severity:type_name -> agentcompose.v2.ProjectValidationSeverity
-	1,   // 79: agentcompose.v2.ProjectChange.action:type_name -> agentcompose.v2.ProjectChangeAction
-	104, // 80: agentcompose.v2.ProjectSpec.variables:type_name -> agentcompose.v2.EnvVarSpec
-	95,  // 81: agentcompose.v2.ProjectSpec.agents:type_name -> agentcompose.v2.AgentSpec
-	101, // 82: agentcompose.v2.ProjectSpec.volumes:type_name -> agentcompose.v2.ProjectVolumeSpec
-	94,  // 83: agentcompose.v2.ProjectSpec.workspaces:type_name -> agentcompose.v2.NamedWorkspaceSpec
-	99,  // 84: agentcompose.v2.ProjectSpec.mcp_servers:type_name -> agentcompose.v2.MCPServerSpec
-	100, // 85: agentcompose.v2.ProjectSpec.octobus_servers:type_name -> agentcompose.v2.OctoBusServerSpec
-	106, // 86: agentcompose.v2.NamedWorkspaceSpec.workspace:type_name -> agentcompose.v2.WorkspaceSpec
-	110, // 87: agentcompose.v2.AgentSpec.driver:type_name -> agentcompose.v2.DriverSpec
-	104, // 88: agentcompose.v2.AgentSpec.env:type_name -> agentcompose.v2.EnvVarSpec
-	106, // 89: agentcompose.v2.AgentSpec.workspace:type_name -> agentcompose.v2.WorkspaceSpec
-	107, // 90: agentcompose.v2.AgentSpec.scheduler:type_name -> agentcompose.v2.SchedulerSpec
-	217, // 91: agentcompose.v2.AgentSpec.jupyter:type_name -> agentcompose.v2.JupyterSpec
-	103, // 92: agentcompose.v2.AgentSpec.build:type_name -> agentcompose.v2.BuildSpec
-	102, // 93: agentcompose.v2.AgentSpec.volumes:type_name -> agentcompose.v2.VolumeMountSpec
-	99,  // 94: agentcompose.v2.AgentSpec.mcp_servers:type_name -> agentcompose.v2.MCPServerSpec
-	221, // 95: agentcompose.v2.AgentSpec.skills:type_name -> agentcompose.v2.SkillSpec
-	96,  // 96: agentcompose.v2.AgentSpec.sandbox:type_name -> agentcompose.v2.SandboxSpec
-	97,  // 97: agentcompose.v2.SandboxSpec.network:type_name -> agentcompose.v2.SandboxNetworkSpec
-	98,  // 98: agentcompose.v2.SandboxNetworkSpec.allow:type_name -> agentcompose.v2.SandboxNetworkAllowSpec
-	104, // 99: agentcompose.v2.MCPServerSpec.env:type_name -> agentcompose.v2.EnvVarSpec
-	104, // 100: agentcompose.v2.MCPServerSpec.headers:type_name -> agentcompose.v2.EnvVarSpec
-	293, // 101: agentcompose.v2.ProjectVolumeSpec.labels:type_name -> agentcompose.v2.ProjectVolumeSpec.LabelsEntry
-	294, // 102: agentcompose.v2.ProjectVolumeSpec.options:type_name -> agentcompose.v2.ProjectVolumeSpec.OptionsEntry
-	13,  // 103: agentcompose.v2.VolumeMountSpec.type:type_name -> agentcompose.v2.VolumeMountType
-	295, // 104: agentcompose.v2.BuildSpec.args:type_name -> agentcompose.v2.BuildSpec.ArgsEntry
-	33,  // 105: agentcompose.v2.WorkspaceSpec.mode:type_name -> agentcompose.v2.WorkspaceMode
-	108, // 106: agentcompose.v2.SchedulerSpec.triggers:type_name -> agentcompose.v2.TriggerSpec
-	11,  // 107: agentcompose.v2.SchedulerSpec.sandbox_policy:type_name -> agentcompose.v2.SchedulerSandboxPolicy
-	10,  // 108: agentcompose.v2.SchedulerSpec.concurrency_policy:type_name -> agentcompose.v2.SchedulerConcurrencyPolicy
-	12,  // 109: agentcompose.v2.TriggerSpec.kind:type_name -> agentcompose.v2.TriggerKind
-	109, // 110: agentcompose.v2.TriggerSpec.event:type_name -> agentcompose.v2.EventTriggerSpec
-	11,  // 111: agentcompose.v2.TriggerSpec.sandbox_policy:type_name -> agentcompose.v2.SchedulerSandboxPolicy
-	111, // 112: agentcompose.v2.DriverSpec.boxlite:type_name -> agentcompose.v2.BoxliteDriverSpec
-	112, // 113: agentcompose.v2.DriverSpec.docker:type_name -> agentcompose.v2.DockerDriverSpec
-	113, // 114: agentcompose.v2.DriverSpec.microsandbox:type_name -> agentcompose.v2.MicrosandboxDriverSpec
-	114, // 115: agentcompose.v2.DriverSpec.k8s:type_name -> agentcompose.v2.K8sDriverSpec
-	4,   // 116: agentcompose.v2.RunAgentRequest.source:type_name -> agentcompose.v2.RunSource
-	104, // 117: agentcompose.v2.RunAgentRequest.env:type_name -> agentcompose.v2.EnvVarSpec
-	18,  // 118: agentcompose.v2.RunAgentRequest.cleanup_policy:type_name -> agentcompose.v2.RunSandboxCleanupPolicy
-	218, // 119: agentcompose.v2.RunAgentRequest.jupyter:type_name -> agentcompose.v2.RunJupyterSpec
-	102, // 120: agentcompose.v2.RunAgentRequest.volumes:type_name -> agentcompose.v2.VolumeMountSpec
-	296, // 121: agentcompose.v2.RunAgentRequest.labels:type_name -> agentcompose.v2.RunAgentRequest.LabelsEntry
-	156, // 122: agentcompose.v2.RunAgentResponse.run:type_name -> agentcompose.v2.RunDetail
-	17,  // 123: agentcompose.v2.StreamAgentRunResponse.event_type:type_name -> agentcompose.v2.StreamAgentRunEventType
-	155, // 124: agentcompose.v2.StreamAgentRunResponse.run:type_name -> agentcompose.v2.RunSummary
-	22,  // 125: agentcompose.v2.StreamAgentRunResponse.stream:type_name -> agentcompose.v2.StdioStream
-	308, // 126: agentcompose.v2.StreamAgentRunResponse.created_at:type_name -> google.protobuf.Timestamp
-	121, // 127: agentcompose.v2.StreamAgentRunResponse.transcript:type_name -> agentcompose.v2.TranscriptEvent
-	120, // 128: agentcompose.v2.AttachAgentRunRequest.start:type_name -> agentcompose.v2.AttachAgentRunStart
-	166, // 129: agentcompose.v2.AttachAgentRunRequest.stdin:type_name -> agentcompose.v2.AttachStdin
-	167, // 130: agentcompose.v2.AttachAgentRunRequest.stdin_eof:type_name -> agentcompose.v2.AttachStdinEOF
-	168, // 131: agentcompose.v2.AttachAgentRunRequest.resize:type_name -> agentcompose.v2.AttachResize
-	169, // 132: agentcompose.v2.AttachAgentRunRequest.signal:type_name -> agentcompose.v2.AttachSignal
-	170, // 133: agentcompose.v2.AttachAgentRunRequest.human_message:type_name -> agentcompose.v2.AttachHumanMessage
-	171, // 134: agentcompose.v2.AttachAgentRunRequest.cancel:type_name -> agentcompose.v2.AttachCancel
-	308, // 135: agentcompose.v2.AttachAgentRunResponse.created_at:type_name -> google.protobuf.Timestamp
-	172, // 136: agentcompose.v2.AttachAgentRunResponse.started:type_name -> agentcompose.v2.AttachStarted
-	173, // 137: agentcompose.v2.AttachAgentRunResponse.output:type_name -> agentcompose.v2.AttachOutput
-	174, // 138: agentcompose.v2.AttachAgentRunResponse.agent_event:type_name -> agentcompose.v2.AttachAgentEvent
-	175, // 139: agentcompose.v2.AttachAgentRunResponse.agent_turn_completed:type_name -> agentcompose.v2.AttachAgentTurnCompleted
-	176, // 140: agentcompose.v2.AttachAgentRunResponse.result:type_name -> agentcompose.v2.AttachResult
-	177, // 141: agentcompose.v2.AttachAgentRunResponse.error:type_name -> agentcompose.v2.AttachError
-	115, // 142: agentcompose.v2.AttachAgentRunStart.request:type_name -> agentcompose.v2.RunAgentRequest
-	20,  // 143: agentcompose.v2.AttachAgentRunStart.mode:type_name -> agentcompose.v2.AttachRunMode
-	165, // 144: agentcompose.v2.AttachAgentRunStart.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
-	21,  // 145: agentcompose.v2.AttachAgentRunStart.disconnect_policy:type_name -> agentcompose.v2.AttachDisconnectPolicy
-	22,  // 146: agentcompose.v2.TranscriptEvent.stream:type_name -> agentcompose.v2.StdioStream
-	308, // 147: agentcompose.v2.TranscriptEvent.created_at:type_name -> google.protobuf.Timestamp
-	156, // 148: agentcompose.v2.GetRunResponse.run:type_name -> agentcompose.v2.RunDetail
-	3,   // 149: agentcompose.v2.ListRunsRequest.status:type_name -> agentcompose.v2.RunStatus
-	4,   // 150: agentcompose.v2.ListRunsRequest.source:type_name -> agentcompose.v2.RunSource
-	308, // 151: agentcompose.v2.ListRunsRequest.started_from:type_name -> google.protobuf.Timestamp
-	308, // 152: agentcompose.v2.ListRunsRequest.started_to:type_name -> google.protobuf.Timestamp
-	297, // 153: agentcompose.v2.ListRunsRequest.labels:type_name -> agentcompose.v2.ListRunsRequest.LabelsEntry
-	155, // 154: agentcompose.v2.ListRunsResponse.runs:type_name -> agentcompose.v2.RunSummary
-	3,   // 155: agentcompose.v2.RunLogChunk.run_status:type_name -> agentcompose.v2.RunStatus
-	308, // 156: agentcompose.v2.RunLogChunk.created_at:type_name -> google.protobuf.Timestamp
-	155, // 157: agentcompose.v2.RunLogChunk.run:type_name -> agentcompose.v2.RunSummary
-	156, // 158: agentcompose.v2.StopRunResponse.run:type_name -> agentcompose.v2.RunDetail
-	16,  // 159: agentcompose.v2.RunEvent.kind:type_name -> agentcompose.v2.RunEventKind
-	308, // 160: agentcompose.v2.RunEvent.created_at:type_name -> google.protobuf.Timestamp
-	131, // 161: agentcompose.v2.ListRunEventsResponse.events:type_name -> agentcompose.v2.RunEvent
-	131, // 162: agentcompose.v2.ListSandboxRunEventsResponse.events:type_name -> agentcompose.v2.RunEvent
-	6,   // 163: agentcompose.v2.PruneSandboxesRequest.status:type_name -> agentcompose.v2.SandboxStatus
-	29,  // 164: agentcompose.v2.SandboxPruneCandidate.kind:type_name -> agentcompose.v2.SandboxPruneCandidateKind
-	6,   // 165: agentcompose.v2.SandboxPruneCandidate.status:type_name -> agentcompose.v2.SandboxStatus
-	308, // 166: agentcompose.v2.SandboxPruneCandidate.updated_at:type_name -> google.protobuf.Timestamp
-	138, // 167: agentcompose.v2.PruneSandboxesResponse.matched:type_name -> agentcompose.v2.SandboxPruneCandidate
-	138, // 168: agentcompose.v2.PruneSandboxesResponse.skipped:type_name -> agentcompose.v2.SandboxPruneCandidate
-	154, // 169: agentcompose.v2.GetSandboxStatsResponse.stats:type_name -> agentcompose.v2.SandboxStats
-	6,   // 170: agentcompose.v2.Sandbox.status:type_name -> agentcompose.v2.SandboxStatus
-	308, // 171: agentcompose.v2.Sandbox.created_at:type_name -> google.protobuf.Timestamp
-	308, // 172: agentcompose.v2.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
-	145, // 173: agentcompose.v2.Sandbox.tags:type_name -> agentcompose.v2.SandboxTag
-	9,   // 174: agentcompose.v2.Sandbox.workspace_reclamation_state:type_name -> agentcompose.v2.WorkspaceReclamationState
-	308, // 175: agentcompose.v2.Sandbox.workspace_reclamation_started_at:type_name -> google.protobuf.Timestamp
-	308, // 176: agentcompose.v2.Sandbox.workspace_reclamation_completed_at:type_name -> google.protobuf.Timestamp
-	308, // 177: agentcompose.v2.Sandbox.stopped_runtime_released_at:type_name -> google.protobuf.Timestamp
-	144, // 178: agentcompose.v2.Sandbox.workspace_delivery:type_name -> agentcompose.v2.SandboxWorkspaceDelivery
-	33,  // 179: agentcompose.v2.SandboxWorkspaceDelivery.mode:type_name -> agentcompose.v2.WorkspaceMode
-	6,   // 180: agentcompose.v2.ListSandboxesRequest.status:type_name -> agentcompose.v2.SandboxStatus
-	143, // 181: agentcompose.v2.ListSandboxesResponse.sandboxes:type_name -> agentcompose.v2.Sandbox
-	143, // 182: agentcompose.v2.GetSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
-	7,   // 183: agentcompose.v2.StopSandboxRequest.mode:type_name -> agentcompose.v2.SandboxStopMode
-	309, // 184: agentcompose.v2.StopSandboxRequest.grace_period:type_name -> google.protobuf.Duration
-	143, // 185: agentcompose.v2.StopSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
-	8,   // 186: agentcompose.v2.StopSandboxResponse.outcome:type_name -> agentcompose.v2.SandboxStopOutcome
-	143, // 187: agentcompose.v2.ResumeSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
-	26,  // 188: agentcompose.v2.MetricValue.status:type_name -> agentcompose.v2.MetricStatus
-	308, // 189: agentcompose.v2.SandboxStats.sampled_at:type_name -> google.protobuf.Timestamp
-	153, // 190: agentcompose.v2.SandboxStats.cpu_percent:type_name -> agentcompose.v2.MetricValue
-	153, // 191: agentcompose.v2.SandboxStats.memory_usage_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 192: agentcompose.v2.SandboxStats.memory_limit_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 193: agentcompose.v2.SandboxStats.memory_percent:type_name -> agentcompose.v2.MetricValue
-	153, // 194: agentcompose.v2.SandboxStats.network_rx_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 195: agentcompose.v2.SandboxStats.network_tx_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 196: agentcompose.v2.SandboxStats.block_read_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 197: agentcompose.v2.SandboxStats.block_write_bytes:type_name -> agentcompose.v2.MetricValue
-	153, // 198: agentcompose.v2.SandboxStats.uptime_seconds:type_name -> agentcompose.v2.MetricValue
-	4,   // 199: agentcompose.v2.RunSummary.source:type_name -> agentcompose.v2.RunSource
-	3,   // 200: agentcompose.v2.RunSummary.status:type_name -> agentcompose.v2.RunStatus
-	308, // 201: agentcompose.v2.RunSummary.started_at:type_name -> google.protobuf.Timestamp
-	308, // 202: agentcompose.v2.RunSummary.completed_at:type_name -> google.protobuf.Timestamp
-	308, // 203: agentcompose.v2.RunSummary.created_at:type_name -> google.protobuf.Timestamp
-	308, // 204: agentcompose.v2.RunSummary.updated_at:type_name -> google.protobuf.Timestamp
-	155, // 205: agentcompose.v2.RunDetail.summary:type_name -> agentcompose.v2.RunSummary
-	298, // 206: agentcompose.v2.RunDetail.labels:type_name -> agentcompose.v2.RunDetail.LabelsEntry
-	158, // 207: agentcompose.v2.ExecRequest.selector:type_name -> agentcompose.v2.ExecSandboxSelector
-	159, // 208: agentcompose.v2.ExecRequest.command:type_name -> agentcompose.v2.ExecCommand
-	104, // 209: agentcompose.v2.ExecRequest.env:type_name -> agentcompose.v2.EnvVarSpec
-	178, // 210: agentcompose.v2.ExecResponse.result:type_name -> agentcompose.v2.ExecResult
-	19,  // 211: agentcompose.v2.StreamExecResponse.event_type:type_name -> agentcompose.v2.StreamExecEventType
-	22,  // 212: agentcompose.v2.StreamExecResponse.stream:type_name -> agentcompose.v2.StdioStream
-	178, // 213: agentcompose.v2.StreamExecResponse.result:type_name -> agentcompose.v2.ExecResult
-	121, // 214: agentcompose.v2.StreamExecResponse.transcript:type_name -> agentcompose.v2.TranscriptEvent
-	164, // 215: agentcompose.v2.AttachExecRequest.start:type_name -> agentcompose.v2.AttachExecStart
-	166, // 216: agentcompose.v2.AttachExecRequest.stdin:type_name -> agentcompose.v2.AttachStdin
-	167, // 217: agentcompose.v2.AttachExecRequest.stdin_eof:type_name -> agentcompose.v2.AttachStdinEOF
-	168, // 218: agentcompose.v2.AttachExecRequest.resize:type_name -> agentcompose.v2.AttachResize
-	169, // 219: agentcompose.v2.AttachExecRequest.signal:type_name -> agentcompose.v2.AttachSignal
-	171, // 220: agentcompose.v2.AttachExecRequest.cancel:type_name -> agentcompose.v2.AttachCancel
-	170, // 221: agentcompose.v2.AttachExecRequest.human_message:type_name -> agentcompose.v2.AttachHumanMessage
-	308, // 222: agentcompose.v2.AttachExecResponse.created_at:type_name -> google.protobuf.Timestamp
-	172, // 223: agentcompose.v2.AttachExecResponse.started:type_name -> agentcompose.v2.AttachStarted
-	173, // 224: agentcompose.v2.AttachExecResponse.output:type_name -> agentcompose.v2.AttachOutput
-	176, // 225: agentcompose.v2.AttachExecResponse.result:type_name -> agentcompose.v2.AttachResult
-	177, // 226: agentcompose.v2.AttachExecResponse.error:type_name -> agentcompose.v2.AttachError
-	174, // 227: agentcompose.v2.AttachExecResponse.agent_event:type_name -> agentcompose.v2.AttachAgentEvent
-	175, // 228: agentcompose.v2.AttachExecResponse.agent_turn_completed:type_name -> agentcompose.v2.AttachAgentTurnCompleted
-	157, // 229: agentcompose.v2.AttachExecStart.request:type_name -> agentcompose.v2.ExecRequest
-	165, // 230: agentcompose.v2.AttachExecStart.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
-	20,  // 231: agentcompose.v2.AttachExecStart.mode:type_name -> agentcompose.v2.AttachRunMode
-	165, // 232: agentcompose.v2.AttachResize.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
-	299, // 233: agentcompose.v2.AttachHumanMessage.metadata:type_name -> agentcompose.v2.AttachHumanMessage.MetadataEntry
-	155, // 234: agentcompose.v2.AttachStarted.run:type_name -> agentcompose.v2.RunSummary
-	22,  // 235: agentcompose.v2.AttachOutput.stream:type_name -> agentcompose.v2.StdioStream
-	121, // 236: agentcompose.v2.AttachOutput.transcript:type_name -> agentcompose.v2.TranscriptEvent
-	308, // 237: agentcompose.v2.AttachAgentEvent.created_at:type_name -> google.protobuf.Timestamp
-	178, // 238: agentcompose.v2.AttachResult.exec_result:type_name -> agentcompose.v2.ExecResult
-	155, // 239: agentcompose.v2.AttachResult.run:type_name -> agentcompose.v2.RunSummary
-	300, // 240: agentcompose.v2.AttachError.details:type_name -> agentcompose.v2.AttachError.DetailsEntry
-	159, // 241: agentcompose.v2.ExecResult.command:type_name -> agentcompose.v2.ExecCommand
-	23,  // 242: agentcompose.v2.ListImagesRequest.store:type_name -> agentcompose.v2.ImageStoreKind
-	211, // 243: agentcompose.v2.ListImagesResponse.images:type_name -> agentcompose.v2.Image
-	213, // 244: agentcompose.v2.ListImagesResponse.store_status:type_name -> agentcompose.v2.ImageStoreStatus
-	23,  // 245: agentcompose.v2.PullImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
-	212, // 246: agentcompose.v2.PullImageRequest.platform:type_name -> agentcompose.v2.ImagePlatform
-	211, // 247: agentcompose.v2.PullImageResponse.image:type_name -> agentcompose.v2.Image
-	25,  // 248: agentcompose.v2.PullImageResponse.status:type_name -> agentcompose.v2.ImageOperationStatus
-	216, // 249: agentcompose.v2.PullImageResponse.progress:type_name -> agentcompose.v2.ImagePullProgress
-	23,  // 250: agentcompose.v2.InspectImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
-	211, // 251: agentcompose.v2.InspectImageResponse.image:type_name -> agentcompose.v2.Image
-	213, // 252: agentcompose.v2.InspectImageResponse.store_status:type_name -> agentcompose.v2.ImageStoreStatus
-	23,  // 253: agentcompose.v2.RemoveImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
-	301, // 254: agentcompose.v2.BuildImageRequest.build_args:type_name -> agentcompose.v2.BuildImageRequest.BuildArgsEntry
-	23,  // 255: agentcompose.v2.BuildImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
-	212, // 256: agentcompose.v2.BuildImageRequest.platform:type_name -> agentcompose.v2.ImagePlatform
-	25,  // 257: agentcompose.v2.BuildImageEvent.status:type_name -> agentcompose.v2.ImageOperationStatus
-	211, // 258: agentcompose.v2.BuildImageEvent.image:type_name -> agentcompose.v2.Image
-	27,  // 259: agentcompose.v2.CacheFilter.domain:type_name -> agentcompose.v2.CacheDomain
-	30,  // 260: agentcompose.v2.CacheFilter.status:type_name -> agentcompose.v2.CacheStatus
-	189, // 261: agentcompose.v2.ListCachesRequest.filter:type_name -> agentcompose.v2.CacheFilter
-	198, // 262: agentcompose.v2.ListCachesResponse.caches:type_name -> agentcompose.v2.CacheItem
-	198, // 263: agentcompose.v2.InspectCacheResponse.cache:type_name -> agentcompose.v2.CacheItem
-	189, // 264: agentcompose.v2.PruneCachesRequest.filter:type_name -> agentcompose.v2.CacheFilter
-	198, // 265: agentcompose.v2.PruneCachesResponse.matched:type_name -> agentcompose.v2.CacheItem
-	198, // 266: agentcompose.v2.PruneCachesResponse.skipped:type_name -> agentcompose.v2.CacheItem
-	198, // 267: agentcompose.v2.RemoveCacheResponse.matched:type_name -> agentcompose.v2.CacheItem
-	198, // 268: agentcompose.v2.RemoveCacheResponse.skipped:type_name -> agentcompose.v2.CacheItem
-	27,  // 269: agentcompose.v2.CacheItem.domain:type_name -> agentcompose.v2.CacheDomain
-	30,  // 270: agentcompose.v2.CacheItem.status:type_name -> agentcompose.v2.CacheStatus
-	308, // 271: agentcompose.v2.CacheItem.last_used_at:type_name -> google.protobuf.Timestamp
-	199, // 272: agentcompose.v2.CacheItem.references:type_name -> agentcompose.v2.CacheReference
-	28,  // 273: agentcompose.v2.CacheReference.policy:type_name -> agentcompose.v2.CacheReferencePolicy
-	210, // 274: agentcompose.v2.ListVolumesResponse.volumes:type_name -> agentcompose.v2.Volume
-	302, // 275: agentcompose.v2.CreateVolumeRequest.labels:type_name -> agentcompose.v2.CreateVolumeRequest.LabelsEntry
-	303, // 276: agentcompose.v2.CreateVolumeRequest.options:type_name -> agentcompose.v2.CreateVolumeRequest.OptionsEntry
-	210, // 277: agentcompose.v2.CreateVolumeResponse.volume:type_name -> agentcompose.v2.Volume
-	210, // 278: agentcompose.v2.InspectVolumeResponse.volume:type_name -> agentcompose.v2.Volume
-	210, // 279: agentcompose.v2.PruneVolumesResponse.matched:type_name -> agentcompose.v2.Volume
-	210, // 280: agentcompose.v2.PruneVolumesResponse.removed:type_name -> agentcompose.v2.Volume
-	210, // 281: agentcompose.v2.PruneVolumesResponse.skipped:type_name -> agentcompose.v2.Volume
-	304, // 282: agentcompose.v2.Volume.labels:type_name -> agentcompose.v2.Volume.LabelsEntry
-	305, // 283: agentcompose.v2.Volume.options:type_name -> agentcompose.v2.Volume.OptionsEntry
-	308, // 284: agentcompose.v2.Volume.created_at:type_name -> google.protobuf.Timestamp
-	308, // 285: agentcompose.v2.Volume.updated_at:type_name -> google.protobuf.Timestamp
-	23,  // 286: agentcompose.v2.Image.store:type_name -> agentcompose.v2.ImageStoreKind
-	24,  // 287: agentcompose.v2.Image.availability_status:type_name -> agentcompose.v2.ImageAvailabilityStatus
-	212, // 288: agentcompose.v2.Image.platform:type_name -> agentcompose.v2.ImagePlatform
-	308, // 289: agentcompose.v2.Image.created_at:type_name -> google.protobuf.Timestamp
-	308, // 290: agentcompose.v2.Image.inspected_at:type_name -> google.protobuf.Timestamp
-	214, // 291: agentcompose.v2.Image.docker:type_name -> agentcompose.v2.DockerImageStatus
-	215, // 292: agentcompose.v2.Image.oci:type_name -> agentcompose.v2.OCIImageStatus
-	306, // 293: agentcompose.v2.Image.labels:type_name -> agentcompose.v2.Image.LabelsEntry
-	23,  // 294: agentcompose.v2.ImageStoreStatus.store:type_name -> agentcompose.v2.ImageStoreKind
-	115, // 295: agentcompose.v2.StartAgentRunRequest.run:type_name -> agentcompose.v2.RunAgentRequest
-	155, // 296: agentcompose.v2.StartAgentRunResponse.run:type_name -> agentcompose.v2.RunSummary
-	31,  // 297: agentcompose.v2.ResolveResourceIDRequest.kinds:type_name -> agentcompose.v2.ResourceKind
-	224, // 298: agentcompose.v2.ResolveResourceIDResponse.targets:type_name -> agentcompose.v2.ResourceTarget
-	31,  // 299: agentcompose.v2.ResourceTarget.kind:type_name -> agentcompose.v2.ResourceKind
-	227, // 300: agentcompose.v2.DashboardOverview.runs:type_name -> agentcompose.v2.RunOverview
-	308, // 301: agentcompose.v2.DashboardOverview.updated_at:type_name -> google.protobuf.Timestamp
-	228, // 302: agentcompose.v2.GetDashboardOverviewResponse.overview:type_name -> agentcompose.v2.DashboardOverview
-	228, // 303: agentcompose.v2.WatchDashboardOverviewResponse.overview:type_name -> agentcompose.v2.DashboardOverview
-	104, // 304: agentcompose.v2.GetGlobalEnvResponse.env:type_name -> agentcompose.v2.EnvVarSpec
-	105, // 305: agentcompose.v2.UpdateGlobalEnvRequest.env:type_name -> agentcompose.v2.EnvVarUpdateSpec
-	104, // 306: agentcompose.v2.UpdateGlobalEnvResponse.env:type_name -> agentcompose.v2.EnvVarSpec
-	236, // 307: agentcompose.v2.GetCapabilityGatewayConfigResponse.config:type_name -> agentcompose.v2.CapabilityGatewayConfig
-	236, // 308: agentcompose.v2.UpdateCapabilityGatewayConfigResponse.config:type_name -> agentcompose.v2.CapabilityGatewayConfig
-	34,  // 309: agentcompose.v2.GetEventDeliveryScopeResponse.scope:type_name -> agentcompose.v2.EventDeliveryScope
-	308, // 310: agentcompose.v2.WorkspacePreset.created_at:type_name -> google.protobuf.Timestamp
-	308, // 311: agentcompose.v2.WorkspacePreset.updated_at:type_name -> google.protobuf.Timestamp
-	242, // 312: agentcompose.v2.ListWorkspacePresetsResponse.presets:type_name -> agentcompose.v2.WorkspacePreset
-	242, // 313: agentcompose.v2.WorkspacePresetResponse.preset:type_name -> agentcompose.v2.WorkspacePreset
-	253, // 314: agentcompose.v2.ListCapabilitySetsResponse.capsets:type_name -> agentcompose.v2.CapabilitySet
-	307, // 315: agentcompose.v2.CapabilityEndpoint.metadata:type_name -> agentcompose.v2.CapabilityEndpoint.MetadataEntry
-	256, // 316: agentcompose.v2.CapabilityMethod.endpoints:type_name -> agentcompose.v2.CapabilityEndpoint
-	257, // 317: agentcompose.v2.GetCapabilityCatalogResponse.methods:type_name -> agentcompose.v2.CapabilityMethod
-	308, // 318: agentcompose.v2.SandboxHistoryCell.created_at:type_name -> google.protobuf.Timestamp
-	308, // 319: agentcompose.v2.SandboxHistoryEvent.created_at:type_name -> google.protobuf.Timestamp
-	260, // 320: agentcompose.v2.ListSandboxHistoryResponse.cells:type_name -> agentcompose.v2.SandboxHistoryCell
-	261, // 321: agentcompose.v2.ListSandboxHistoryResponse.events:type_name -> agentcompose.v2.SandboxHistoryEvent
-	35,  // 322: agentcompose.v2.WatchSandboxResponse.event_type:type_name -> agentcompose.v2.SandboxWatchEventType
-	143, // 323: agentcompose.v2.WatchSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
-	260, // 324: agentcompose.v2.WatchSandboxResponse.cell:type_name -> agentcompose.v2.SandboxHistoryCell
-	261, // 325: agentcompose.v2.WatchSandboxResponse.event:type_name -> agentcompose.v2.SandboxHistoryEvent
-	22,  // 326: agentcompose.v2.WatchSandboxResponse.stream:type_name -> agentcompose.v2.StdioStream
-	50,  // 327: agentcompose.v2.StreamProjectSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	66,  // 328: agentcompose.v2.StreamProjectSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
-	50,  // 329: agentcompose.v2.StreamSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	5,   // 330: agentcompose.v2.StreamSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
-	86,  // 331: agentcompose.v2.StreamSchedulerRunsResponse.runs:type_name -> agentcompose.v2.SchedulerRun
-	50,  // 332: agentcompose.v2.BatchGetLatestSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
-	86,  // 333: agentcompose.v2.SandboxSchedulerRun.run:type_name -> agentcompose.v2.SchedulerRun
-	272, // 334: agentcompose.v2.BatchGetLatestSchedulerRunsResponse.results:type_name -> agentcompose.v2.SandboxSchedulerRun
-	308, // 335: agentcompose.v2.LLMProvider.created_at:type_name -> google.protobuf.Timestamp
-	308, // 336: agentcompose.v2.LLMProvider.updated_at:type_name -> google.protobuf.Timestamp
-	36,  // 337: agentcompose.v2.LLMProvider.auth:type_name -> agentcompose.v2.LLMProviderAuth
-	36,  // 338: agentcompose.v2.LLMProviderSpec.auth:type_name -> agentcompose.v2.LLMProviderAuth
-	275, // 339: agentcompose.v2.CreateProviderRequest.provider:type_name -> agentcompose.v2.LLMProviderSpec
-	274, // 340: agentcompose.v2.CreateProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
-	274, // 341: agentcompose.v2.GetProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
-	274, // 342: agentcompose.v2.ListProvidersResponse.providers:type_name -> agentcompose.v2.LLMProvider
-	275, // 343: agentcompose.v2.UpdateProviderRequest.provider:type_name -> agentcompose.v2.LLMProviderSpec
-	274, // 344: agentcompose.v2.UpdateProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
-	287, // 345: agentcompose.v2.EngineDriverCapabilities.capabilities:type_name -> agentcompose.v2.EngineCapability
-	291, // 346: agentcompose.v2.EngineProviderCapabilities.features:type_name -> agentcompose.v2.EngineProviderFeature
-	289, // 347: agentcompose.v2.GetEngineCapabilitiesResponse.drivers:type_name -> agentcompose.v2.EngineDriverCapabilities
-	290, // 348: agentcompose.v2.GetEngineCapabilitiesResponse.providers:type_name -> agentcompose.v2.EngineProviderCapabilities
-	308, // 349: agentcompose.v2.GetEngineCapabilitiesResponse.captured_at:type_name -> google.protobuf.Timestamp
-	288, // 350: agentcompose.v2.GetEngineCapabilitiesResponse.observations:type_name -> agentcompose.v2.EngineObservedCapability
-	37,  // 351: agentcompose.v2.ProjectService.ValidateProject:input_type -> agentcompose.v2.ValidateProjectRequest
-	39,  // 352: agentcompose.v2.ProjectService.ApplyProject:input_type -> agentcompose.v2.ApplyProjectRequest
-	41,  // 353: agentcompose.v2.ProjectService.PatchProject:input_type -> agentcompose.v2.PatchProjectRequest
-	42,  // 354: agentcompose.v2.ProjectService.GetProject:input_type -> agentcompose.v2.GetProjectRequest
-	44,  // 355: agentcompose.v2.ProjectService.ListProjects:input_type -> agentcompose.v2.ListProjectsRequest
-	46,  // 356: agentcompose.v2.ProjectService.RemoveProject:input_type -> agentcompose.v2.RemoveProjectRequest
-	48,  // 357: agentcompose.v2.ProjectService.WatchProject:input_type -> agentcompose.v2.WatchProjectRequest
-	59,  // 358: agentcompose.v2.ProjectService.GetScheduler:input_type -> agentcompose.v2.GetSchedulerRequest
-	62,  // 359: agentcompose.v2.ProjectService.ListSchedulers:input_type -> agentcompose.v2.ListSchedulersRequest
-	65,  // 360: agentcompose.v2.ProjectService.ListSchedulerEvents:input_type -> agentcompose.v2.ListSchedulerEventsRequest
-	68,  // 361: agentcompose.v2.ProjectService.ListProjectSchedulerEvents:input_type -> agentcompose.v2.ListProjectSchedulerEventsRequest
-	267, // 362: agentcompose.v2.ProjectService.StreamProjectSchedulerEvents:input_type -> agentcompose.v2.StreamProjectSchedulerEventsRequest
-	70,  // 363: agentcompose.v2.ProjectService.InvokeScheduler:input_type -> agentcompose.v2.InvokeSchedulerRequest
-	72,  // 364: agentcompose.v2.ProjectService.RunScheduler:input_type -> agentcompose.v2.RunSchedulerRequest
-	74,  // 365: agentcompose.v2.ProjectService.StartSchedulerRun:input_type -> agentcompose.v2.StartSchedulerRunRequest
-	76,  // 366: agentcompose.v2.ProjectService.GetSchedulerRun:input_type -> agentcompose.v2.GetSchedulerRunRequest
-	78,  // 367: agentcompose.v2.ProjectService.ListSchedulerRuns:input_type -> agentcompose.v2.ListSchedulerRunsRequest
-	271, // 368: agentcompose.v2.ProjectService.BatchGetLatestSchedulerRuns:input_type -> agentcompose.v2.BatchGetLatestSchedulerRunsRequest
-	269, // 369: agentcompose.v2.ProjectService.StreamSchedulerRuns:input_type -> agentcompose.v2.StreamSchedulerRunsRequest
-	80,  // 370: agentcompose.v2.ProjectService.PruneSchedulerRuns:input_type -> agentcompose.v2.PruneSchedulerRunsRequest
-	84,  // 371: agentcompose.v2.ProjectService.StopSchedulerRun:input_type -> agentcompose.v2.StopSchedulerRunRequest
-	87,  // 372: agentcompose.v2.ProjectService.SetSchedulerEnabled:input_type -> agentcompose.v2.SetSchedulerEnabledRequest
-	89,  // 373: agentcompose.v2.ProjectService.SetSchedulerTriggerEnabled:input_type -> agentcompose.v2.SetSchedulerTriggerEnabledRequest
-	115, // 374: agentcompose.v2.RunService.RunAgent:input_type -> agentcompose.v2.RunAgentRequest
-	219, // 375: agentcompose.v2.RunService.StartAgentRun:input_type -> agentcompose.v2.StartAgentRunRequest
-	115, // 376: agentcompose.v2.RunService.StreamAgentRun:input_type -> agentcompose.v2.RunAgentRequest
-	118, // 377: agentcompose.v2.RunService.AttachAgentRun:input_type -> agentcompose.v2.AttachAgentRunRequest
-	122, // 378: agentcompose.v2.RunService.GetRun:input_type -> agentcompose.v2.GetRunRequest
-	124, // 379: agentcompose.v2.RunService.ListRuns:input_type -> agentcompose.v2.ListRunsRequest
-	126, // 380: agentcompose.v2.RunService.FollowRunLogs:input_type -> agentcompose.v2.FollowRunLogsRequest
-	128, // 381: agentcompose.v2.RunService.StopRun:input_type -> agentcompose.v2.StopRunRequest
-	130, // 382: agentcompose.v2.RunService.ListRunEvents:input_type -> agentcompose.v2.ListRunEventsRequest
-	133, // 383: agentcompose.v2.RunService.ListSandboxRunEvents:input_type -> agentcompose.v2.ListSandboxRunEventsRequest
-	157, // 384: agentcompose.v2.ExecService.Exec:input_type -> agentcompose.v2.ExecRequest
-	157, // 385: agentcompose.v2.ExecService.StreamExec:input_type -> agentcompose.v2.ExecRequest
-	162, // 386: agentcompose.v2.ExecService.AttachExec:input_type -> agentcompose.v2.AttachExecRequest
-	179, // 387: agentcompose.v2.ImageService.ListImages:input_type -> agentcompose.v2.ListImagesRequest
-	181, // 388: agentcompose.v2.ImageService.PullImage:input_type -> agentcompose.v2.PullImageRequest
-	183, // 389: agentcompose.v2.ImageService.InspectImage:input_type -> agentcompose.v2.InspectImageRequest
-	185, // 390: agentcompose.v2.ImageService.RemoveImage:input_type -> agentcompose.v2.RemoveImageRequest
-	187, // 391: agentcompose.v2.ImageService.BuildImage:input_type -> agentcompose.v2.BuildImageRequest
-	190, // 392: agentcompose.v2.CacheService.ListCaches:input_type -> agentcompose.v2.ListCachesRequest
-	192, // 393: agentcompose.v2.CacheService.InspectCache:input_type -> agentcompose.v2.InspectCacheRequest
-	194, // 394: agentcompose.v2.CacheService.PruneCaches:input_type -> agentcompose.v2.PruneCachesRequest
-	196, // 395: agentcompose.v2.CacheService.RemoveCache:input_type -> agentcompose.v2.RemoveCacheRequest
-	200, // 396: agentcompose.v2.VolumeService.ListVolumes:input_type -> agentcompose.v2.ListVolumesRequest
-	202, // 397: agentcompose.v2.VolumeService.CreateVolume:input_type -> agentcompose.v2.CreateVolumeRequest
-	204, // 398: agentcompose.v2.VolumeService.InspectVolume:input_type -> agentcompose.v2.InspectVolumeRequest
-	206, // 399: agentcompose.v2.VolumeService.RemoveVolume:input_type -> agentcompose.v2.RemoveVolumeRequest
-	208, // 400: agentcompose.v2.VolumeService.PruneVolumes:input_type -> agentcompose.v2.PruneVolumesRequest
-	135, // 401: agentcompose.v2.SandboxService.RemoveSandbox:input_type -> agentcompose.v2.RemoveSandboxRequest
-	137, // 402: agentcompose.v2.SandboxService.PruneSandboxes:input_type -> agentcompose.v2.PruneSandboxesRequest
-	140, // 403: agentcompose.v2.SandboxService.GetSandboxStats:input_type -> agentcompose.v2.GetSandboxStatsRequest
-	142, // 404: agentcompose.v2.SandboxService.GetSandbox:input_type -> agentcompose.v2.GetSandboxRequest
-	149, // 405: agentcompose.v2.SandboxService.StopSandbox:input_type -> agentcompose.v2.StopSandboxRequest
-	151, // 406: agentcompose.v2.SandboxService.ResumeSandbox:input_type -> agentcompose.v2.ResumeSandboxRequest
-	146, // 407: agentcompose.v2.SandboxService.ListSandboxes:input_type -> agentcompose.v2.ListSandboxesRequest
-	259, // 408: agentcompose.v2.SandboxService.ListSandboxHistory:input_type -> agentcompose.v2.ListSandboxHistoryRequest
-	263, // 409: agentcompose.v2.SandboxService.WatchSandbox:input_type -> agentcompose.v2.WatchSandboxRequest
-	225, // 410: agentcompose.v2.DashboardService.GetDashboardOverview:input_type -> agentcompose.v2.GetDashboardOverviewRequest
-	226, // 411: agentcompose.v2.DashboardService.WatchDashboardOverview:input_type -> agentcompose.v2.WatchDashboardOverviewRequest
-	231, // 412: agentcompose.v2.SettingsService.GetGlobalEnv:input_type -> agentcompose.v2.GetGlobalEnvRequest
-	233, // 413: agentcompose.v2.SettingsService.UpdateGlobalEnv:input_type -> agentcompose.v2.UpdateGlobalEnvRequest
-	235, // 414: agentcompose.v2.SettingsService.GetCapabilityGatewayConfig:input_type -> agentcompose.v2.GetCapabilityGatewayConfigRequest
-	238, // 415: agentcompose.v2.SettingsService.UpdateCapabilityGatewayConfig:input_type -> agentcompose.v2.UpdateCapabilityGatewayConfigRequest
-	240, // 416: agentcompose.v2.SettingsService.GetEventDeliveryScope:input_type -> agentcompose.v2.GetEventDeliveryScopeRequest
-	243, // 417: agentcompose.v2.SettingsService.ListWorkspacePresets:input_type -> agentcompose.v2.ListWorkspacePresetsRequest
-	245, // 418: agentcompose.v2.SettingsService.CreateWorkspacePreset:input_type -> agentcompose.v2.CreateWorkspacePresetRequest
-	246, // 419: agentcompose.v2.SettingsService.UpdateWorkspacePreset:input_type -> agentcompose.v2.UpdateWorkspacePresetRequest
-	247, // 420: agentcompose.v2.SettingsService.DeleteWorkspacePreset:input_type -> agentcompose.v2.DeleteWorkspacePresetRequest
-	250, // 421: agentcompose.v2.CapabilityService.GetCapabilityStatus:input_type -> agentcompose.v2.GetCapabilityStatusRequest
-	252, // 422: agentcompose.v2.CapabilityService.ListCapabilitySets:input_type -> agentcompose.v2.ListCapabilitySetsRequest
-	255, // 423: agentcompose.v2.CapabilityService.GetCapabilityCatalog:input_type -> agentcompose.v2.GetCapabilityCatalogRequest
-	276, // 424: agentcompose.v2.LLMService.CreateProvider:input_type -> agentcompose.v2.CreateProviderRequest
-	278, // 425: agentcompose.v2.LLMService.GetProvider:input_type -> agentcompose.v2.GetProviderRequest
-	280, // 426: agentcompose.v2.LLMService.ListProviders:input_type -> agentcompose.v2.ListProvidersRequest
-	282, // 427: agentcompose.v2.LLMService.UpdateProvider:input_type -> agentcompose.v2.UpdateProviderRequest
-	284, // 428: agentcompose.v2.LLMService.DeleteProvider:input_type -> agentcompose.v2.DeleteProviderRequest
-	265, // 429: agentcompose.v2.LLMService.Generate:input_type -> agentcompose.v2.GenerateLLMRequest
-	222, // 430: agentcompose.v2.ResourceService.ResolveID:input_type -> agentcompose.v2.ResolveResourceIDRequest
-	286, // 431: agentcompose.v2.EngineService.GetCapabilities:input_type -> agentcompose.v2.GetEngineCapabilitiesRequest
-	38,  // 432: agentcompose.v2.ProjectService.ValidateProject:output_type -> agentcompose.v2.ValidateProjectResponse
-	40,  // 433: agentcompose.v2.ProjectService.ApplyProject:output_type -> agentcompose.v2.ApplyProjectResponse
-	40,  // 434: agentcompose.v2.ProjectService.PatchProject:output_type -> agentcompose.v2.ApplyProjectResponse
-	43,  // 435: agentcompose.v2.ProjectService.GetProject:output_type -> agentcompose.v2.GetProjectResponse
-	45,  // 436: agentcompose.v2.ProjectService.ListProjects:output_type -> agentcompose.v2.ListProjectsResponse
-	47,  // 437: agentcompose.v2.ProjectService.RemoveProject:output_type -> agentcompose.v2.RemoveProjectResponse
-	49,  // 438: agentcompose.v2.ProjectService.WatchProject:output_type -> agentcompose.v2.WatchProjectResponse
-	60,  // 439: agentcompose.v2.ProjectService.GetScheduler:output_type -> agentcompose.v2.GetSchedulerResponse
-	64,  // 440: agentcompose.v2.ProjectService.ListSchedulers:output_type -> agentcompose.v2.ListSchedulersResponse
-	67,  // 441: agentcompose.v2.ProjectService.ListSchedulerEvents:output_type -> agentcompose.v2.ListSchedulerEventsResponse
-	69,  // 442: agentcompose.v2.ProjectService.ListProjectSchedulerEvents:output_type -> agentcompose.v2.ListProjectSchedulerEventsResponse
-	268, // 443: agentcompose.v2.ProjectService.StreamProjectSchedulerEvents:output_type -> agentcompose.v2.StreamProjectSchedulerEventsResponse
-	71,  // 444: agentcompose.v2.ProjectService.InvokeScheduler:output_type -> agentcompose.v2.InvokeSchedulerResponse
-	73,  // 445: agentcompose.v2.ProjectService.RunScheduler:output_type -> agentcompose.v2.RunSchedulerResponse
-	75,  // 446: agentcompose.v2.ProjectService.StartSchedulerRun:output_type -> agentcompose.v2.StartSchedulerRunResponse
-	77,  // 447: agentcompose.v2.ProjectService.GetSchedulerRun:output_type -> agentcompose.v2.GetSchedulerRunResponse
-	79,  // 448: agentcompose.v2.ProjectService.ListSchedulerRuns:output_type -> agentcompose.v2.ListSchedulerRunsResponse
-	273, // 449: agentcompose.v2.ProjectService.BatchGetLatestSchedulerRuns:output_type -> agentcompose.v2.BatchGetLatestSchedulerRunsResponse
-	270, // 450: agentcompose.v2.ProjectService.StreamSchedulerRuns:output_type -> agentcompose.v2.StreamSchedulerRunsResponse
-	83,  // 451: agentcompose.v2.ProjectService.PruneSchedulerRuns:output_type -> agentcompose.v2.PruneSchedulerRunsResponse
-	85,  // 452: agentcompose.v2.ProjectService.StopSchedulerRun:output_type -> agentcompose.v2.StopSchedulerRunResponse
-	88,  // 453: agentcompose.v2.ProjectService.SetSchedulerEnabled:output_type -> agentcompose.v2.SetSchedulerEnabledResponse
-	90,  // 454: agentcompose.v2.ProjectService.SetSchedulerTriggerEnabled:output_type -> agentcompose.v2.SetSchedulerTriggerEnabledResponse
-	116, // 455: agentcompose.v2.RunService.RunAgent:output_type -> agentcompose.v2.RunAgentResponse
-	220, // 456: agentcompose.v2.RunService.StartAgentRun:output_type -> agentcompose.v2.StartAgentRunResponse
-	117, // 457: agentcompose.v2.RunService.StreamAgentRun:output_type -> agentcompose.v2.StreamAgentRunResponse
-	119, // 458: agentcompose.v2.RunService.AttachAgentRun:output_type -> agentcompose.v2.AttachAgentRunResponse
-	123, // 459: agentcompose.v2.RunService.GetRun:output_type -> agentcompose.v2.GetRunResponse
-	125, // 460: agentcompose.v2.RunService.ListRuns:output_type -> agentcompose.v2.ListRunsResponse
-	127, // 461: agentcompose.v2.RunService.FollowRunLogs:output_type -> agentcompose.v2.RunLogChunk
-	129, // 462: agentcompose.v2.RunService.StopRun:output_type -> agentcompose.v2.StopRunResponse
-	132, // 463: agentcompose.v2.RunService.ListRunEvents:output_type -> agentcompose.v2.ListRunEventsResponse
-	134, // 464: agentcompose.v2.RunService.ListSandboxRunEvents:output_type -> agentcompose.v2.ListSandboxRunEventsResponse
-	160, // 465: agentcompose.v2.ExecService.Exec:output_type -> agentcompose.v2.ExecResponse
-	161, // 466: agentcompose.v2.ExecService.StreamExec:output_type -> agentcompose.v2.StreamExecResponse
-	163, // 467: agentcompose.v2.ExecService.AttachExec:output_type -> agentcompose.v2.AttachExecResponse
-	180, // 468: agentcompose.v2.ImageService.ListImages:output_type -> agentcompose.v2.ListImagesResponse
-	182, // 469: agentcompose.v2.ImageService.PullImage:output_type -> agentcompose.v2.PullImageResponse
-	184, // 470: agentcompose.v2.ImageService.InspectImage:output_type -> agentcompose.v2.InspectImageResponse
-	186, // 471: agentcompose.v2.ImageService.RemoveImage:output_type -> agentcompose.v2.RemoveImageResponse
-	188, // 472: agentcompose.v2.ImageService.BuildImage:output_type -> agentcompose.v2.BuildImageEvent
-	191, // 473: agentcompose.v2.CacheService.ListCaches:output_type -> agentcompose.v2.ListCachesResponse
-	193, // 474: agentcompose.v2.CacheService.InspectCache:output_type -> agentcompose.v2.InspectCacheResponse
-	195, // 475: agentcompose.v2.CacheService.PruneCaches:output_type -> agentcompose.v2.PruneCachesResponse
-	197, // 476: agentcompose.v2.CacheService.RemoveCache:output_type -> agentcompose.v2.RemoveCacheResponse
-	201, // 477: agentcompose.v2.VolumeService.ListVolumes:output_type -> agentcompose.v2.ListVolumesResponse
-	203, // 478: agentcompose.v2.VolumeService.CreateVolume:output_type -> agentcompose.v2.CreateVolumeResponse
-	205, // 479: agentcompose.v2.VolumeService.InspectVolume:output_type -> agentcompose.v2.InspectVolumeResponse
-	207, // 480: agentcompose.v2.VolumeService.RemoveVolume:output_type -> agentcompose.v2.RemoveVolumeResponse
-	209, // 481: agentcompose.v2.VolumeService.PruneVolumes:output_type -> agentcompose.v2.PruneVolumesResponse
-	136, // 482: agentcompose.v2.SandboxService.RemoveSandbox:output_type -> agentcompose.v2.RemoveSandboxResponse
-	139, // 483: agentcompose.v2.SandboxService.PruneSandboxes:output_type -> agentcompose.v2.PruneSandboxesResponse
-	141, // 484: agentcompose.v2.SandboxService.GetSandboxStats:output_type -> agentcompose.v2.GetSandboxStatsResponse
-	148, // 485: agentcompose.v2.SandboxService.GetSandbox:output_type -> agentcompose.v2.GetSandboxResponse
-	150, // 486: agentcompose.v2.SandboxService.StopSandbox:output_type -> agentcompose.v2.StopSandboxResponse
-	152, // 487: agentcompose.v2.SandboxService.ResumeSandbox:output_type -> agentcompose.v2.ResumeSandboxResponse
-	147, // 488: agentcompose.v2.SandboxService.ListSandboxes:output_type -> agentcompose.v2.ListSandboxesResponse
-	262, // 489: agentcompose.v2.SandboxService.ListSandboxHistory:output_type -> agentcompose.v2.ListSandboxHistoryResponse
-	264, // 490: agentcompose.v2.SandboxService.WatchSandbox:output_type -> agentcompose.v2.WatchSandboxResponse
-	229, // 491: agentcompose.v2.DashboardService.GetDashboardOverview:output_type -> agentcompose.v2.GetDashboardOverviewResponse
-	230, // 492: agentcompose.v2.DashboardService.WatchDashboardOverview:output_type -> agentcompose.v2.WatchDashboardOverviewResponse
-	232, // 493: agentcompose.v2.SettingsService.GetGlobalEnv:output_type -> agentcompose.v2.GetGlobalEnvResponse
-	234, // 494: agentcompose.v2.SettingsService.UpdateGlobalEnv:output_type -> agentcompose.v2.UpdateGlobalEnvResponse
-	237, // 495: agentcompose.v2.SettingsService.GetCapabilityGatewayConfig:output_type -> agentcompose.v2.GetCapabilityGatewayConfigResponse
-	239, // 496: agentcompose.v2.SettingsService.UpdateCapabilityGatewayConfig:output_type -> agentcompose.v2.UpdateCapabilityGatewayConfigResponse
-	241, // 497: agentcompose.v2.SettingsService.GetEventDeliveryScope:output_type -> agentcompose.v2.GetEventDeliveryScopeResponse
-	244, // 498: agentcompose.v2.SettingsService.ListWorkspacePresets:output_type -> agentcompose.v2.ListWorkspacePresetsResponse
-	249, // 499: agentcompose.v2.SettingsService.CreateWorkspacePreset:output_type -> agentcompose.v2.WorkspacePresetResponse
-	249, // 500: agentcompose.v2.SettingsService.UpdateWorkspacePreset:output_type -> agentcompose.v2.WorkspacePresetResponse
-	248, // 501: agentcompose.v2.SettingsService.DeleteWorkspacePreset:output_type -> agentcompose.v2.DeleteWorkspacePresetResponse
-	251, // 502: agentcompose.v2.CapabilityService.GetCapabilityStatus:output_type -> agentcompose.v2.CapabilityStatusResponse
-	254, // 503: agentcompose.v2.CapabilityService.ListCapabilitySets:output_type -> agentcompose.v2.ListCapabilitySetsResponse
-	258, // 504: agentcompose.v2.CapabilityService.GetCapabilityCatalog:output_type -> agentcompose.v2.GetCapabilityCatalogResponse
-	277, // 505: agentcompose.v2.LLMService.CreateProvider:output_type -> agentcompose.v2.CreateProviderResponse
-	279, // 506: agentcompose.v2.LLMService.GetProvider:output_type -> agentcompose.v2.GetProviderResponse
-	281, // 507: agentcompose.v2.LLMService.ListProviders:output_type -> agentcompose.v2.ListProvidersResponse
-	283, // 508: agentcompose.v2.LLMService.UpdateProvider:output_type -> agentcompose.v2.UpdateProviderResponse
-	285, // 509: agentcompose.v2.LLMService.DeleteProvider:output_type -> agentcompose.v2.DeleteProviderResponse
-	266, // 510: agentcompose.v2.LLMService.Generate:output_type -> agentcompose.v2.GenerateLLMResponse
-	223, // 511: agentcompose.v2.ResourceService.ResolveID:output_type -> agentcompose.v2.ResolveResourceIDResponse
-	292, // 512: agentcompose.v2.EngineService.GetCapabilities:output_type -> agentcompose.v2.GetEngineCapabilitiesResponse
-	432, // [432:513] is the sub-list for method output_type
-	351, // [351:432] is the sub-list for method input_type
-	351, // [351:351] is the sub-list for extension type_name
-	351, // [351:351] is the sub-list for extension extendee
-	0,   // [0:351] is the sub-list for field type_name
+	95,  // 0: agentcompose.v2.ValidateProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
+	53,  // 1: agentcompose.v2.ValidateProjectRequest.source:type_name -> agentcompose.v2.ProjectSource
+	93,  // 2: agentcompose.v2.ValidateProjectResponse.issues:type_name -> agentcompose.v2.ProjectValidationIssue
+	41,  // 3: agentcompose.v2.ValidateProjectResponse.network_policies:type_name -> agentcompose.v2.AgentNetworkPolicyReport
+	95,  // 4: agentcompose.v2.ApplyProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
+	53,  // 5: agentcompose.v2.ApplyProjectRequest.source:type_name -> agentcompose.v2.ProjectSource
+	54,  // 6: agentcompose.v2.ApplyProjectResponse.project:type_name -> agentcompose.v2.Project
+	56,  // 7: agentcompose.v2.ApplyProjectResponse.revision:type_name -> agentcompose.v2.ProjectRevision
+	94,  // 8: agentcompose.v2.ApplyProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
+	93,  // 9: agentcompose.v2.ApplyProjectResponse.issues:type_name -> agentcompose.v2.ProjectValidationIssue
+	41,  // 10: agentcompose.v2.ApplyProjectResponse.network_policies:type_name -> agentcompose.v2.AgentNetworkPolicyReport
+	42,  // 11: agentcompose.v2.AgentNetworkPolicyReport.allow:type_name -> agentcompose.v2.DeclaredNetworkAllowance
+	52,  // 12: agentcompose.v2.PatchProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
+	95,  // 13: agentcompose.v2.PatchProjectRequest.spec:type_name -> agentcompose.v2.ProjectSpec
+	52,  // 14: agentcompose.v2.GetProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
+	54,  // 15: agentcompose.v2.GetProjectResponse.project:type_name -> agentcompose.v2.Project
+	55,  // 16: agentcompose.v2.ListProjectsResponse.projects:type_name -> agentcompose.v2.ProjectSummary
+	52,  // 17: agentcompose.v2.RemoveProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
+	54,  // 18: agentcompose.v2.RemoveProjectResponse.project:type_name -> agentcompose.v2.Project
+	94,  // 19: agentcompose.v2.RemoveProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
+	52,  // 20: agentcompose.v2.WatchProjectRequest.project:type_name -> agentcompose.v2.ProjectRef
+	2,   // 21: agentcompose.v2.WatchProjectResponse.type:type_name -> agentcompose.v2.ProjectWatchEventType
+	54,  // 22: agentcompose.v2.WatchProjectResponse.project:type_name -> agentcompose.v2.Project
+	56,  // 23: agentcompose.v2.WatchProjectResponse.revision:type_name -> agentcompose.v2.ProjectRevision
+	94,  // 24: agentcompose.v2.WatchProjectResponse.changes:type_name -> agentcompose.v2.ProjectChange
+	55,  // 25: agentcompose.v2.Project.summary:type_name -> agentcompose.v2.ProjectSummary
+	95,  // 26: agentcompose.v2.Project.spec:type_name -> agentcompose.v2.ProjectSpec
+	57,  // 27: agentcompose.v2.Project.agents:type_name -> agentcompose.v2.ProjectAgent
+	60,  // 28: agentcompose.v2.Project.schedulers:type_name -> agentcompose.v2.ProjectScheduler
+	310, // 29: agentcompose.v2.ProjectSummary.created_at:type_name -> google.protobuf.Timestamp
+	310, // 30: agentcompose.v2.ProjectSummary.updated_at:type_name -> google.protobuf.Timestamp
+	310, // 31: agentcompose.v2.ProjectSummary.removed_at:type_name -> google.protobuf.Timestamp
+	95,  // 32: agentcompose.v2.ProjectRevision.spec:type_name -> agentcompose.v2.ProjectSpec
+	310, // 33: agentcompose.v2.ProjectRevision.created_at:type_name -> google.protobuf.Timestamp
+	14,  // 34: agentcompose.v2.ProjectAgent.availability:type_name -> agentcompose.v2.ProjectAgentAvailability
+	15,  // 35: agentcompose.v2.ProjectAgent.health:type_name -> agentcompose.v2.ProjectAgentHealth
+	58,  // 36: agentcompose.v2.ProjectAgent.current_run:type_name -> agentcompose.v2.ProjectAgentCurrentRun
+	59,  // 37: agentcompose.v2.ProjectAgent.latest_run:type_name -> agentcompose.v2.ProjectAgentLatestRun
+	32,  // 38: agentcompose.v2.ProjectAgent.model_source:type_name -> agentcompose.v2.AgentModelSource
+	3,   // 39: agentcompose.v2.ProjectAgentLatestRun.status:type_name -> agentcompose.v2.RunStatus
+	4,   // 40: agentcompose.v2.ProjectAgentLatestRun.source:type_name -> agentcompose.v2.RunSource
+	310, // 41: agentcompose.v2.ProjectAgentLatestRun.at:type_name -> google.protobuf.Timestamp
+	52,  // 42: agentcompose.v2.GetSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
+	60,  // 43: agentcompose.v2.GetSchedulerResponse.scheduler:type_name -> agentcompose.v2.ProjectScheduler
+	109, // 44: agentcompose.v2.GetSchedulerResponse.spec:type_name -> agentcompose.v2.SchedulerSpec
+	63,  // 45: agentcompose.v2.GetSchedulerResponse.triggers:type_name -> agentcompose.v2.ResolvedTrigger
+	110, // 46: agentcompose.v2.ResolvedTrigger.spec:type_name -> agentcompose.v2.TriggerSpec
+	310, // 47: agentcompose.v2.ResolvedTrigger.next_fire_at:type_name -> google.protobuf.Timestamp
+	310, // 48: agentcompose.v2.ResolvedTrigger.last_fired_at:type_name -> google.protobuf.Timestamp
+	310, // 49: agentcompose.v2.SchedulerSummary.latest_run_at:type_name -> google.protobuf.Timestamp
+	65,  // 50: agentcompose.v2.ListSchedulersResponse.schedulers:type_name -> agentcompose.v2.SchedulerSummary
+	52,  // 51: agentcompose.v2.ListSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	310, // 52: agentcompose.v2.SchedulerEvent.created_at:type_name -> google.protobuf.Timestamp
+	68,  // 53: agentcompose.v2.ListSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
+	52,  // 54: agentcompose.v2.ListProjectSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	68,  // 55: agentcompose.v2.ListProjectSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
+	52,  // 56: agentcompose.v2.InvokeSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
+	52,  // 57: agentcompose.v2.RunSchedulerRequest.project:type_name -> agentcompose.v2.ProjectRef
+	88,  // 58: agentcompose.v2.RunSchedulerResponse.run:type_name -> agentcompose.v2.SchedulerRun
+	52,  // 59: agentcompose.v2.StartSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
+	88,  // 60: agentcompose.v2.StartSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
+	52,  // 61: agentcompose.v2.GetSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
+	88,  // 62: agentcompose.v2.GetSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
+	52,  // 63: agentcompose.v2.ListSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	5,   // 64: agentcompose.v2.ListSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
+	88,  // 65: agentcompose.v2.ListSchedulerRunsResponse.runs:type_name -> agentcompose.v2.SchedulerRun
+	52,  // 66: agentcompose.v2.PruneSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	5,   // 67: agentcompose.v2.PruneSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
+	83,  // 68: agentcompose.v2.PruneSchedulerRunsResponse.matched:type_name -> agentcompose.v2.SchedulerRunPruneStats
+	83,  // 69: agentcompose.v2.PruneSchedulerRunsResponse.removed:type_name -> agentcompose.v2.SchedulerRunPruneStats
+	84,  // 70: agentcompose.v2.PruneSchedulerRunsResponse.residues:type_name -> agentcompose.v2.SchedulerRunPruneResidue
+	52,  // 71: agentcompose.v2.StopSchedulerRunRequest.project:type_name -> agentcompose.v2.ProjectRef
+	88,  // 72: agentcompose.v2.StopSchedulerRunResponse.run:type_name -> agentcompose.v2.SchedulerRun
+	12,  // 73: agentcompose.v2.SchedulerRun.trigger_kind:type_name -> agentcompose.v2.TriggerKind
+	5,   // 74: agentcompose.v2.SchedulerRun.status:type_name -> agentcompose.v2.SchedulerRunStatus
+	310, // 75: agentcompose.v2.SchedulerRun.started_at:type_name -> google.protobuf.Timestamp
+	310, // 76: agentcompose.v2.SchedulerRun.completed_at:type_name -> google.protobuf.Timestamp
+	52,  // 77: agentcompose.v2.SetSchedulerEnabledRequest.project:type_name -> agentcompose.v2.ProjectRef
+	60,  // 78: agentcompose.v2.SetSchedulerEnabledResponse.scheduler:type_name -> agentcompose.v2.ProjectScheduler
+	52,  // 79: agentcompose.v2.SetSchedulerTriggerEnabledRequest.project:type_name -> agentcompose.v2.ProjectRef
+	63,  // 80: agentcompose.v2.SetSchedulerTriggerEnabledResponse.trigger:type_name -> agentcompose.v2.ResolvedTrigger
+	0,   // 81: agentcompose.v2.ProjectValidationIssue.severity:type_name -> agentcompose.v2.ProjectValidationSeverity
+	1,   // 82: agentcompose.v2.ProjectChange.action:type_name -> agentcompose.v2.ProjectChangeAction
+	106, // 83: agentcompose.v2.ProjectSpec.variables:type_name -> agentcompose.v2.EnvVarSpec
+	97,  // 84: agentcompose.v2.ProjectSpec.agents:type_name -> agentcompose.v2.AgentSpec
+	103, // 85: agentcompose.v2.ProjectSpec.volumes:type_name -> agentcompose.v2.ProjectVolumeSpec
+	96,  // 86: agentcompose.v2.ProjectSpec.workspaces:type_name -> agentcompose.v2.NamedWorkspaceSpec
+	101, // 87: agentcompose.v2.ProjectSpec.mcp_servers:type_name -> agentcompose.v2.MCPServerSpec
+	102, // 88: agentcompose.v2.ProjectSpec.octobus_servers:type_name -> agentcompose.v2.OctoBusServerSpec
+	108, // 89: agentcompose.v2.NamedWorkspaceSpec.workspace:type_name -> agentcompose.v2.WorkspaceSpec
+	112, // 90: agentcompose.v2.AgentSpec.driver:type_name -> agentcompose.v2.DriverSpec
+	106, // 91: agentcompose.v2.AgentSpec.env:type_name -> agentcompose.v2.EnvVarSpec
+	108, // 92: agentcompose.v2.AgentSpec.workspace:type_name -> agentcompose.v2.WorkspaceSpec
+	109, // 93: agentcompose.v2.AgentSpec.scheduler:type_name -> agentcompose.v2.SchedulerSpec
+	219, // 94: agentcompose.v2.AgentSpec.jupyter:type_name -> agentcompose.v2.JupyterSpec
+	105, // 95: agentcompose.v2.AgentSpec.build:type_name -> agentcompose.v2.BuildSpec
+	104, // 96: agentcompose.v2.AgentSpec.volumes:type_name -> agentcompose.v2.VolumeMountSpec
+	101, // 97: agentcompose.v2.AgentSpec.mcp_servers:type_name -> agentcompose.v2.MCPServerSpec
+	223, // 98: agentcompose.v2.AgentSpec.skills:type_name -> agentcompose.v2.SkillSpec
+	98,  // 99: agentcompose.v2.AgentSpec.sandbox:type_name -> agentcompose.v2.SandboxSpec
+	99,  // 100: agentcompose.v2.SandboxSpec.network:type_name -> agentcompose.v2.SandboxNetworkSpec
+	100, // 101: agentcompose.v2.SandboxNetworkSpec.allow:type_name -> agentcompose.v2.SandboxNetworkAllowSpec
+	106, // 102: agentcompose.v2.MCPServerSpec.env:type_name -> agentcompose.v2.EnvVarSpec
+	106, // 103: agentcompose.v2.MCPServerSpec.headers:type_name -> agentcompose.v2.EnvVarSpec
+	295, // 104: agentcompose.v2.ProjectVolumeSpec.labels:type_name -> agentcompose.v2.ProjectVolumeSpec.LabelsEntry
+	296, // 105: agentcompose.v2.ProjectVolumeSpec.options:type_name -> agentcompose.v2.ProjectVolumeSpec.OptionsEntry
+	13,  // 106: agentcompose.v2.VolumeMountSpec.type:type_name -> agentcompose.v2.VolumeMountType
+	297, // 107: agentcompose.v2.BuildSpec.args:type_name -> agentcompose.v2.BuildSpec.ArgsEntry
+	33,  // 108: agentcompose.v2.WorkspaceSpec.mode:type_name -> agentcompose.v2.WorkspaceMode
+	110, // 109: agentcompose.v2.SchedulerSpec.triggers:type_name -> agentcompose.v2.TriggerSpec
+	11,  // 110: agentcompose.v2.SchedulerSpec.sandbox_policy:type_name -> agentcompose.v2.SchedulerSandboxPolicy
+	10,  // 111: agentcompose.v2.SchedulerSpec.concurrency_policy:type_name -> agentcompose.v2.SchedulerConcurrencyPolicy
+	12,  // 112: agentcompose.v2.TriggerSpec.kind:type_name -> agentcompose.v2.TriggerKind
+	111, // 113: agentcompose.v2.TriggerSpec.event:type_name -> agentcompose.v2.EventTriggerSpec
+	11,  // 114: agentcompose.v2.TriggerSpec.sandbox_policy:type_name -> agentcompose.v2.SchedulerSandboxPolicy
+	113, // 115: agentcompose.v2.DriverSpec.boxlite:type_name -> agentcompose.v2.BoxliteDriverSpec
+	114, // 116: agentcompose.v2.DriverSpec.docker:type_name -> agentcompose.v2.DockerDriverSpec
+	115, // 117: agentcompose.v2.DriverSpec.microsandbox:type_name -> agentcompose.v2.MicrosandboxDriverSpec
+	116, // 118: agentcompose.v2.DriverSpec.k8s:type_name -> agentcompose.v2.K8sDriverSpec
+	4,   // 119: agentcompose.v2.RunAgentRequest.source:type_name -> agentcompose.v2.RunSource
+	106, // 120: agentcompose.v2.RunAgentRequest.env:type_name -> agentcompose.v2.EnvVarSpec
+	18,  // 121: agentcompose.v2.RunAgentRequest.cleanup_policy:type_name -> agentcompose.v2.RunSandboxCleanupPolicy
+	220, // 122: agentcompose.v2.RunAgentRequest.jupyter:type_name -> agentcompose.v2.RunJupyterSpec
+	104, // 123: agentcompose.v2.RunAgentRequest.volumes:type_name -> agentcompose.v2.VolumeMountSpec
+	298, // 124: agentcompose.v2.RunAgentRequest.labels:type_name -> agentcompose.v2.RunAgentRequest.LabelsEntry
+	158, // 125: agentcompose.v2.RunAgentResponse.run:type_name -> agentcompose.v2.RunDetail
+	17,  // 126: agentcompose.v2.StreamAgentRunResponse.event_type:type_name -> agentcompose.v2.StreamAgentRunEventType
+	157, // 127: agentcompose.v2.StreamAgentRunResponse.run:type_name -> agentcompose.v2.RunSummary
+	22,  // 128: agentcompose.v2.StreamAgentRunResponse.stream:type_name -> agentcompose.v2.StdioStream
+	310, // 129: agentcompose.v2.StreamAgentRunResponse.created_at:type_name -> google.protobuf.Timestamp
+	123, // 130: agentcompose.v2.StreamAgentRunResponse.transcript:type_name -> agentcompose.v2.TranscriptEvent
+	122, // 131: agentcompose.v2.AttachAgentRunRequest.start:type_name -> agentcompose.v2.AttachAgentRunStart
+	168, // 132: agentcompose.v2.AttachAgentRunRequest.stdin:type_name -> agentcompose.v2.AttachStdin
+	169, // 133: agentcompose.v2.AttachAgentRunRequest.stdin_eof:type_name -> agentcompose.v2.AttachStdinEOF
+	170, // 134: agentcompose.v2.AttachAgentRunRequest.resize:type_name -> agentcompose.v2.AttachResize
+	171, // 135: agentcompose.v2.AttachAgentRunRequest.signal:type_name -> agentcompose.v2.AttachSignal
+	172, // 136: agentcompose.v2.AttachAgentRunRequest.human_message:type_name -> agentcompose.v2.AttachHumanMessage
+	173, // 137: agentcompose.v2.AttachAgentRunRequest.cancel:type_name -> agentcompose.v2.AttachCancel
+	310, // 138: agentcompose.v2.AttachAgentRunResponse.created_at:type_name -> google.protobuf.Timestamp
+	174, // 139: agentcompose.v2.AttachAgentRunResponse.started:type_name -> agentcompose.v2.AttachStarted
+	175, // 140: agentcompose.v2.AttachAgentRunResponse.output:type_name -> agentcompose.v2.AttachOutput
+	176, // 141: agentcompose.v2.AttachAgentRunResponse.agent_event:type_name -> agentcompose.v2.AttachAgentEvent
+	177, // 142: agentcompose.v2.AttachAgentRunResponse.agent_turn_completed:type_name -> agentcompose.v2.AttachAgentTurnCompleted
+	178, // 143: agentcompose.v2.AttachAgentRunResponse.result:type_name -> agentcompose.v2.AttachResult
+	179, // 144: agentcompose.v2.AttachAgentRunResponse.error:type_name -> agentcompose.v2.AttachError
+	117, // 145: agentcompose.v2.AttachAgentRunStart.request:type_name -> agentcompose.v2.RunAgentRequest
+	20,  // 146: agentcompose.v2.AttachAgentRunStart.mode:type_name -> agentcompose.v2.AttachRunMode
+	167, // 147: agentcompose.v2.AttachAgentRunStart.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
+	21,  // 148: agentcompose.v2.AttachAgentRunStart.disconnect_policy:type_name -> agentcompose.v2.AttachDisconnectPolicy
+	22,  // 149: agentcompose.v2.TranscriptEvent.stream:type_name -> agentcompose.v2.StdioStream
+	310, // 150: agentcompose.v2.TranscriptEvent.created_at:type_name -> google.protobuf.Timestamp
+	158, // 151: agentcompose.v2.GetRunResponse.run:type_name -> agentcompose.v2.RunDetail
+	3,   // 152: agentcompose.v2.ListRunsRequest.status:type_name -> agentcompose.v2.RunStatus
+	4,   // 153: agentcompose.v2.ListRunsRequest.source:type_name -> agentcompose.v2.RunSource
+	310, // 154: agentcompose.v2.ListRunsRequest.started_from:type_name -> google.protobuf.Timestamp
+	310, // 155: agentcompose.v2.ListRunsRequest.started_to:type_name -> google.protobuf.Timestamp
+	299, // 156: agentcompose.v2.ListRunsRequest.labels:type_name -> agentcompose.v2.ListRunsRequest.LabelsEntry
+	157, // 157: agentcompose.v2.ListRunsResponse.runs:type_name -> agentcompose.v2.RunSummary
+	3,   // 158: agentcompose.v2.RunLogChunk.run_status:type_name -> agentcompose.v2.RunStatus
+	310, // 159: agentcompose.v2.RunLogChunk.created_at:type_name -> google.protobuf.Timestamp
+	157, // 160: agentcompose.v2.RunLogChunk.run:type_name -> agentcompose.v2.RunSummary
+	158, // 161: agentcompose.v2.StopRunResponse.run:type_name -> agentcompose.v2.RunDetail
+	16,  // 162: agentcompose.v2.RunEvent.kind:type_name -> agentcompose.v2.RunEventKind
+	310, // 163: agentcompose.v2.RunEvent.created_at:type_name -> google.protobuf.Timestamp
+	133, // 164: agentcompose.v2.ListRunEventsResponse.events:type_name -> agentcompose.v2.RunEvent
+	133, // 165: agentcompose.v2.ListSandboxRunEventsResponse.events:type_name -> agentcompose.v2.RunEvent
+	6,   // 166: agentcompose.v2.PruneSandboxesRequest.status:type_name -> agentcompose.v2.SandboxStatus
+	29,  // 167: agentcompose.v2.SandboxPruneCandidate.kind:type_name -> agentcompose.v2.SandboxPruneCandidateKind
+	6,   // 168: agentcompose.v2.SandboxPruneCandidate.status:type_name -> agentcompose.v2.SandboxStatus
+	310, // 169: agentcompose.v2.SandboxPruneCandidate.updated_at:type_name -> google.protobuf.Timestamp
+	140, // 170: agentcompose.v2.PruneSandboxesResponse.matched:type_name -> agentcompose.v2.SandboxPruneCandidate
+	140, // 171: agentcompose.v2.PruneSandboxesResponse.skipped:type_name -> agentcompose.v2.SandboxPruneCandidate
+	156, // 172: agentcompose.v2.GetSandboxStatsResponse.stats:type_name -> agentcompose.v2.SandboxStats
+	6,   // 173: agentcompose.v2.Sandbox.status:type_name -> agentcompose.v2.SandboxStatus
+	310, // 174: agentcompose.v2.Sandbox.created_at:type_name -> google.protobuf.Timestamp
+	310, // 175: agentcompose.v2.Sandbox.updated_at:type_name -> google.protobuf.Timestamp
+	147, // 176: agentcompose.v2.Sandbox.tags:type_name -> agentcompose.v2.SandboxTag
+	9,   // 177: agentcompose.v2.Sandbox.workspace_reclamation_state:type_name -> agentcompose.v2.WorkspaceReclamationState
+	310, // 178: agentcompose.v2.Sandbox.workspace_reclamation_started_at:type_name -> google.protobuf.Timestamp
+	310, // 179: agentcompose.v2.Sandbox.workspace_reclamation_completed_at:type_name -> google.protobuf.Timestamp
+	310, // 180: agentcompose.v2.Sandbox.stopped_runtime_released_at:type_name -> google.protobuf.Timestamp
+	146, // 181: agentcompose.v2.Sandbox.workspace_delivery:type_name -> agentcompose.v2.SandboxWorkspaceDelivery
+	33,  // 182: agentcompose.v2.SandboxWorkspaceDelivery.mode:type_name -> agentcompose.v2.WorkspaceMode
+	6,   // 183: agentcompose.v2.ListSandboxesRequest.status:type_name -> agentcompose.v2.SandboxStatus
+	145, // 184: agentcompose.v2.ListSandboxesResponse.sandboxes:type_name -> agentcompose.v2.Sandbox
+	145, // 185: agentcompose.v2.GetSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
+	7,   // 186: agentcompose.v2.StopSandboxRequest.mode:type_name -> agentcompose.v2.SandboxStopMode
+	311, // 187: agentcompose.v2.StopSandboxRequest.grace_period:type_name -> google.protobuf.Duration
+	145, // 188: agentcompose.v2.StopSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
+	8,   // 189: agentcompose.v2.StopSandboxResponse.outcome:type_name -> agentcompose.v2.SandboxStopOutcome
+	145, // 190: agentcompose.v2.ResumeSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
+	26,  // 191: agentcompose.v2.MetricValue.status:type_name -> agentcompose.v2.MetricStatus
+	310, // 192: agentcompose.v2.SandboxStats.sampled_at:type_name -> google.protobuf.Timestamp
+	155, // 193: agentcompose.v2.SandboxStats.cpu_percent:type_name -> agentcompose.v2.MetricValue
+	155, // 194: agentcompose.v2.SandboxStats.memory_usage_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 195: agentcompose.v2.SandboxStats.memory_limit_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 196: agentcompose.v2.SandboxStats.memory_percent:type_name -> agentcompose.v2.MetricValue
+	155, // 197: agentcompose.v2.SandboxStats.network_rx_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 198: agentcompose.v2.SandboxStats.network_tx_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 199: agentcompose.v2.SandboxStats.block_read_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 200: agentcompose.v2.SandboxStats.block_write_bytes:type_name -> agentcompose.v2.MetricValue
+	155, // 201: agentcompose.v2.SandboxStats.uptime_seconds:type_name -> agentcompose.v2.MetricValue
+	4,   // 202: agentcompose.v2.RunSummary.source:type_name -> agentcompose.v2.RunSource
+	3,   // 203: agentcompose.v2.RunSummary.status:type_name -> agentcompose.v2.RunStatus
+	310, // 204: agentcompose.v2.RunSummary.started_at:type_name -> google.protobuf.Timestamp
+	310, // 205: agentcompose.v2.RunSummary.completed_at:type_name -> google.protobuf.Timestamp
+	310, // 206: agentcompose.v2.RunSummary.created_at:type_name -> google.protobuf.Timestamp
+	310, // 207: agentcompose.v2.RunSummary.updated_at:type_name -> google.protobuf.Timestamp
+	157, // 208: agentcompose.v2.RunDetail.summary:type_name -> agentcompose.v2.RunSummary
+	300, // 209: agentcompose.v2.RunDetail.labels:type_name -> agentcompose.v2.RunDetail.LabelsEntry
+	160, // 210: agentcompose.v2.ExecRequest.selector:type_name -> agentcompose.v2.ExecSandboxSelector
+	161, // 211: agentcompose.v2.ExecRequest.command:type_name -> agentcompose.v2.ExecCommand
+	106, // 212: agentcompose.v2.ExecRequest.env:type_name -> agentcompose.v2.EnvVarSpec
+	180, // 213: agentcompose.v2.ExecResponse.result:type_name -> agentcompose.v2.ExecResult
+	19,  // 214: agentcompose.v2.StreamExecResponse.event_type:type_name -> agentcompose.v2.StreamExecEventType
+	22,  // 215: agentcompose.v2.StreamExecResponse.stream:type_name -> agentcompose.v2.StdioStream
+	180, // 216: agentcompose.v2.StreamExecResponse.result:type_name -> agentcompose.v2.ExecResult
+	123, // 217: agentcompose.v2.StreamExecResponse.transcript:type_name -> agentcompose.v2.TranscriptEvent
+	166, // 218: agentcompose.v2.AttachExecRequest.start:type_name -> agentcompose.v2.AttachExecStart
+	168, // 219: agentcompose.v2.AttachExecRequest.stdin:type_name -> agentcompose.v2.AttachStdin
+	169, // 220: agentcompose.v2.AttachExecRequest.stdin_eof:type_name -> agentcompose.v2.AttachStdinEOF
+	170, // 221: agentcompose.v2.AttachExecRequest.resize:type_name -> agentcompose.v2.AttachResize
+	171, // 222: agentcompose.v2.AttachExecRequest.signal:type_name -> agentcompose.v2.AttachSignal
+	173, // 223: agentcompose.v2.AttachExecRequest.cancel:type_name -> agentcompose.v2.AttachCancel
+	172, // 224: agentcompose.v2.AttachExecRequest.human_message:type_name -> agentcompose.v2.AttachHumanMessage
+	310, // 225: agentcompose.v2.AttachExecResponse.created_at:type_name -> google.protobuf.Timestamp
+	174, // 226: agentcompose.v2.AttachExecResponse.started:type_name -> agentcompose.v2.AttachStarted
+	175, // 227: agentcompose.v2.AttachExecResponse.output:type_name -> agentcompose.v2.AttachOutput
+	178, // 228: agentcompose.v2.AttachExecResponse.result:type_name -> agentcompose.v2.AttachResult
+	179, // 229: agentcompose.v2.AttachExecResponse.error:type_name -> agentcompose.v2.AttachError
+	176, // 230: agentcompose.v2.AttachExecResponse.agent_event:type_name -> agentcompose.v2.AttachAgentEvent
+	177, // 231: agentcompose.v2.AttachExecResponse.agent_turn_completed:type_name -> agentcompose.v2.AttachAgentTurnCompleted
+	159, // 232: agentcompose.v2.AttachExecStart.request:type_name -> agentcompose.v2.ExecRequest
+	167, // 233: agentcompose.v2.AttachExecStart.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
+	20,  // 234: agentcompose.v2.AttachExecStart.mode:type_name -> agentcompose.v2.AttachRunMode
+	167, // 235: agentcompose.v2.AttachResize.terminal_size:type_name -> agentcompose.v2.AttachTerminalSize
+	301, // 236: agentcompose.v2.AttachHumanMessage.metadata:type_name -> agentcompose.v2.AttachHumanMessage.MetadataEntry
+	157, // 237: agentcompose.v2.AttachStarted.run:type_name -> agentcompose.v2.RunSummary
+	22,  // 238: agentcompose.v2.AttachOutput.stream:type_name -> agentcompose.v2.StdioStream
+	123, // 239: agentcompose.v2.AttachOutput.transcript:type_name -> agentcompose.v2.TranscriptEvent
+	310, // 240: agentcompose.v2.AttachAgentEvent.created_at:type_name -> google.protobuf.Timestamp
+	180, // 241: agentcompose.v2.AttachResult.exec_result:type_name -> agentcompose.v2.ExecResult
+	157, // 242: agentcompose.v2.AttachResult.run:type_name -> agentcompose.v2.RunSummary
+	302, // 243: agentcompose.v2.AttachError.details:type_name -> agentcompose.v2.AttachError.DetailsEntry
+	161, // 244: agentcompose.v2.ExecResult.command:type_name -> agentcompose.v2.ExecCommand
+	23,  // 245: agentcompose.v2.ListImagesRequest.store:type_name -> agentcompose.v2.ImageStoreKind
+	213, // 246: agentcompose.v2.ListImagesResponse.images:type_name -> agentcompose.v2.Image
+	215, // 247: agentcompose.v2.ListImagesResponse.store_status:type_name -> agentcompose.v2.ImageStoreStatus
+	23,  // 248: agentcompose.v2.PullImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
+	214, // 249: agentcompose.v2.PullImageRequest.platform:type_name -> agentcompose.v2.ImagePlatform
+	213, // 250: agentcompose.v2.PullImageResponse.image:type_name -> agentcompose.v2.Image
+	25,  // 251: agentcompose.v2.PullImageResponse.status:type_name -> agentcompose.v2.ImageOperationStatus
+	218, // 252: agentcompose.v2.PullImageResponse.progress:type_name -> agentcompose.v2.ImagePullProgress
+	23,  // 253: agentcompose.v2.InspectImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
+	213, // 254: agentcompose.v2.InspectImageResponse.image:type_name -> agentcompose.v2.Image
+	215, // 255: agentcompose.v2.InspectImageResponse.store_status:type_name -> agentcompose.v2.ImageStoreStatus
+	23,  // 256: agentcompose.v2.RemoveImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
+	303, // 257: agentcompose.v2.BuildImageRequest.build_args:type_name -> agentcompose.v2.BuildImageRequest.BuildArgsEntry
+	23,  // 258: agentcompose.v2.BuildImageRequest.store:type_name -> agentcompose.v2.ImageStoreKind
+	214, // 259: agentcompose.v2.BuildImageRequest.platform:type_name -> agentcompose.v2.ImagePlatform
+	25,  // 260: agentcompose.v2.BuildImageEvent.status:type_name -> agentcompose.v2.ImageOperationStatus
+	213, // 261: agentcompose.v2.BuildImageEvent.image:type_name -> agentcompose.v2.Image
+	27,  // 262: agentcompose.v2.CacheFilter.domain:type_name -> agentcompose.v2.CacheDomain
+	30,  // 263: agentcompose.v2.CacheFilter.status:type_name -> agentcompose.v2.CacheStatus
+	191, // 264: agentcompose.v2.ListCachesRequest.filter:type_name -> agentcompose.v2.CacheFilter
+	200, // 265: agentcompose.v2.ListCachesResponse.caches:type_name -> agentcompose.v2.CacheItem
+	200, // 266: agentcompose.v2.InspectCacheResponse.cache:type_name -> agentcompose.v2.CacheItem
+	191, // 267: agentcompose.v2.PruneCachesRequest.filter:type_name -> agentcompose.v2.CacheFilter
+	200, // 268: agentcompose.v2.PruneCachesResponse.matched:type_name -> agentcompose.v2.CacheItem
+	200, // 269: agentcompose.v2.PruneCachesResponse.skipped:type_name -> agentcompose.v2.CacheItem
+	200, // 270: agentcompose.v2.RemoveCacheResponse.matched:type_name -> agentcompose.v2.CacheItem
+	200, // 271: agentcompose.v2.RemoveCacheResponse.skipped:type_name -> agentcompose.v2.CacheItem
+	27,  // 272: agentcompose.v2.CacheItem.domain:type_name -> agentcompose.v2.CacheDomain
+	30,  // 273: agentcompose.v2.CacheItem.status:type_name -> agentcompose.v2.CacheStatus
+	310, // 274: agentcompose.v2.CacheItem.last_used_at:type_name -> google.protobuf.Timestamp
+	201, // 275: agentcompose.v2.CacheItem.references:type_name -> agentcompose.v2.CacheReference
+	28,  // 276: agentcompose.v2.CacheReference.policy:type_name -> agentcompose.v2.CacheReferencePolicy
+	212, // 277: agentcompose.v2.ListVolumesResponse.volumes:type_name -> agentcompose.v2.Volume
+	304, // 278: agentcompose.v2.CreateVolumeRequest.labels:type_name -> agentcompose.v2.CreateVolumeRequest.LabelsEntry
+	305, // 279: agentcompose.v2.CreateVolumeRequest.options:type_name -> agentcompose.v2.CreateVolumeRequest.OptionsEntry
+	212, // 280: agentcompose.v2.CreateVolumeResponse.volume:type_name -> agentcompose.v2.Volume
+	212, // 281: agentcompose.v2.InspectVolumeResponse.volume:type_name -> agentcompose.v2.Volume
+	212, // 282: agentcompose.v2.PruneVolumesResponse.matched:type_name -> agentcompose.v2.Volume
+	212, // 283: agentcompose.v2.PruneVolumesResponse.removed:type_name -> agentcompose.v2.Volume
+	212, // 284: agentcompose.v2.PruneVolumesResponse.skipped:type_name -> agentcompose.v2.Volume
+	306, // 285: agentcompose.v2.Volume.labels:type_name -> agentcompose.v2.Volume.LabelsEntry
+	307, // 286: agentcompose.v2.Volume.options:type_name -> agentcompose.v2.Volume.OptionsEntry
+	310, // 287: agentcompose.v2.Volume.created_at:type_name -> google.protobuf.Timestamp
+	310, // 288: agentcompose.v2.Volume.updated_at:type_name -> google.protobuf.Timestamp
+	23,  // 289: agentcompose.v2.Image.store:type_name -> agentcompose.v2.ImageStoreKind
+	24,  // 290: agentcompose.v2.Image.availability_status:type_name -> agentcompose.v2.ImageAvailabilityStatus
+	214, // 291: agentcompose.v2.Image.platform:type_name -> agentcompose.v2.ImagePlatform
+	310, // 292: agentcompose.v2.Image.created_at:type_name -> google.protobuf.Timestamp
+	310, // 293: agentcompose.v2.Image.inspected_at:type_name -> google.protobuf.Timestamp
+	216, // 294: agentcompose.v2.Image.docker:type_name -> agentcompose.v2.DockerImageStatus
+	217, // 295: agentcompose.v2.Image.oci:type_name -> agentcompose.v2.OCIImageStatus
+	308, // 296: agentcompose.v2.Image.labels:type_name -> agentcompose.v2.Image.LabelsEntry
+	23,  // 297: agentcompose.v2.ImageStoreStatus.store:type_name -> agentcompose.v2.ImageStoreKind
+	117, // 298: agentcompose.v2.StartAgentRunRequest.run:type_name -> agentcompose.v2.RunAgentRequest
+	157, // 299: agentcompose.v2.StartAgentRunResponse.run:type_name -> agentcompose.v2.RunSummary
+	31,  // 300: agentcompose.v2.ResolveResourceIDRequest.kinds:type_name -> agentcompose.v2.ResourceKind
+	226, // 301: agentcompose.v2.ResolveResourceIDResponse.targets:type_name -> agentcompose.v2.ResourceTarget
+	31,  // 302: agentcompose.v2.ResourceTarget.kind:type_name -> agentcompose.v2.ResourceKind
+	229, // 303: agentcompose.v2.DashboardOverview.runs:type_name -> agentcompose.v2.RunOverview
+	310, // 304: agentcompose.v2.DashboardOverview.updated_at:type_name -> google.protobuf.Timestamp
+	230, // 305: agentcompose.v2.GetDashboardOverviewResponse.overview:type_name -> agentcompose.v2.DashboardOverview
+	230, // 306: agentcompose.v2.WatchDashboardOverviewResponse.overview:type_name -> agentcompose.v2.DashboardOverview
+	106, // 307: agentcompose.v2.GetGlobalEnvResponse.env:type_name -> agentcompose.v2.EnvVarSpec
+	107, // 308: agentcompose.v2.UpdateGlobalEnvRequest.env:type_name -> agentcompose.v2.EnvVarUpdateSpec
+	106, // 309: agentcompose.v2.UpdateGlobalEnvResponse.env:type_name -> agentcompose.v2.EnvVarSpec
+	238, // 310: agentcompose.v2.GetCapabilityGatewayConfigResponse.config:type_name -> agentcompose.v2.CapabilityGatewayConfig
+	238, // 311: agentcompose.v2.UpdateCapabilityGatewayConfigResponse.config:type_name -> agentcompose.v2.CapabilityGatewayConfig
+	34,  // 312: agentcompose.v2.GetEventDeliveryScopeResponse.scope:type_name -> agentcompose.v2.EventDeliveryScope
+	310, // 313: agentcompose.v2.WorkspacePreset.created_at:type_name -> google.protobuf.Timestamp
+	310, // 314: agentcompose.v2.WorkspacePreset.updated_at:type_name -> google.protobuf.Timestamp
+	244, // 315: agentcompose.v2.ListWorkspacePresetsResponse.presets:type_name -> agentcompose.v2.WorkspacePreset
+	244, // 316: agentcompose.v2.WorkspacePresetResponse.preset:type_name -> agentcompose.v2.WorkspacePreset
+	255, // 317: agentcompose.v2.ListCapabilitySetsResponse.capsets:type_name -> agentcompose.v2.CapabilitySet
+	309, // 318: agentcompose.v2.CapabilityEndpoint.metadata:type_name -> agentcompose.v2.CapabilityEndpoint.MetadataEntry
+	258, // 319: agentcompose.v2.CapabilityMethod.endpoints:type_name -> agentcompose.v2.CapabilityEndpoint
+	259, // 320: agentcompose.v2.GetCapabilityCatalogResponse.methods:type_name -> agentcompose.v2.CapabilityMethod
+	310, // 321: agentcompose.v2.SandboxHistoryCell.created_at:type_name -> google.protobuf.Timestamp
+	310, // 322: agentcompose.v2.SandboxHistoryEvent.created_at:type_name -> google.protobuf.Timestamp
+	262, // 323: agentcompose.v2.ListSandboxHistoryResponse.cells:type_name -> agentcompose.v2.SandboxHistoryCell
+	263, // 324: agentcompose.v2.ListSandboxHistoryResponse.events:type_name -> agentcompose.v2.SandboxHistoryEvent
+	35,  // 325: agentcompose.v2.WatchSandboxResponse.event_type:type_name -> agentcompose.v2.SandboxWatchEventType
+	145, // 326: agentcompose.v2.WatchSandboxResponse.sandbox:type_name -> agentcompose.v2.Sandbox
+	262, // 327: agentcompose.v2.WatchSandboxResponse.cell:type_name -> agentcompose.v2.SandboxHistoryCell
+	263, // 328: agentcompose.v2.WatchSandboxResponse.event:type_name -> agentcompose.v2.SandboxHistoryEvent
+	22,  // 329: agentcompose.v2.WatchSandboxResponse.stream:type_name -> agentcompose.v2.StdioStream
+	52,  // 330: agentcompose.v2.StreamProjectSchedulerEventsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	68,  // 331: agentcompose.v2.StreamProjectSchedulerEventsResponse.events:type_name -> agentcompose.v2.SchedulerEvent
+	52,  // 332: agentcompose.v2.StreamSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	5,   // 333: agentcompose.v2.StreamSchedulerRunsRequest.status:type_name -> agentcompose.v2.SchedulerRunStatus
+	88,  // 334: agentcompose.v2.StreamSchedulerRunsResponse.runs:type_name -> agentcompose.v2.SchedulerRun
+	52,  // 335: agentcompose.v2.BatchGetLatestSchedulerRunsRequest.project:type_name -> agentcompose.v2.ProjectRef
+	88,  // 336: agentcompose.v2.SandboxSchedulerRun.run:type_name -> agentcompose.v2.SchedulerRun
+	274, // 337: agentcompose.v2.BatchGetLatestSchedulerRunsResponse.results:type_name -> agentcompose.v2.SandboxSchedulerRun
+	310, // 338: agentcompose.v2.LLMProvider.created_at:type_name -> google.protobuf.Timestamp
+	310, // 339: agentcompose.v2.LLMProvider.updated_at:type_name -> google.protobuf.Timestamp
+	36,  // 340: agentcompose.v2.LLMProvider.auth:type_name -> agentcompose.v2.LLMProviderAuth
+	36,  // 341: agentcompose.v2.LLMProviderSpec.auth:type_name -> agentcompose.v2.LLMProviderAuth
+	277, // 342: agentcompose.v2.CreateProviderRequest.provider:type_name -> agentcompose.v2.LLMProviderSpec
+	276, // 343: agentcompose.v2.CreateProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
+	276, // 344: agentcompose.v2.GetProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
+	276, // 345: agentcompose.v2.ListProvidersResponse.providers:type_name -> agentcompose.v2.LLMProvider
+	277, // 346: agentcompose.v2.UpdateProviderRequest.provider:type_name -> agentcompose.v2.LLMProviderSpec
+	276, // 347: agentcompose.v2.UpdateProviderResponse.provider:type_name -> agentcompose.v2.LLMProvider
+	289, // 348: agentcompose.v2.EngineDriverCapabilities.capabilities:type_name -> agentcompose.v2.EngineCapability
+	293, // 349: agentcompose.v2.EngineProviderCapabilities.features:type_name -> agentcompose.v2.EngineProviderFeature
+	291, // 350: agentcompose.v2.GetEngineCapabilitiesResponse.drivers:type_name -> agentcompose.v2.EngineDriverCapabilities
+	292, // 351: agentcompose.v2.GetEngineCapabilitiesResponse.providers:type_name -> agentcompose.v2.EngineProviderCapabilities
+	310, // 352: agentcompose.v2.GetEngineCapabilitiesResponse.captured_at:type_name -> google.protobuf.Timestamp
+	290, // 353: agentcompose.v2.GetEngineCapabilitiesResponse.observations:type_name -> agentcompose.v2.EngineObservedCapability
+	37,  // 354: agentcompose.v2.ProjectService.ValidateProject:input_type -> agentcompose.v2.ValidateProjectRequest
+	39,  // 355: agentcompose.v2.ProjectService.ApplyProject:input_type -> agentcompose.v2.ApplyProjectRequest
+	43,  // 356: agentcompose.v2.ProjectService.PatchProject:input_type -> agentcompose.v2.PatchProjectRequest
+	44,  // 357: agentcompose.v2.ProjectService.GetProject:input_type -> agentcompose.v2.GetProjectRequest
+	46,  // 358: agentcompose.v2.ProjectService.ListProjects:input_type -> agentcompose.v2.ListProjectsRequest
+	48,  // 359: agentcompose.v2.ProjectService.RemoveProject:input_type -> agentcompose.v2.RemoveProjectRequest
+	50,  // 360: agentcompose.v2.ProjectService.WatchProject:input_type -> agentcompose.v2.WatchProjectRequest
+	61,  // 361: agentcompose.v2.ProjectService.GetScheduler:input_type -> agentcompose.v2.GetSchedulerRequest
+	64,  // 362: agentcompose.v2.ProjectService.ListSchedulers:input_type -> agentcompose.v2.ListSchedulersRequest
+	67,  // 363: agentcompose.v2.ProjectService.ListSchedulerEvents:input_type -> agentcompose.v2.ListSchedulerEventsRequest
+	70,  // 364: agentcompose.v2.ProjectService.ListProjectSchedulerEvents:input_type -> agentcompose.v2.ListProjectSchedulerEventsRequest
+	269, // 365: agentcompose.v2.ProjectService.StreamProjectSchedulerEvents:input_type -> agentcompose.v2.StreamProjectSchedulerEventsRequest
+	72,  // 366: agentcompose.v2.ProjectService.InvokeScheduler:input_type -> agentcompose.v2.InvokeSchedulerRequest
+	74,  // 367: agentcompose.v2.ProjectService.RunScheduler:input_type -> agentcompose.v2.RunSchedulerRequest
+	76,  // 368: agentcompose.v2.ProjectService.StartSchedulerRun:input_type -> agentcompose.v2.StartSchedulerRunRequest
+	78,  // 369: agentcompose.v2.ProjectService.GetSchedulerRun:input_type -> agentcompose.v2.GetSchedulerRunRequest
+	80,  // 370: agentcompose.v2.ProjectService.ListSchedulerRuns:input_type -> agentcompose.v2.ListSchedulerRunsRequest
+	273, // 371: agentcompose.v2.ProjectService.BatchGetLatestSchedulerRuns:input_type -> agentcompose.v2.BatchGetLatestSchedulerRunsRequest
+	271, // 372: agentcompose.v2.ProjectService.StreamSchedulerRuns:input_type -> agentcompose.v2.StreamSchedulerRunsRequest
+	82,  // 373: agentcompose.v2.ProjectService.PruneSchedulerRuns:input_type -> agentcompose.v2.PruneSchedulerRunsRequest
+	86,  // 374: agentcompose.v2.ProjectService.StopSchedulerRun:input_type -> agentcompose.v2.StopSchedulerRunRequest
+	89,  // 375: agentcompose.v2.ProjectService.SetSchedulerEnabled:input_type -> agentcompose.v2.SetSchedulerEnabledRequest
+	91,  // 376: agentcompose.v2.ProjectService.SetSchedulerTriggerEnabled:input_type -> agentcompose.v2.SetSchedulerTriggerEnabledRequest
+	117, // 377: agentcompose.v2.RunService.RunAgent:input_type -> agentcompose.v2.RunAgentRequest
+	221, // 378: agentcompose.v2.RunService.StartAgentRun:input_type -> agentcompose.v2.StartAgentRunRequest
+	117, // 379: agentcompose.v2.RunService.StreamAgentRun:input_type -> agentcompose.v2.RunAgentRequest
+	120, // 380: agentcompose.v2.RunService.AttachAgentRun:input_type -> agentcompose.v2.AttachAgentRunRequest
+	124, // 381: agentcompose.v2.RunService.GetRun:input_type -> agentcompose.v2.GetRunRequest
+	126, // 382: agentcompose.v2.RunService.ListRuns:input_type -> agentcompose.v2.ListRunsRequest
+	128, // 383: agentcompose.v2.RunService.FollowRunLogs:input_type -> agentcompose.v2.FollowRunLogsRequest
+	130, // 384: agentcompose.v2.RunService.StopRun:input_type -> agentcompose.v2.StopRunRequest
+	132, // 385: agentcompose.v2.RunService.ListRunEvents:input_type -> agentcompose.v2.ListRunEventsRequest
+	135, // 386: agentcompose.v2.RunService.ListSandboxRunEvents:input_type -> agentcompose.v2.ListSandboxRunEventsRequest
+	159, // 387: agentcompose.v2.ExecService.Exec:input_type -> agentcompose.v2.ExecRequest
+	159, // 388: agentcompose.v2.ExecService.StreamExec:input_type -> agentcompose.v2.ExecRequest
+	164, // 389: agentcompose.v2.ExecService.AttachExec:input_type -> agentcompose.v2.AttachExecRequest
+	181, // 390: agentcompose.v2.ImageService.ListImages:input_type -> agentcompose.v2.ListImagesRequest
+	183, // 391: agentcompose.v2.ImageService.PullImage:input_type -> agentcompose.v2.PullImageRequest
+	185, // 392: agentcompose.v2.ImageService.InspectImage:input_type -> agentcompose.v2.InspectImageRequest
+	187, // 393: agentcompose.v2.ImageService.RemoveImage:input_type -> agentcompose.v2.RemoveImageRequest
+	189, // 394: agentcompose.v2.ImageService.BuildImage:input_type -> agentcompose.v2.BuildImageRequest
+	192, // 395: agentcompose.v2.CacheService.ListCaches:input_type -> agentcompose.v2.ListCachesRequest
+	194, // 396: agentcompose.v2.CacheService.InspectCache:input_type -> agentcompose.v2.InspectCacheRequest
+	196, // 397: agentcompose.v2.CacheService.PruneCaches:input_type -> agentcompose.v2.PruneCachesRequest
+	198, // 398: agentcompose.v2.CacheService.RemoveCache:input_type -> agentcompose.v2.RemoveCacheRequest
+	202, // 399: agentcompose.v2.VolumeService.ListVolumes:input_type -> agentcompose.v2.ListVolumesRequest
+	204, // 400: agentcompose.v2.VolumeService.CreateVolume:input_type -> agentcompose.v2.CreateVolumeRequest
+	206, // 401: agentcompose.v2.VolumeService.InspectVolume:input_type -> agentcompose.v2.InspectVolumeRequest
+	208, // 402: agentcompose.v2.VolumeService.RemoveVolume:input_type -> agentcompose.v2.RemoveVolumeRequest
+	210, // 403: agentcompose.v2.VolumeService.PruneVolumes:input_type -> agentcompose.v2.PruneVolumesRequest
+	137, // 404: agentcompose.v2.SandboxService.RemoveSandbox:input_type -> agentcompose.v2.RemoveSandboxRequest
+	139, // 405: agentcompose.v2.SandboxService.PruneSandboxes:input_type -> agentcompose.v2.PruneSandboxesRequest
+	142, // 406: agentcompose.v2.SandboxService.GetSandboxStats:input_type -> agentcompose.v2.GetSandboxStatsRequest
+	144, // 407: agentcompose.v2.SandboxService.GetSandbox:input_type -> agentcompose.v2.GetSandboxRequest
+	151, // 408: agentcompose.v2.SandboxService.StopSandbox:input_type -> agentcompose.v2.StopSandboxRequest
+	153, // 409: agentcompose.v2.SandboxService.ResumeSandbox:input_type -> agentcompose.v2.ResumeSandboxRequest
+	148, // 410: agentcompose.v2.SandboxService.ListSandboxes:input_type -> agentcompose.v2.ListSandboxesRequest
+	261, // 411: agentcompose.v2.SandboxService.ListSandboxHistory:input_type -> agentcompose.v2.ListSandboxHistoryRequest
+	265, // 412: agentcompose.v2.SandboxService.WatchSandbox:input_type -> agentcompose.v2.WatchSandboxRequest
+	227, // 413: agentcompose.v2.DashboardService.GetDashboardOverview:input_type -> agentcompose.v2.GetDashboardOverviewRequest
+	228, // 414: agentcompose.v2.DashboardService.WatchDashboardOverview:input_type -> agentcompose.v2.WatchDashboardOverviewRequest
+	233, // 415: agentcompose.v2.SettingsService.GetGlobalEnv:input_type -> agentcompose.v2.GetGlobalEnvRequest
+	235, // 416: agentcompose.v2.SettingsService.UpdateGlobalEnv:input_type -> agentcompose.v2.UpdateGlobalEnvRequest
+	237, // 417: agentcompose.v2.SettingsService.GetCapabilityGatewayConfig:input_type -> agentcompose.v2.GetCapabilityGatewayConfigRequest
+	240, // 418: agentcompose.v2.SettingsService.UpdateCapabilityGatewayConfig:input_type -> agentcompose.v2.UpdateCapabilityGatewayConfigRequest
+	242, // 419: agentcompose.v2.SettingsService.GetEventDeliveryScope:input_type -> agentcompose.v2.GetEventDeliveryScopeRequest
+	245, // 420: agentcompose.v2.SettingsService.ListWorkspacePresets:input_type -> agentcompose.v2.ListWorkspacePresetsRequest
+	247, // 421: agentcompose.v2.SettingsService.CreateWorkspacePreset:input_type -> agentcompose.v2.CreateWorkspacePresetRequest
+	248, // 422: agentcompose.v2.SettingsService.UpdateWorkspacePreset:input_type -> agentcompose.v2.UpdateWorkspacePresetRequest
+	249, // 423: agentcompose.v2.SettingsService.DeleteWorkspacePreset:input_type -> agentcompose.v2.DeleteWorkspacePresetRequest
+	252, // 424: agentcompose.v2.CapabilityService.GetCapabilityStatus:input_type -> agentcompose.v2.GetCapabilityStatusRequest
+	254, // 425: agentcompose.v2.CapabilityService.ListCapabilitySets:input_type -> agentcompose.v2.ListCapabilitySetsRequest
+	257, // 426: agentcompose.v2.CapabilityService.GetCapabilityCatalog:input_type -> agentcompose.v2.GetCapabilityCatalogRequest
+	278, // 427: agentcompose.v2.LLMService.CreateProvider:input_type -> agentcompose.v2.CreateProviderRequest
+	280, // 428: agentcompose.v2.LLMService.GetProvider:input_type -> agentcompose.v2.GetProviderRequest
+	282, // 429: agentcompose.v2.LLMService.ListProviders:input_type -> agentcompose.v2.ListProvidersRequest
+	284, // 430: agentcompose.v2.LLMService.UpdateProvider:input_type -> agentcompose.v2.UpdateProviderRequest
+	286, // 431: agentcompose.v2.LLMService.DeleteProvider:input_type -> agentcompose.v2.DeleteProviderRequest
+	267, // 432: agentcompose.v2.LLMService.Generate:input_type -> agentcompose.v2.GenerateLLMRequest
+	224, // 433: agentcompose.v2.ResourceService.ResolveID:input_type -> agentcompose.v2.ResolveResourceIDRequest
+	288, // 434: agentcompose.v2.EngineService.GetCapabilities:input_type -> agentcompose.v2.GetEngineCapabilitiesRequest
+	38,  // 435: agentcompose.v2.ProjectService.ValidateProject:output_type -> agentcompose.v2.ValidateProjectResponse
+	40,  // 436: agentcompose.v2.ProjectService.ApplyProject:output_type -> agentcompose.v2.ApplyProjectResponse
+	40,  // 437: agentcompose.v2.ProjectService.PatchProject:output_type -> agentcompose.v2.ApplyProjectResponse
+	45,  // 438: agentcompose.v2.ProjectService.GetProject:output_type -> agentcompose.v2.GetProjectResponse
+	47,  // 439: agentcompose.v2.ProjectService.ListProjects:output_type -> agentcompose.v2.ListProjectsResponse
+	49,  // 440: agentcompose.v2.ProjectService.RemoveProject:output_type -> agentcompose.v2.RemoveProjectResponse
+	51,  // 441: agentcompose.v2.ProjectService.WatchProject:output_type -> agentcompose.v2.WatchProjectResponse
+	62,  // 442: agentcompose.v2.ProjectService.GetScheduler:output_type -> agentcompose.v2.GetSchedulerResponse
+	66,  // 443: agentcompose.v2.ProjectService.ListSchedulers:output_type -> agentcompose.v2.ListSchedulersResponse
+	69,  // 444: agentcompose.v2.ProjectService.ListSchedulerEvents:output_type -> agentcompose.v2.ListSchedulerEventsResponse
+	71,  // 445: agentcompose.v2.ProjectService.ListProjectSchedulerEvents:output_type -> agentcompose.v2.ListProjectSchedulerEventsResponse
+	270, // 446: agentcompose.v2.ProjectService.StreamProjectSchedulerEvents:output_type -> agentcompose.v2.StreamProjectSchedulerEventsResponse
+	73,  // 447: agentcompose.v2.ProjectService.InvokeScheduler:output_type -> agentcompose.v2.InvokeSchedulerResponse
+	75,  // 448: agentcompose.v2.ProjectService.RunScheduler:output_type -> agentcompose.v2.RunSchedulerResponse
+	77,  // 449: agentcompose.v2.ProjectService.StartSchedulerRun:output_type -> agentcompose.v2.StartSchedulerRunResponse
+	79,  // 450: agentcompose.v2.ProjectService.GetSchedulerRun:output_type -> agentcompose.v2.GetSchedulerRunResponse
+	81,  // 451: agentcompose.v2.ProjectService.ListSchedulerRuns:output_type -> agentcompose.v2.ListSchedulerRunsResponse
+	275, // 452: agentcompose.v2.ProjectService.BatchGetLatestSchedulerRuns:output_type -> agentcompose.v2.BatchGetLatestSchedulerRunsResponse
+	272, // 453: agentcompose.v2.ProjectService.StreamSchedulerRuns:output_type -> agentcompose.v2.StreamSchedulerRunsResponse
+	85,  // 454: agentcompose.v2.ProjectService.PruneSchedulerRuns:output_type -> agentcompose.v2.PruneSchedulerRunsResponse
+	87,  // 455: agentcompose.v2.ProjectService.StopSchedulerRun:output_type -> agentcompose.v2.StopSchedulerRunResponse
+	90,  // 456: agentcompose.v2.ProjectService.SetSchedulerEnabled:output_type -> agentcompose.v2.SetSchedulerEnabledResponse
+	92,  // 457: agentcompose.v2.ProjectService.SetSchedulerTriggerEnabled:output_type -> agentcompose.v2.SetSchedulerTriggerEnabledResponse
+	118, // 458: agentcompose.v2.RunService.RunAgent:output_type -> agentcompose.v2.RunAgentResponse
+	222, // 459: agentcompose.v2.RunService.StartAgentRun:output_type -> agentcompose.v2.StartAgentRunResponse
+	119, // 460: agentcompose.v2.RunService.StreamAgentRun:output_type -> agentcompose.v2.StreamAgentRunResponse
+	121, // 461: agentcompose.v2.RunService.AttachAgentRun:output_type -> agentcompose.v2.AttachAgentRunResponse
+	125, // 462: agentcompose.v2.RunService.GetRun:output_type -> agentcompose.v2.GetRunResponse
+	127, // 463: agentcompose.v2.RunService.ListRuns:output_type -> agentcompose.v2.ListRunsResponse
+	129, // 464: agentcompose.v2.RunService.FollowRunLogs:output_type -> agentcompose.v2.RunLogChunk
+	131, // 465: agentcompose.v2.RunService.StopRun:output_type -> agentcompose.v2.StopRunResponse
+	134, // 466: agentcompose.v2.RunService.ListRunEvents:output_type -> agentcompose.v2.ListRunEventsResponse
+	136, // 467: agentcompose.v2.RunService.ListSandboxRunEvents:output_type -> agentcompose.v2.ListSandboxRunEventsResponse
+	162, // 468: agentcompose.v2.ExecService.Exec:output_type -> agentcompose.v2.ExecResponse
+	163, // 469: agentcompose.v2.ExecService.StreamExec:output_type -> agentcompose.v2.StreamExecResponse
+	165, // 470: agentcompose.v2.ExecService.AttachExec:output_type -> agentcompose.v2.AttachExecResponse
+	182, // 471: agentcompose.v2.ImageService.ListImages:output_type -> agentcompose.v2.ListImagesResponse
+	184, // 472: agentcompose.v2.ImageService.PullImage:output_type -> agentcompose.v2.PullImageResponse
+	186, // 473: agentcompose.v2.ImageService.InspectImage:output_type -> agentcompose.v2.InspectImageResponse
+	188, // 474: agentcompose.v2.ImageService.RemoveImage:output_type -> agentcompose.v2.RemoveImageResponse
+	190, // 475: agentcompose.v2.ImageService.BuildImage:output_type -> agentcompose.v2.BuildImageEvent
+	193, // 476: agentcompose.v2.CacheService.ListCaches:output_type -> agentcompose.v2.ListCachesResponse
+	195, // 477: agentcompose.v2.CacheService.InspectCache:output_type -> agentcompose.v2.InspectCacheResponse
+	197, // 478: agentcompose.v2.CacheService.PruneCaches:output_type -> agentcompose.v2.PruneCachesResponse
+	199, // 479: agentcompose.v2.CacheService.RemoveCache:output_type -> agentcompose.v2.RemoveCacheResponse
+	203, // 480: agentcompose.v2.VolumeService.ListVolumes:output_type -> agentcompose.v2.ListVolumesResponse
+	205, // 481: agentcompose.v2.VolumeService.CreateVolume:output_type -> agentcompose.v2.CreateVolumeResponse
+	207, // 482: agentcompose.v2.VolumeService.InspectVolume:output_type -> agentcompose.v2.InspectVolumeResponse
+	209, // 483: agentcompose.v2.VolumeService.RemoveVolume:output_type -> agentcompose.v2.RemoveVolumeResponse
+	211, // 484: agentcompose.v2.VolumeService.PruneVolumes:output_type -> agentcompose.v2.PruneVolumesResponse
+	138, // 485: agentcompose.v2.SandboxService.RemoveSandbox:output_type -> agentcompose.v2.RemoveSandboxResponse
+	141, // 486: agentcompose.v2.SandboxService.PruneSandboxes:output_type -> agentcompose.v2.PruneSandboxesResponse
+	143, // 487: agentcompose.v2.SandboxService.GetSandboxStats:output_type -> agentcompose.v2.GetSandboxStatsResponse
+	150, // 488: agentcompose.v2.SandboxService.GetSandbox:output_type -> agentcompose.v2.GetSandboxResponse
+	152, // 489: agentcompose.v2.SandboxService.StopSandbox:output_type -> agentcompose.v2.StopSandboxResponse
+	154, // 490: agentcompose.v2.SandboxService.ResumeSandbox:output_type -> agentcompose.v2.ResumeSandboxResponse
+	149, // 491: agentcompose.v2.SandboxService.ListSandboxes:output_type -> agentcompose.v2.ListSandboxesResponse
+	264, // 492: agentcompose.v2.SandboxService.ListSandboxHistory:output_type -> agentcompose.v2.ListSandboxHistoryResponse
+	266, // 493: agentcompose.v2.SandboxService.WatchSandbox:output_type -> agentcompose.v2.WatchSandboxResponse
+	231, // 494: agentcompose.v2.DashboardService.GetDashboardOverview:output_type -> agentcompose.v2.GetDashboardOverviewResponse
+	232, // 495: agentcompose.v2.DashboardService.WatchDashboardOverview:output_type -> agentcompose.v2.WatchDashboardOverviewResponse
+	234, // 496: agentcompose.v2.SettingsService.GetGlobalEnv:output_type -> agentcompose.v2.GetGlobalEnvResponse
+	236, // 497: agentcompose.v2.SettingsService.UpdateGlobalEnv:output_type -> agentcompose.v2.UpdateGlobalEnvResponse
+	239, // 498: agentcompose.v2.SettingsService.GetCapabilityGatewayConfig:output_type -> agentcompose.v2.GetCapabilityGatewayConfigResponse
+	241, // 499: agentcompose.v2.SettingsService.UpdateCapabilityGatewayConfig:output_type -> agentcompose.v2.UpdateCapabilityGatewayConfigResponse
+	243, // 500: agentcompose.v2.SettingsService.GetEventDeliveryScope:output_type -> agentcompose.v2.GetEventDeliveryScopeResponse
+	246, // 501: agentcompose.v2.SettingsService.ListWorkspacePresets:output_type -> agentcompose.v2.ListWorkspacePresetsResponse
+	251, // 502: agentcompose.v2.SettingsService.CreateWorkspacePreset:output_type -> agentcompose.v2.WorkspacePresetResponse
+	251, // 503: agentcompose.v2.SettingsService.UpdateWorkspacePreset:output_type -> agentcompose.v2.WorkspacePresetResponse
+	250, // 504: agentcompose.v2.SettingsService.DeleteWorkspacePreset:output_type -> agentcompose.v2.DeleteWorkspacePresetResponse
+	253, // 505: agentcompose.v2.CapabilityService.GetCapabilityStatus:output_type -> agentcompose.v2.CapabilityStatusResponse
+	256, // 506: agentcompose.v2.CapabilityService.ListCapabilitySets:output_type -> agentcompose.v2.ListCapabilitySetsResponse
+	260, // 507: agentcompose.v2.CapabilityService.GetCapabilityCatalog:output_type -> agentcompose.v2.GetCapabilityCatalogResponse
+	279, // 508: agentcompose.v2.LLMService.CreateProvider:output_type -> agentcompose.v2.CreateProviderResponse
+	281, // 509: agentcompose.v2.LLMService.GetProvider:output_type -> agentcompose.v2.GetProviderResponse
+	283, // 510: agentcompose.v2.LLMService.ListProviders:output_type -> agentcompose.v2.ListProvidersResponse
+	285, // 511: agentcompose.v2.LLMService.UpdateProvider:output_type -> agentcompose.v2.UpdateProviderResponse
+	287, // 512: agentcompose.v2.LLMService.DeleteProvider:output_type -> agentcompose.v2.DeleteProviderResponse
+	268, // 513: agentcompose.v2.LLMService.Generate:output_type -> agentcompose.v2.GenerateLLMResponse
+	225, // 514: agentcompose.v2.ResourceService.ResolveID:output_type -> agentcompose.v2.ResolveResourceIDResponse
+	294, // 515: agentcompose.v2.EngineService.GetCapabilities:output_type -> agentcompose.v2.GetEngineCapabilitiesResponse
+	435, // [435:516] is the sub-list for method output_type
+	354, // [354:435] is the sub-list for method input_type
+	354, // [354:354] is the sub-list for extension type_name
+	354, // [354:354] is the sub-list for extension extendee
+	0,   // [0:354] is the sub-list for field type_name
 }
 
 func init() { file_agentcompose_v2_agentcompose_proto_init() }
@@ -23399,21 +23668,21 @@ func file_agentcompose_v2_agentcompose_proto_init() {
 	if File_agentcompose_v2_agentcompose_proto != nil {
 		return
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[13].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[15].OneofWrappers = []any{
 		(*ProjectRef_ProjectId)(nil),
 		(*ProjectRef_Name)(nil),
 		(*ProjectRef_SourcePath)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[58].OneofWrappers = []any{}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[68].OneofWrappers = []any{}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[71].OneofWrappers = []any{}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[73].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[60].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[70].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[73].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[75].OneofWrappers = []any{
 		(*DriverSpec_Boxlite)(nil),
 		(*DriverSpec_Docker)(nil),
 		(*DriverSpec_Microsandbox)(nil),
 		(*DriverSpec_K8S)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[81].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[83].OneofWrappers = []any{
 		(*AttachAgentRunRequest_Start)(nil),
 		(*AttachAgentRunRequest_Stdin)(nil),
 		(*AttachAgentRunRequest_StdinEof)(nil),
@@ -23422,7 +23691,7 @@ func file_agentcompose_v2_agentcompose_proto_init() {
 		(*AttachAgentRunRequest_HumanMessage)(nil),
 		(*AttachAgentRunRequest_Cancel)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[82].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[84].OneofWrappers = []any{
 		(*AttachAgentRunResponse_Started)(nil),
 		(*AttachAgentRunResponse_Output)(nil),
 		(*AttachAgentRunResponse_AgentEvent)(nil),
@@ -23430,17 +23699,17 @@ func file_agentcompose_v2_agentcompose_proto_init() {
 		(*AttachAgentRunResponse_Result)(nil),
 		(*AttachAgentRunResponse_Error)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[116].OneofWrappers = []any{}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[120].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[118].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[122].OneofWrappers = []any{
 		(*ExecRequest_SandboxId)(nil),
 		(*ExecRequest_RunId)(nil),
 		(*ExecRequest_Selector)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[121].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[123].OneofWrappers = []any{
 		(*ExecSandboxSelector_ProjectId)(nil),
 		(*ExecSandboxSelector_ProjectName)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[125].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[127].OneofWrappers = []any{
 		(*AttachExecRequest_Start)(nil),
 		(*AttachExecRequest_Stdin)(nil),
 		(*AttachExecRequest_StdinEof)(nil),
@@ -23449,7 +23718,7 @@ func file_agentcompose_v2_agentcompose_proto_init() {
 		(*AttachExecRequest_Cancel)(nil),
 		(*AttachExecRequest_HumanMessage)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[126].OneofWrappers = []any{
+	file_agentcompose_v2_agentcompose_proto_msgTypes[128].OneofWrappers = []any{
 		(*AttachExecResponse_Started)(nil),
 		(*AttachExecResponse_Output)(nil),
 		(*AttachExecResponse_Result)(nil),
@@ -23457,15 +23726,15 @@ func file_agentcompose_v2_agentcompose_proto_init() {
 		(*AttachExecResponse_AgentEvent)(nil),
 		(*AttachExecResponse_AgentTurnCompleted)(nil),
 	}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[201].OneofWrappers = []any{}
-	file_agentcompose_v2_agentcompose_proto_msgTypes[238].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[203].OneofWrappers = []any{}
+	file_agentcompose_v2_agentcompose_proto_msgTypes[240].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agentcompose_v2_agentcompose_proto_rawDesc), len(file_agentcompose_v2_agentcompose_proto_rawDesc)),
 			NumEnums:      37,
-			NumMessages:   271,
+			NumMessages:   273,
 			NumExtensions: 0,
 			NumServices:   13,
 		},

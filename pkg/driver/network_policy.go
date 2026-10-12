@@ -120,13 +120,7 @@ func (p SandboxNetworkPolicy) DenyByDefault() bool {
 // destinations but not these ranges is applying less than the project declared,
 // so it has to say so rather than run as if the constraint were in place.
 func (p SandboxNetworkPolicy) AddressConstrainedAllowances() int {
-	constrained := 0
-	for _, entry := range p.Allow {
-		if len(entry.AllowedIPs) > 0 {
-			constrained++
-		}
-	}
-	return constrained
+	return egress.AddressConstrainedAllowances(p.Allow)
 }
 
 // Validate rejects a policy a driver could not enforce. The destinations and

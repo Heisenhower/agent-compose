@@ -83,3 +83,17 @@ func IsIPLiteral(host string) bool {
 	_, err := netip.ParseAddr(strings.Trim(strings.TrimSpace(host), "[]"))
 	return err == nil
 }
+
+// AddressConstrainedAllowances counts the allowances that constrain the
+// addresses their name may resolve to. A mechanism that applies destinations but
+// not addresses must know how many entries it is applying partially, so the
+// count lives beside the constraint it describes.
+func AddressConstrainedAllowances(allow []AllowEntry) int {
+	constrained := 0
+	for _, entry := range allow {
+		if len(entry.AllowedIPs) > 0 {
+			constrained++
+		}
+	}
+	return constrained
+}

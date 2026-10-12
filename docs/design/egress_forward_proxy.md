@@ -105,22 +105,27 @@ The first slice is implemented and verified on the Docker driver:
   say so rather than apply the destinations alone.
 - `EGRESS_UNENFORCEABLE_POLICY` defaults to `warn`, so a declaration the platform
   cannot deliver is reported instead of becoming an availability failure.
+- **Admission says which mechanism will apply.** `up`/`apply` report, per declaring
+  agent, the declaration and the mechanism the creation seam will install
+  (`driver.ReportAgentNetworkPolicy`, carried in `ApplyProjectResponse` and
+  `ValidateProjectResponse`); `config` prints the declared half locally, because
+  it never contacts the daemon. The verdict uses the same mediation predicate the
+  seam uses (`SandboxEgressProxy.MediatesDriver`), so a report cannot claim a
+  mechanism the creation path would not set, and the daemon fails the request
+  rather than describe a project whose policy it cannot compile.
 
 Evidence: `verify-forward-proxy.sh` (9/9) and `verify-allowed-ips.sh` (5/5) on the
 Docker driver, plus `verify-warn-default.sh` (13/13) for the fallback.
 
 ## Still open
 
-- **Admission-time verdict.** `config`, `up` and `apply` report what was
-  *declared*, not what will be *enforced*: nothing tells the operator at admission
-  time that an agent's declaration will fall back to the unenforced path. The
-  pieces exist (`SandboxNetworkEnforcementFor`, `SandboxEgressForwardProxyEnforcement`),
-  so this is a reporting surface, not a new decision.
 - **Per-sandbox policy record and drift.** The proxy reads the current declaration
   per request, and `egress.Policy.Generation()` already stamps every decision, but
   no store records the generation a sandbox was created under, so drift between
   the declaration a sandbox started with and the one in force is not visible.
-- **`ReportNetworkPolicy` has no production caller.** The auditable account of a
-  declaration (allowances, engine auto-allows, inspectability) exists and is
-  tested but is not rendered on any surface a user can read; `DeclaredAllowance`
-  should also carry the address ranges once it is.
+- **The engine auto-allow is reported per mechanism, not per agent at
+  admission.** `ReportNetworkPolicy`'s engine-endpoint list needs a sandbox's own
+  facade address, which does not exist until the sandbox does, so the admission
+  report names the exemption through the mechanism's notes and the driver's
+  `egress_policy` capability instead of inventing an address. Listing the exact
+  endpoints of a *running* sandbox is the remaining step.

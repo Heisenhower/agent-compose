@@ -1,0 +1,42 @@
+package api
+
+import (
+	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	agentcomposev2 "github.com/chaitin/agent-compose/proto/agentcompose/v2"
+)
+
+// NetworkPolicyReportsToProto renders the daemon's account of what each agent
+// declared and which mechanism will apply it. It is transport-only: the report
+// was computed from the same declaration the decision model compiles, so it
+// never re-derives or reinterprets the policy here.
+func NetworkPolicyReportsToProto(reports []driverpkg.AgentNetworkPolicyReport) []*agentcomposev2.AgentNetworkPolicyReport {
+	if len(reports) == 0 {
+		return nil
+	}
+	mapped := make([]*agentcomposev2.AgentNetworkPolicyReport, 0, len(reports))
+	for _, report := range reports {
+		allow := make([]*agentcomposev2.DeclaredNetworkAllowance, 0, len(report.Allow))
+		for _, entry := range report.Allow {
+			allow = append(allow, &agentcomposev2.DeclaredNetworkAllowance{
+				Endpoint:    entry.Endpoint,
+				Inspectable: entry.Inspectable,
+				AllowedIps:  append([]string(nil), entry.AllowedIPs...),
+			})
+		}
+		mapped = append(mapped, &agentcomposev2.AgentNetworkPolicyReport{
+			Agent:     report.Agent,
+			Driver:    report.Driver,
+			Declared:  report.Declared,
+			Restricts: report.Restricts,
+			Default:   string(report.Default),
+			Allow:     allow,
+			Mediated:  report.Mediated,
+			Enforced:  report.Enforced,
+			Strength:  string(report.Enforcement.Strength),
+			Mechanism: report.Enforcement.Mechanism,
+			Unapplied: append([]string(nil), report.Unapplied...),
+			Warning:   report.Warning,
+		})
+	}
+	return mapped
+}
