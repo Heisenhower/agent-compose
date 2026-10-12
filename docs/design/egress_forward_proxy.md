@@ -117,8 +117,79 @@ The first slice is implemented and verified on the Docker driver:
 Evidence: `verify-forward-proxy.sh` (9/9) and `verify-allowed-ips.sh` (5/5) on the
 Docker driver, plus `verify-warn-default.sh` (13/13) for the fallback.
 
+## Verified on real drivers
+
+The matrix below was executed against real sandboxes on this checkout. Every row
+is one guest request decided against a declaration; `docker` and `microsandbox`
+passed all of them, and `boxlite` could not be covered because its VM does not
+boot in this environment. The row set is
+`TestE2EDockerNetworkPolicyExecutionMatrix` in
+`test/e2e/docker_network_policy_host_daemon_test.go`, which is opt-in: it needs a
+guest image with `curl`, and the rows that name an address need a host-local
+fixture on an address the proxy's bypass list does not cover.
+
+| # | Declaration under test | Guest assertion | docker | microsandbox | boxlite |
+| --- | --- | --- | --- | --- | --- |
+| 1 | no `policy` block | reaches a public host and an arbitrary host address, and carries 0 `*_proxy` variables | pass | pass | not covered |
+| 2 | `default: allow-all` with an allow list | the unlisted public host still reaches 200 | pass | pass | not covered |
+| 3 | `default: deny` + allow `api.github.com:443 https` | allowed host 200, `example.com` refused | pass | pass | not covered |
+| 4 | the same declaration on port 6443 | refused under the engine's control-plane port rule | pass | pass | not covered |
+| 5 | `default: deny` + allow an address literal | the literal reaches the fixture; an uncovered port on it is refused | pass | pass | not covered |
+| 6 | the same entry with `allowed_ips` covering the address | the fixture is allowed | pass | pass | not covered |
+| 7 | the same entry with `allowed_ips` that cannot cover it, by literal and by name | both refused, each naming the range | pass | pass | not covered |
+| 8 | `default: deny` + an allow entry for the metadata address | still refused under the engine's address rule | pass | pass | not covered |
+| 9 | an edit that adds an allowance to a running sandbox | the running sandbox observes it per request | pass | pass | not covered |
+| 10 | any refused row | the daemon records the denial and the rule that produced it | pass | pass for the proxy-mediated rows; the SDK mechanism's own refusals are silent | not covered |
+
+Mechanism per driver:
+
+| Driver | What enforces a declaration | Evidence |
+| --- | --- | --- |
+| docker | the engine's forward proxy (`strength=allowlist`, `mechanism=forward_proxy`, applies `allowed_ips`) | full matrix pass in 139s, plus a 2.5s fail-closed case |
+| microsandbox | the SDK `NetworkConfig`, and the engine's forward proxy for the traffic that uses it | full matrix pass in 85s, plus the mechanism-only run below |
+| boxlite | the engine's forward proxy when the guest can reach the daemon; the driver installs no filter of its own | **not covered**: the VM does not boot here (`The VM failed to start`, `libkrun status=-2`, `Couldn't find or load libkrunfw.so.5` in the box's own shim log), so there was no sandbox to test |
+| k8s | the engine's forward proxy when the guest can reach the daemon | not attempted; this matrix is about the three drivers above |
+
+The microsandbox driver's own mechanism, with the proxy unavailable
+(`HTTP_LISTEN` empty, so the sandbox carries no proxy environment), on a real KVM
+run:
+
+| Row | Observed |
+| --- | --- |
+| no declaration | `https://example.com/` 200, the host fixture 200 |
+| `default: deny`, no allowance | the guest cannot resolve the name (`curl` exit 6); no connection is attempted |
+| `default: deny` + allow `example.com:80 http` | 200 |
+| `default: deny` + allow an address literal | the fixture 200; another address, another port, and no allowance all fail immediately (exit 7) |
+| `default: deny` + allow `example.com:443 https` | TCP connects and the TLS handshake fails (`curl` exit 35, twice) |
+| any refused row | the daemon records nothing: these refusals are not decisions the engine makes |
+
+The strict half of the behavior is pinned as well: with
+`EGRESS_UNENFORCEABLE_POLICY=refuse`, a declaration the driver cannot deliver
+refuses the start instead of running the agent with unrestricted egress
+(`TestE2EDockerDeclaredPolicyFailsClosedWithoutAReachableProxy`, which asserts
+that the refusal names the driver and the reason and that the command never ran).
+
+Two findings from running it:
+
+- The microsandbox driver's `mkfs.ext4` capability check matched an English
+  usage line, so a host with a translated tool reported a missing capability and
+  the start failed. The probe now asks for the C locale, and
+  `TestValidateMicrosandboxDiskToolsReadsTheCapabilityInTheCLocale` pins it.
+- An allowance over TLS is not usable through the SDK mechanism alone (the row
+  above). The proxy is what carries an HTTPS allowance today, which is the
+  mechanism the engine installs whenever the sandbox can reach it.
+
 ## Still open
 
+- **The bypass list exempts a host, not an endpoint.** `NO_PROXY` names the
+  daemon's own address so a sandbox can reach the LLM facade, the telemetry
+  endpoint, and the Jupyter proxy without the proxy deciding those connections.
+  The list carries hosts and not ports, so every other port on that address is
+  exempt as well: no declaration can allow or refuse it, and the matrix had to
+  put its address fixture on a second host address for those rows to reach the
+  proxy at all. Narrowing the exemption to the engine's endpoint addresses and
+  ports is the fix; it needs a client survey first, because `NO_PROXY` entries
+  that carry a port are not handled identically by every HTTP client.
 - **Per-sandbox policy record — delivered, with one open driver gap.** A sandbox's
   runtime state records the generation of the effective policy it was created
   under and the mechanism that applied it (`open`, `driver-applied`,

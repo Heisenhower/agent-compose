@@ -71,11 +71,13 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    true,
 			AppliesEngineEndpoints: true,
 			AppliesDenyDomains:     true,
-			// The strength is a declaration about the mechanism the driver asks the
-			// SDK to install, not about behavior observed on a real hypervisor: this
-			// mechanism has not been run against KVM here, so the report says so
-			// instead of presenting it as verified.
-			Notes: "unverified on a real KVM run: the SDK NetworkConfig applies ordered allow rules, a deny egress default, and the deny-domain list, but it matches the name the sandbox asked for and does not constrain which addresses that name may resolve to; the hypervisor's exact domain-suffix semantics still need a real KVM run",
+			// The declaration is what the driver asks the SDK to install. A real KVM
+			// run confirmed the deny default and the allow rules (a name without an
+			// allowance fails to resolve, and an address allowance is refused on
+			// every other address and port) and showed a limit the note records: an
+			// allowed HTTPS destination did not complete a TLS handshake there, so
+			// the engine's proxy is what carries an HTTPS allowance today.
+			Notes: "verified on a real KVM run: the SDK NetworkConfig applies the deny egress default and the allow rules (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), but it matches the name the sandbox asked for and does not constrain which addresses that name may resolve to; an allowed HTTPS destination did not complete a TLS handshake in that run, so the engine's forward proxy is what carries an HTTPS allowance when the sandbox can reach the daemon; the mechanism's own refusals are not recorded by the daemon",
 		}
 	case RuntimeDriverK8s:
 		// A per-sandbox egress NetworkPolicy would deny all egress, including
