@@ -167,11 +167,11 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The policy could not be read, so nothing may be forwarded: an
 		// unreadable declaration is not an absent one.
-		p.denyResult(w, r, sandboxID, destination, request, egress.Result{
+		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: egress.Result{
 			Action: egress.Deny,
 			RuleID: EgressRulePolicyUnavailable,
 			Reason: "the sandbox network policy could not be read",
-		})
+		}})
 		p.logger.WarnContext(r.Context(), "egress proxy denied a request because the sandbox policy is unavailable",
 			"sandbox_id", sandboxID, "host", destination.host, "port", destination.port, "error", err)
 		return
@@ -179,29 +179,29 @@ func (p *EgressProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	addresses, err := p.resolve(r.Context(), destination.host)
 	if err != nil {
-		p.denyResult(w, r, sandboxID, destination, request, egress.Result{
+		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: egress.Result{
 			Action:     egress.Deny,
 			RuleID:     EgressRuleUnresolvedAddress,
 			Reason:     "the destination name did not resolve",
 			Generation: policy.Generation(),
-		})
+		}})
 		p.logger.WarnContext(r.Context(), "egress proxy could not resolve a destination",
 			"sandbox_id", sandboxID, "host", destination.host, "error", err)
 		return
 	}
 	if blocked := firstBlockedAddress(addresses); blocked != nil {
-		p.denyResult(w, r, sandboxID, destination, request, egress.Result{
+		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: egress.Result{
 			Action:     egress.Deny,
 			RuleID:     EgressRuleBlockedAddress,
 			Reason:     fmt.Sprintf("the destination resolves to %s, an address the engine never forwards to", blocked),
 			Generation: policy.Generation(),
-		})
+		}})
 		return
 	}
 
 	result := egress.Decide(policy, request)
 	if !result.Allowed() {
-		p.denyResult(w, r, sandboxID, destination, request, result)
+		p.deny(w, r, egressDenial{sandboxID: sandboxID, destination: destination, request: request, result: result})
 		return
 	}
 	p.record(r.Context(), request, result)
@@ -271,22 +271,29 @@ func lookupHostAddresses(ctx context.Context, host string) ([]net.IP, error) {
 	return ips, nil
 }
 
-func (p *EgressProxy) denyResult(w http.ResponseWriter, r *http.Request, sandboxID string, destination egressDestination, request egress.Request, result egress.Result) {
-	p.deny(w, r, sandboxID, destination, result)
-	p.record(r.Context(), request, result)
+// egressDenial is one refused attempt: who asked, for what, and the decision
+// that refused it. It is bundled because a refusal and its record are one fact,
+// and every refusal path must produce both.
+type egressDenial struct {
+	sandboxID   string
+	destination egressDestination
+	request     egress.Request
+	result      egress.Result
 }
 
-func (p *EgressProxy) deny(w http.ResponseWriter, r *http.Request, sandboxID string, destination egressDestination, result egress.Result) {
-	reason := strings.TrimSpace(result.Reason)
+// deny writes the refusal and records the decision behind it.
+func (p *EgressProxy) deny(w http.ResponseWriter, r *http.Request, denial egressDenial) {
+	p.record(r.Context(), denial.request, denial.result)
+	reason := strings.TrimSpace(denial.result.Reason)
 	if reason == "" {
 		reason = "the sandbox network policy does not allow this destination"
 	}
-	w.Header().Set("X-Agent-Compose-Egress-Rule", result.RuleID)
+	w.Header().Set("X-Agent-Compose-Egress-Rule", denial.result.RuleID)
 	w.Header().Set("X-Agent-Compose-Egress-Reason", reason)
-	http.Error(w, fmt.Sprintf("agent-compose egress proxy: %s (rule %s)", reason, result.RuleID), http.StatusForbidden)
+	http.Error(w, fmt.Sprintf("agent-compose egress proxy: %s (rule %s)", reason, denial.result.RuleID), http.StatusForbidden)
 	p.logger.InfoContext(r.Context(), "egress proxy denied a request",
-		"sandbox_id", sandboxID, "host", destination.host, "port", destination.port,
-		"protocol", string(destination.protocol), "rule", result.RuleID, "reason", reason)
+		"sandbox_id", denial.sandboxID, "host", denial.destination.host, "port", denial.destination.port,
+		"protocol", string(denial.destination.protocol), "rule", denial.result.RuleID, "reason", reason)
 }
 
 func (p *EgressProxy) record(ctx context.Context, request egress.Request, result egress.Result) {
@@ -402,17 +409,15 @@ func egressDestinationFromRequest(r *http.Request) (egressDestination, error) {
 	if hostname == "" {
 		return egressDestination{}, errors.New("the request names no destination host")
 	}
-	protocol := egress.ProtocolTCP
-	switch {
-	case r.Method == http.MethodConnect:
+	protocol := egress.ProtocolHTTP
+	if r.Method == http.MethodConnect {
+		protocol = egress.ProtocolTCP
 		switch port {
 		case 443:
 			protocol = egress.ProtocolHTTPS
 		case 80:
 			protocol = egress.ProtocolHTTP
 		}
-	default:
-		protocol = egress.ProtocolHTTP
 	}
 	if port == 0 {
 		if protocol == egress.ProtocolHTTP {

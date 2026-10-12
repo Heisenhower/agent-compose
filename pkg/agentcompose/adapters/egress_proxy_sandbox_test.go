@@ -16,7 +16,6 @@ import (
 // egressProxyTestStore is the credential store seen from the boundary: it keeps
 // the raw value the sandbox would present mapped to the token that was issued.
 type egressProxyTestStore struct {
-	raw    string
 	tokens map[string]llms.FacadeToken
 }
 

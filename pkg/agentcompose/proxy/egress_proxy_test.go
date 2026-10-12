@@ -165,6 +165,7 @@ func TestEgressProxyTunnelsAnAllowedConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the tunnel response: %v", err)
 	}
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status = %d, want 200", response.StatusCode)
 	}
@@ -216,6 +217,7 @@ func TestEgressProxyDeniesAnUndeclaredDestination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the deny response: %v", err)
 	}
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("CONNECT status = %d, want 403", response.StatusCode)
 	}
@@ -315,6 +317,7 @@ func TestEgressProxyRefusesBlockedAddresses(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading the deny response: %v", err)
 			}
+			defer func() { _ = response.Body.Close() }()
 			if response.StatusCode != http.StatusForbidden {
 				t.Fatalf("CONNECT status = %d, want 403", response.StatusCode)
 			}
@@ -364,6 +367,7 @@ func TestEgressProxyRequiresASandboxCredential(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading the response: %v", err)
 			}
+			defer func() { _ = response.Body.Close() }()
 			if response.StatusCode != test.wantCode {
 				t.Fatalf("status = %d, want %d", response.StatusCode, test.wantCode)
 			}
@@ -399,6 +403,7 @@ func TestEgressProxyRejectsAnIdentityMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the response: %v", err)
 	}
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403 for a credential presented as another sandbox", response.StatusCode)
 	}
@@ -440,6 +445,7 @@ func TestEgressProxyDeniesWhenThePolicyOrTheNameIsUnusable(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading the deny response: %v", err)
 			}
+			defer func() { _ = response.Body.Close() }()
 			if response.StatusCode != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403", response.StatusCode)
 			}
@@ -479,6 +485,7 @@ func TestEgressProxyReadsThePolicyPerRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the first response: %v", err)
 	}
+	defer func() { _ = firstResponse.Body.Close() }()
 	if firstResponse.StatusCode != http.StatusOK {
 		t.Fatalf("first CONNECT status = %d, want 200 under the permissive policy", firstResponse.StatusCode)
 	}
@@ -492,6 +499,7 @@ func TestEgressProxyReadsThePolicyPerRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the second response: %v", err)
 	}
+	defer func() { _ = secondResponse.Body.Close() }()
 	if secondResponse.StatusCode != http.StatusForbidden {
 		t.Fatalf("second CONNECT status = %d, want 403 after the policy changed", secondResponse.StatusCode)
 	}
