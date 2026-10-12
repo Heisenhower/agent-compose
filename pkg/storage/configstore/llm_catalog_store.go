@@ -198,6 +198,13 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
 		return fmt.Errorf("store model catalog default: %w", err)
 	}
+	// The file's reference replaced whatever was stored. A literal model an
+	// operator had made the default through the LLM service is kept alive by that
+	// stored reference alone, so it is unreferenced now and must not keep claiming
+	// its model id.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -317,8 +324,22 @@ func (s *llmStore) SetDefaultLLMModel(ctx context.Context, reference llms.ModelR
 // ClearDefaultLLMModel removes the effective default model. A models.json that
 // declares its own default restores that reference at the next startup.
 func (s *llmStore) ClearDefaultLLMModel(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin default model clear: %w", err)
+	}
+	// Rollback after commit is harmless; on errors it releases the transaction.
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
 		return fmt.Errorf("clear llm default model: %w", err)
+	}
+	// Removing the reference can be what makes a literal model's identity row
+	// unreferenced, so the sweep belongs in this transaction too.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit default model clear: %w", err)
 	}
 	return nil
 }

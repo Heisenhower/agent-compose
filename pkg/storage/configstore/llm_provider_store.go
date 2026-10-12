@@ -163,6 +163,15 @@ func (s *llmStore) UpdateLLMProvider(ctx context.Context, input llms.ProviderRep
 		if err := clearDefaultReferenceForProvider(ctx, tx, provider.ID); err != nil {
 			return llms.Provider{}, err
 		}
+		// The model identity a literal default created is kept alive by that
+		// reference alone, so clearing it can leave the row unreferenced. The
+		// sweep inside replaceProviderModels cannot cover this: an update that
+		// carries no model set skips it, and it ran before the clear. A leftover
+		// enabled api-scope identity would keep claiming its model id, and the
+		// environment bootstrap yields its whole projection to a foreign owner.
+		if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+			return llms.Provider{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return llms.Provider{}, fmt.Errorf("commit provider update: %w", err)

@@ -70,6 +70,10 @@ func TestIntegrationDefaultModelLifecycle(t *testing.T) {
 	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "catalog" || modelID != "catalog-model" {
 		t.Fatalf("default after a declared catalog default = %q/%q ok=%v err=%v", providerID, modelID, ok, err)
 	}
+	// The file's reference replaced the stored one, which was the only thing
+	// keeping that literal model's identity alive.
+	assertModelIdentityPresence(t, ctx, store, "gpt-5-preview", false)
+	assertModelIdentityPresence(t, ctx, store, "catalog-model", true)
 
 	if err := store.ClearDefaultLLMModel(ctx); err != nil {
 		t.Fatalf("clear default: %v", err)
@@ -200,6 +204,71 @@ func TestIntegrationDefaultModelReferenceDoesNotSurviveItsConnection(t *testing.
 	if _, err := resolveCatalogModel(ctx, store, ""); !errors.Is(err, llms.ErrNoModel) {
 		t.Fatalf("resolve after deleting the default connection error = %v, want ErrNoModel", err)
 	}
+}
+
+// Disabling a connection clears the default reference that names it, but the
+// model identity only that reference kept alive was left behind: the identity
+// sweep runs inside replaceProviderModels, which an update carrying no model set
+// skips, and the reference was still stored when that sweep ran. The leftover
+// (scope=api, enabled=1) then claimed the model id as a foreign owner, so the
+// environment bootstrap yielded its whole projection to a model nothing served.
+func TestIntegrationDisablingAConnectionSweepsTheIdentityItsDefaultKeptAlive(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	key := "gateway-key"
+	if _, err := store.CreateLLMProvider(ctx, llms.ProviderReplacement{
+		ID: "gateway", BaseURL: "https://gateway.example/v1", Protocol: llms.APIProtocolResponses, APIKey: &key,
+		Models: declaredModels(llms.ModelSpec{ID: "gpt-4o"}),
+	}); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	// A literal the connection does not enumerate: only the default reference
+	// keeps its identity row alive.
+	if _, err := store.SetDefaultLLMModel(ctx, llms.ModelReference{ProviderID: "gateway", ModelID: "gpt-5-preview"}); err != nil {
+		t.Fatalf("set default: %v", err)
+	}
+	assertModelIdentityPresence(t, ctx, store, "gpt-5-preview", true)
+
+	disabled := false
+	if _, err := store.UpdateLLMProvider(ctx, llms.ProviderReplacement{ID: "gateway", Enabled: &disabled}); err != nil {
+		t.Fatalf("disable provider: %v", err)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || ok {
+		t.Fatalf("default of a disabled connection = %q/%q ok=%v err=%v, want none", providerID, modelID, ok, err)
+	}
+	assertModelIdentityPresence(t, ctx, store, "gpt-5-preview", false)
+	// A model the connection still binds must survive the sweep.
+	assertModelIdentityPresence(t, ctx, store, "gpt-4o", true)
+}
+
+// Clearing the effective default is the RPC counterpart of disabling the
+// connection that serves it: the identity a literal default created is kept alive
+// by the reference alone, so removing the reference must sweep it in the same
+// transaction.
+func TestIntegrationClearingTheDefaultSweepsTheIdentityItKeptAlive(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	key := "gateway-key"
+	if _, err := store.CreateLLMProvider(ctx, llms.ProviderReplacement{
+		ID: "gateway", BaseURL: "https://gateway.example/v1", Protocol: llms.APIProtocolResponses, APIKey: &key,
+		Models: declaredModels(llms.ModelSpec{ID: "gpt-4o"}),
+	}); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	if _, err := store.SetDefaultLLMModel(ctx, llms.ModelReference{ProviderID: "gateway", ModelID: "gpt-5-preview"}); err != nil {
+		t.Fatalf("set default: %v", err)
+	}
+	assertModelIdentityPresence(t, ctx, store, "gpt-5-preview", true)
+
+	if err := store.ClearDefaultLLMModel(ctx); err != nil {
+		t.Fatalf("clear default: %v", err)
+	}
+	assertModelIdentityPresence(t, ctx, store, "gpt-5-preview", false)
+	assertModelIdentityPresence(t, ctx, store, "gpt-4o", true)
 }
 
 // A model identity row used to outlive the connection that declared it. The row
