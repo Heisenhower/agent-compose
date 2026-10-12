@@ -317,7 +317,7 @@ llm_provider_model.display_name
 
 顶层 `default` 必须指向文件自己声明且可服务的连接：引用格式非法、Provider 缺失、Provider 无 API Key 而被禁用、或该 ID 归其他 scope 所有时，投影整体失败并回滚，而不是存成一个没有任何 run 会拿到的默认引用。这样 `GetDefaultModel` 报告的引用与解析实际使用的引用始终一致。
 
-归属判定以「行是否已启用」为准：只有 enabled 的异 scope 行才持有其 ID，被禁用的行不再持有。否则一条被删除连接留下的 `llm_model` 身份行（`llm_provider_model` 绑定已随连接删除）会永久阻止环境投影接管其 ID，使 `LLM_*` 引导配置只剩一条启动告警。相应地，删除连接、替换连接声明的模型集合、以及经 RPC 改写默认引用时，都会清理既无绑定、也未被默认引用命名的 api-scope `llm_model` 身份行；catalog 与 env scope 的行归各自的投影管理。
+归属判定分两条轴。Provider ID 只要仍由 `models.json` 声明就归文件所有，即使该声明因缺少 `apiKey` 而被持久化为 disabled：文件投影只改写仍带 catalog scope 的 Provider 行（`WHERE llm_provider.scope = 'catalog'`），环境投影改写 scope 后，下一次启动的文件投影将命中 0 行并以 "conflicts with an existing non-catalog provider" 失败，`loadLLMConfig` 随之失败，清理、Scheduler、删除恢复等后台管理器都不会启动，且每次启动复现、无法自愈。Model 身份行相反：路由依据是 `llm_provider_model` 绑定而非身份行，catalog 的身份 upsert 也接受异 scope 的 enabled 行，因此被禁用的 Model 身份不再持有其 ID，环境可以接管——否则一条被删除连接留下的 `llm_model` 身份行（绑定已随连接删除）会永久阻止环境投影接管其 ID，使 `LLM_*` 引导配置只剩一条启动告警。相应地，任何替换或移除已存储默认引用的写入（删除连接、禁用连接、替换连接声明的模型集合、`SetDefaultLLMModel` / `ClearDefaultLLMModel`、以及文件声明 `default` 覆盖已存储引用）都会清理既无绑定、也未被默认引用命名的 api-scope `llm_model` 身份行；catalog 与 env scope 的行归各自的投影管理。
 
 ## 失败行为
 
