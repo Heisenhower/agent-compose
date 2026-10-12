@@ -25,7 +25,7 @@ policies:
         - host: api.github.com
           port: 443
           protocol: https
-  keep-runtime:
+  retained-runtime:
     stopped_runtime_policy: retain
 
 agents:
@@ -39,7 +39,7 @@ agents:
   builder:
     provider: codex
     image: agent-compose-guest:latest
-    policy: keep-runtime
+    policy: retained-runtime
     driver:
       docker: {}
 

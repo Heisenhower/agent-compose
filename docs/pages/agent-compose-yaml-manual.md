@@ -92,8 +92,6 @@ policies:
         - host: api.github.com
           port: 443
           protocol: https
-  keep-runtime:
-    stopped_runtime_policy: retain
 
 agents:
   reviewer:

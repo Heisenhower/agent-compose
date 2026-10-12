@@ -117,6 +117,88 @@ outside the project, its own persistence, an intersection rule, and provenance i
 the capability report so a decision can be attributed to a layer. That is a
 separate feature, not a schema variant.
 
+## Platform-owned policy: the agreed direction
+
+A policy is the platform's control over what an agent may do at runtime, and the
+daemon is what executes it. Most of an agent definition describes the environment
+the agent runs in, which the daemon does not interpret; the policy is the part
+the daemon must impose regardless of what the agent would prefer, and it is the
+part a project author must not be able to relax on their own.
+
+That intent points at ownership the compose file cannot provide: a constraint
+that lives in the same file the constrained party edits is a self-declaration,
+not a control. Claiming it needs to be able to leave the agent definition, and
+with it the agent's version hash, and to be queried and changed through the
+daemon instead.
+
+**The precondition is not "remove the field from the hash".** The read path that
+enforces a policy today is `ResolveNetworkDeclaration` (`pkg/runs`): it looks up
+the managed agent record and decodes the policy out of the agent's canonical
+spec JSON. So policy leaves the agent version hash only when three things move
+together:
+
+1. the policy becomes a record the daemon owns, with its own generation;
+2. the enforcement read path resolves that record instead of the spec JSON;
+3. a policy change reaches the daemon even when the project revision is
+   unchanged.
+
+Doing (3) last is what breaks silently. A project that adds
+`network: {default: deny}` while the policy is outside the hash produces an
+unchanged revision, no stored declaration, and an unrestricted sandbox: the
+tightening never existed. A field that disappears from the hash without its own
+synchronization path is worse than a field that dirties an agent definition.
+
+Two pieces of the mechanism already exist. `pkg/egress` derives a `Generation`
+from policy content, and `Result.IsStale(current)` / `Record.IsStale(current)`
+already express "this decision was made against a different policy snapshot, so
+it must not be acted on". What is missing is a durable policy record, the RPC
+surface over it, and a resolver that reads it.
+
+### Rules to settle before implementing
+
+- **Precedence between the file and the daemon record.** Options: the file is
+  desired state and re-apply overwrites the record (the record then only matters
+  between applies); the record is authoritative and re-apply does not clear it
+  unless the declared value itself changed; or the file may only select a policy
+  the platform already defines. Recommended: the file keeps declaring, and the
+  platform record may only **tighten** it — `deny` wins, allowances intersect —
+  so `apply` can never erase a stricter external constraint, and a project
+  author cannot widen one.
+- **Effect on sandboxes that already exist.** Enforcement is configured by the
+  driver when a sandbox is created, so a changed policy cannot retroactively
+  constrain a running container without recreating it, which discards its
+  private writable layer. A policy change should therefore apply to new sandboxes
+  and be *reported* as drift for existing ones (the generation makes this
+  expressible), with an explicit reconcile action instead of a silent rebuild.
+- **Direction of change.** Whether the platform layer may relax a project
+  declaration at all, or only tighten it.
+
+### RPC surface
+
+A new `AgentPolicyService`, alongside `ProjectService`, since a policy is
+daemon-owned runtime state and not part of the project revision write path:
+
+- `GetAgentPolicy(project, agent)` → the effective policy, its source
+  (`declared` or `platform`), its generation, and when it changed;
+- `ListAgentPolicies(project)` → one entry per agent with source and generation;
+- `SetAgentPolicy(project, agent, policy, expected_generation)` → optimistic
+  concurrency in the pattern `PatchProject.expected_current_spec_hash` already
+  establishes, and a generation mismatch fails with `ABORTED`;
+- `DeleteAgentPolicy(project, agent)` → returns the agent to its declaration.
+
+The record is keyed by `(project, agent)` and carries a content-derived
+generation, the policy itself, and who set it. Creation snapshots that generation
+onto the sandbox, which is what makes "which running sandboxes are out of policy"
+answerable.
+
+### Delivery order
+
+1. The record, the RPC surface, and a resolver that consults it (falling back to
+   the declaration), with policy still inside the spec hash.
+2. Once the registry is authoritative, drop the policy from the agent payload and
+   the hash, and state plainly in the manuals that a policy change applies to new
+   sandboxes.
+
 ## Recommendation
 
 1. Keep selection semantics: a name or a block, never a merge, and fail closed on

@@ -21,8 +21,11 @@ policies:
           port: 443
           protocol: https
 
-  # Keep the container after a stop so the next run resumes the same runtime.
-  keep-runtime:
+  # Retain the stopped runtime so the next run resumes the same container.
+  # Named for what it does to the stopped runtime: `stopped_runtime_policy:
+  # retain`. It does not keep the sandbox running, which is a different control
+  # (`scheduler.sandbox_policy: sticky`).
+  retained-runtime:
     stopped_runtime_policy: retain
 
 agents:
@@ -36,7 +39,7 @@ agents:
   builder:
     provider: codex
     image: agent-compose-guest:latest
-    policy: keep-runtime
+    policy: retained-runtime
     driver:
       docker: {}
 
