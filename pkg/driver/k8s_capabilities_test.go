@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/egress"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -66,27 +67,54 @@ func TestK8sCapabilitiesMatchPodSpec(t *testing.T) {
 		t.Fatalf("egress_policy observed = %q, want it to state that this driver installs no egress filter", egressCapability.Observed)
 	}
 
-	// The refusal is the observable behavior: EnsureSandbox must return the
-	// machine-consumable reason and create neither a Pod nor a NetworkPolicy.
-	denyRuntime, denyClientset := newTestK8sRuntime()
+	// What the engine does with that gap is the deployment's choice, so the test
+	// states the choice instead of assuming one. Under the default the sandbox
+	// starts and the engine reports: that is the behavior every deployment gets
+	// unless it opts into refusing, and asserting a refusal here without
+	// configuring it pinned a behavior no default deployment has.
 	denySandbox := testSandbox(t, "sandbox-egress-deny")
 	denySandbox.NetworkPolicy = &SandboxNetworkPolicy{Default: egress.Deny}
-	if _, err := denyRuntime.EnsureSandbox(context.Background(), denySandbox, VMState{}, ProxyState{}); !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
-		t.Fatalf("EnsureSandbox() error = %v, want ErrSandboxNetworkEnforcementUnavailable", err)
+
+	warnRuntime, warnClientset := newTestK8sRuntime()
+	if _, err := warnRuntime.EnsureSandbox(context.Background(), denySandbox, VMState{}, ProxyState{}); err != nil {
+		t.Fatalf("EnsureSandbox() error = %v, want the sandbox to start under the default %q mode", err, config.EgressUnenforceableWarn)
 	}
-	namespace := denyRuntime.namespaceFor(VMState{})
-	policies, err := denyClientset.NetworkingV1().NetworkPolicies(namespace).List(context.Background(), metav1.ListOptions{})
+	namespace := warnRuntime.namespaceFor(VMState{})
+	policies, err := warnClientset.NetworkingV1().NetworkPolicies(namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list NetworkPolicies: %v", err)
 	}
 	if len(policies.Items) != 0 {
-		t.Fatalf("a refused default-deny sandbox created NetworkPolicies %+v, want none", policies.Items)
+		t.Fatalf("a sandbox started under %q created NetworkPolicies %+v, want none: this driver installs no egress filter", config.EgressUnenforceableWarn, policies.Items)
 	}
-	pods, err := denyClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
+	pods, err := warnClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
 	if err != nil {
 		t.Fatalf("list Pods: %v", err)
 	}
-	if len(pods.Items) != 0 {
-		t.Fatalf("a refused default-deny sandbox created Pods %+v, want none", pods.Items)
+	if len(pods.Items) != 1 {
+		t.Fatalf("a sandbox started under %q created %d Pods, want the one it runs in", config.EgressUnenforceableWarn, len(pods.Items))
+	}
+
+	// The refusal is the other observable behavior: a deployment that asked for
+	// it gets the machine-consumable reason and neither a Pod nor a
+	// NetworkPolicy, so nothing runs with unrestricted egress.
+	refuseRuntime, refuseClientset := newTestK8sRuntime()
+	refuseRuntime.config.EgressUnenforceablePolicy = config.EgressUnenforceableRefuse
+	if _, err := refuseRuntime.EnsureSandbox(context.Background(), denySandbox, VMState{}, ProxyState{}); !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+		t.Fatalf("EnsureSandbox() error = %v, want ErrSandboxNetworkEnforcementUnavailable", err)
+	}
+	refused, err := refuseClientset.NetworkingV1().NetworkPolicies(namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list NetworkPolicies: %v", err)
+	}
+	if len(refused.Items) != 0 {
+		t.Fatalf("a refused default-deny sandbox created NetworkPolicies %+v, want none", refused.Items)
+	}
+	refusedPods, err := refuseClientset.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list Pods: %v", err)
+	}
+	if len(refusedPods.Items) != 0 {
+		t.Fatalf("a refused default-deny sandbox created Pods %+v, want none", refusedPods.Items)
 	}
 }

@@ -71,7 +71,11 @@ func SandboxNetworkEnforcementFor(driver string) SandboxNetworkEnforcement {
 			AppliesAllowEntries:    true,
 			AppliesEngineEndpoints: true,
 			AppliesDenyDomains:     true,
-			Notes:                  "the SDK NetworkConfig applies ordered allow rules, a deny egress default, and the deny-domain list, but it matches the name the sandbox asked for and does not constrain which addresses that name may resolve to; the hypervisor's exact domain-suffix semantics still need a real KVM run",
+			// The strength is a declaration about the mechanism the driver asks the
+			// SDK to install, not about behavior observed on a real hypervisor: this
+			// mechanism has not been run against KVM here, so the report says so
+			// instead of presenting it as verified.
+			Notes: "unverified on a real KVM run: the SDK NetworkConfig applies ordered allow rules, a deny egress default, and the deny-domain list, but it matches the name the sandbox asked for and does not constrain which addresses that name may resolve to; the hypervisor's exact domain-suffix semantics still need a real KVM run",
 		}
 	case RuntimeDriverK8s:
 		// A per-sandbox egress NetworkPolicy would deny all egress, including
