@@ -1109,15 +1109,18 @@ policy:
 该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
 
 - 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制。
-- 在 Docker、Kubernetes 与 BoxLite 上，引擎没有可安装的出网过滤器：现有机制无法在保证引擎自身 LLM facade 与遥测端点可达的同时表达声明的放行项。它们的能力报告带有 `strength=none`；在这些 driver 上声明 `default: deny` 时，引擎会**报告该声明未被执行，并且 sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会会在创建时记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可让这些 driver 改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时(一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
-- 要在这些 driver 上真正执行声明，需要在流量路径上加入出网过滤器（一个 sandbox 只能访问它的正向代理），而不是修改 schema。
-- 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，也不会导致 sandbox 启动失败。
+- 对于**任何 sandbox 能访问到 daemon 的 driver**（包括 Docker、Kubernetes 与 BoxLite），引擎会在**自己的正向代理中执行该声明**。sandbox 会拿到代理作为它的出网路径（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，项目无法覆盖），代理会认证该 sandbox，并对每个连接做判定：命中 `allow` 条目的连接被建立隧道，其余一律以 `403` 回复并附带拒绝它的规则。因此在 Docker 上，即使 driver 自身不安装任何过滤器，声明也具有真实强度。
+- **无论声明怎么写，代理都拒绝引擎永不转发的地址**：loopback、link-local（含 `169.254.169.254` 元数据地址）、unspecified 与 multicast。对 `default: deny` 的 sandbox 来说，这堵住了它本来能自己找到的一条路；对任何 sandbox 来说，这是防止代理变成通往 daemon 自身服务的新通道。
+- 代理自行解析目标，并连接它做过判定的那个地址，因此名字无法在判定与建连之间被解析成别的东西。
+- **限制是明说的，而不是暗示的。** 忽略代理环境变量的进程仍会直连外网、不被判定，直到透明捕获把所有连接都纳入代理；`udp` 放行项无法由正向代理承载；IPv6 目标会被拒绝，因为规范化端点标识无法表达它。
+- 当 sandbox 没有任何可达的代理地址时（例如 daemon 在 sandbox 内部不可达的部署），声明无法被执行，此时会**报告该声明未被执行，sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可在这种情况下改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
+- 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。
 
-**声明何时生效。** driver 是在创建 sandbox 时应用网络配置的，因此每次启动都会从当前 Agent 定义读取声明：
+**声明何时生效。** 取决于由哪个机制执行它：
 
-- 修改之后新建的 sandbox 使用新声明；
-- 仅被 resume / ensure 的既有 sandbox 保持它创建时的网络配置，因为 resume 时不会重新配置 driver。默认的 `stopped_runtime_policy: remove` 会在停止时丢弃 runtime，因此下一次启动会重建并读到新声明；`retain` 的 runtime 不会；
-- 在报告为 `strength=none` 的 driver 上，如果既有 sandbox 当前的声明是 `default: deny`，它会在下一次启动时被拒绝，而不是以不受限状态启动。
+- 引擎的正向代理**在每个请求上重新读取声明**，因此在被代理的 sandbox 上，一次修改立即生效，无需重建或重启任何东西。凭据在 sandbox 创建时签发一次；凭据背后的策略每次都会重读。
+- 由 driver 自身应用网络配置的运行时（Microsandbox）在创建 sandbox 时读取声明：修改之后新建的 sandbox 使用新声明，而仅被 resume 的既有 sandbox 保持它创建时的配置。默认的 `stopped_runtime_policy: remove` 会在停止时丢弃 runtime，因此下一次启动会重建并读到新声明；`retain` 的 runtime 不会。
+- 在没有可达代理、且当前声明为 `default: deny` 的 sandbox 上，未执行的报告（或 `EGRESS_UNENFORCEABLE_POLICY=refuse` 的拒绝）会在下一次启动时生效。
 
 `stopped_runtime_policy` 的时机不同：它在 sandbox 创建时被快照到 sandbox 上，因此修改它只影响新建的 sandbox。
 
