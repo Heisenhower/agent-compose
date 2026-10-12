@@ -57,6 +57,15 @@ func Decide(policy Policy, request Request) Result {
 		}
 		if rule.Action == Allow {
 			if refusal, allowed := rule.allowsAddresses(request); !allowed {
+				// An address constraint narrows one declared allowance. Under a
+				// policy that already allows anything no rule denies, that
+				// allowance is not what authorizes the request: the default does,
+				// so the constraint must not turn it into a denial. Anything the
+				// declaration does not allow is still denied by the rules that do
+				// match, and an explicit deny still wins below.
+				if policy.defaultAction == Allow {
+					continue
+				}
 				if constrained == nil {
 					constrained = &refusal
 				}

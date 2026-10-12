@@ -236,3 +236,56 @@ func TestDecideDoesNotUseConsumerOrKind(t *testing.T) {
 		t.Fatalf("consumer and kind must not change the outcome: %+v vs %+v", first, second)
 	}
 }
+
+// TestDecideDoesNotLetAnAddressConstraintDenyUnderAnAllowDefault pins that a
+// policy which allows by default keeps allowing. An allow entry is not what
+// authorizes the request under such a policy, so its address constraint cannot
+// deny it: otherwise deleting the entry would permit strictly more than keeping
+// it, and the declared address range would silently become a network filter the
+// documentation says the declaration is not.
+func TestDecideDoesNotLetAnAddressConstraintDenyUnderAnAllowDefault(t *testing.T) {
+	endpoint := Endpoint{Host: "api.example.com", Port: 443, Protocol: ProtocolHTTPS}
+	allowAll := NewPolicy(Allow, Rule{
+		ID:         "network.allow",
+		Match:      MatchEndpoint,
+		Names:      []string{FormatEndpointPattern(endpoint.Host, endpoint.Port, endpoint.Protocol)},
+		Action:     Allow,
+		AllowedIPs: []string{"203.0.113.0/24"},
+	})
+	for _, resolved := range [][]string{nil, {"198.51.100.7"}, {"203.0.113.10"}} {
+		request := NetworkRequest("sandbox-1", endpoint)
+		request.ResolvedIPs = resolved
+		result := Decide(allowAll, request)
+		if result.Action != Allow {
+			t.Fatalf("Action = %q for resolved %v, want Allow under an allow-all default (%s)", result.Action, resolved, result.Reason)
+		}
+	}
+
+	// The constraint still refuses when the default denies, which is the policy
+	// shape the address range was declared for.
+	restrictive := NewPolicy(Deny, Rule{
+		ID:         "network.allow",
+		Match:      MatchEndpoint,
+		Names:      []string{FormatEndpointPattern(endpoint.Host, endpoint.Port, endpoint.Protocol)},
+		Action:     Allow,
+		AllowedIPs: []string{"203.0.113.0/24"},
+	})
+	request := NetworkRequest("sandbox-1", endpoint)
+	request.ResolvedIPs = []string{"198.51.100.7"}
+	if got := Decide(restrictive, request); got.Action != Deny {
+		t.Fatalf("Action = %q, want a refusal under a deny default", got.Action)
+	}
+
+	// An explicit deny for the same destination still wins under allow-all: the
+	// constraint stops denying, it does not stop the rules from denying.
+	denying := NewPolicy(Allow,
+		Rule{ID: "network.allow", Match: MatchEndpoint, Names: []string{FormatEndpointPattern(endpoint.Host, endpoint.Port, endpoint.Protocol)}, Action: Allow, AllowedIPs: []string{"203.0.113.0/24"}},
+		Rule{ID: "network.deny", Match: MatchEndpoint, Names: []string{FormatEndpointPattern(endpoint.Host, endpoint.Port, endpoint.Protocol)}, Action: Deny, Reason: "declared refusal"},
+	)
+	request = NetworkRequest("sandbox-1", endpoint)
+	request.ResolvedIPs = []string{"198.51.100.7"}
+	got := Decide(denying, request)
+	if got.Action != Deny || got.RuleID != "network.deny" {
+		t.Fatalf("result = %+v, want the explicit refusal to decide", got)
+	}
+}
