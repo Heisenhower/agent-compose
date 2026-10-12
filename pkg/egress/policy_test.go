@@ -10,16 +10,17 @@ func TestNewPolicyGenerationIsContentDerived(t *testing.T) {
 	}
 
 	changes := map[string]Policy{
-		"changed rule id":    NewPolicy(Deny, Rule{ID: "other", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
-		"changed action":     NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Deny, Target: "dev"}),
-		"changed name":       NewPolicy(Deny, Rule{ID: "r", Names: []string{"staging"}, Action: Allow, Target: "dev"}),
-		"changed target":     NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev-v1"}),
-		"changed reason":     NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev", Reason: "x"}),
-		"changed default":    NewPolicy(Allow, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
-		"added rule":         NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}, Rule{ID: "s", Action: Deny}),
-		"no rules":           NewPolicy(Deny),
-		"rule action unset":  NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Action(""), Target: "dev"}),
-		"reordered rule ids": NewPolicy(Deny, Rule{ID: "s", Action: Deny}, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
+		"changed rule id":          NewPolicy(Deny, Rule{ID: "other", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
+		"changed action":           NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Deny, Target: "dev"}),
+		"changed name":             NewPolicy(Deny, Rule{ID: "r", Names: []string{"staging"}, Action: Allow, Target: "dev"}),
+		"changed target":           NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev-v1"}),
+		"changed reason":           NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev", Reason: "x"}),
+		"changed default":          NewPolicy(Allow, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
+		"added rule":               NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}, Rule{ID: "s", Action: Deny}),
+		"no rules":                 NewPolicy(Deny),
+		"rule action unset":        NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Action(""), Target: "dev"}),
+		"reordered rule ids":       NewPolicy(Deny, Rule{ID: "s", Action: Deny}, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev"}),
+		"added address constraint": NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, Target: "dev", AllowedIPs: []string{"203.0.113.0/24"}}),
 	}
 	for name, policy := range changes {
 		if policy.Generation() == base.Generation() {
@@ -33,6 +34,21 @@ func TestNewPolicyGenerationIsContentDerived(t *testing.T) {
 	second := NewPolicy(Deny, Rule{ID: "r", Names: []string{"a", "bc"}, Action: Allow})
 	if first.Generation() == second.Generation() {
 		t.Fatal("distinct name lists produced the same generation")
+	}
+
+	// Every change to an address constraint has to be visible to a consumer
+	// holding an older decision, because the constraint decides the connection.
+	constrained := NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, AllowedIPs: []string{"203.0.113.0/24", "198.51.100.7/32"}})
+	addressChanges := map[string]Policy{
+		"widened address":     NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, AllowedIPs: []string{"203.0.113.0/24", "198.51.100.7/32", "192.0.2.0/24"}}),
+		"narrowed address":    NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, AllowedIPs: []string{"203.0.113.0/24"}}),
+		"replaced address":    NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, AllowedIPs: []string{"203.0.113.0/24", "192.0.2.0/24"}}),
+		"reordered addresses": NewPolicy(Deny, Rule{ID: "r", Names: []string{"dev"}, Action: Allow, AllowedIPs: []string{"198.51.100.7/32", "203.0.113.0/24"}}),
+	}
+	for name, policy := range addressChanges {
+		if policy.Generation() == constrained.Generation() {
+			t.Fatalf("%s produced the same generation %d as the policy it changed", name, policy.Generation())
+		}
 	}
 }
 

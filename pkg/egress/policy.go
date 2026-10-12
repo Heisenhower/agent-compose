@@ -197,6 +197,13 @@ func (p Policy) contentGeneration() Generation {
 		}
 		// Terminate the name list so ["ab", "c"] and ["a", "bc"] differ.
 		writeField(h, "\x00")
+		// The address constraint is part of the rule: tightening or widening it
+		// changes what the policy permits, so it must change the generation that
+		// decision records carry and staleness checks compare.
+		for _, address := range rule.AllowedIPs {
+			writeField(h, address)
+		}
+		writeField(h, "\x00")
 	}
 	return Generation(h.Sum64())
 }
