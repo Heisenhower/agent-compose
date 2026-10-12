@@ -191,11 +191,14 @@ func writeComposeDeclaredNetworkPolicyNotes(out io.Writer, spec *compose.Normali
 	names := make([]string, 0, len(spec.Agents))
 	networks := make(map[string]*compose.NormalizedSandboxNetworkSpec, len(spec.Agents))
 	for _, agent := range spec.Agents {
-		if agent.PolicyBlock().Network == nil {
+		// PolicyBlock is nil for an agent that declared no policy block at all,
+		// which is the common case and must stay a no-op.
+		policy := agent.PolicyBlock()
+		if policy == nil || policy.Network == nil {
 			continue
 		}
 		names = append(names, agent.Name)
-		networks[agent.Name] = agent.PolicyBlock().Network
+		networks[agent.Name] = policy.Network
 	}
 	if len(names) == 0 {
 		return nil

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/chaitin/agent-compose/pkg/compose"
 	agentcomposev2 "github.com/chaitin/agent-compose/proto/agentcompose/v2"
 )
 
@@ -56,6 +57,45 @@ func TestWriteComposeNetworkPolicyReportSeparatesDeclaredFromEnforced(t *testing
 		if !strings.Contains(text, want) {
 			t.Fatalf("report text =\n%s\nwant it to contain %q", text, want)
 		}
+	}
+}
+
+// TestWriteComposeDeclaredNetworkPolicyNotesIgnoresAgentsWithoutAPolicy pins the
+// common case: an agent that declared no policy block must not be reported, and
+// must not make the command fail.
+func TestWriteComposeDeclaredNetworkPolicyNotesIgnoresAgentsWithoutAPolicy(t *testing.T) {
+	spec := &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{
+		{Name: "plain"},
+		{Name: "declared", Policy: &compose.NormalizedSandboxSpec{Network: &compose.NormalizedSandboxNetworkSpec{
+			Default: "deny",
+			Allow: []compose.NormalizedSandboxNetworkAllowSpec{{
+				Host: "api.github.com", Port: 443, Protocol: "https", AllowedIPs: []string{"203.0.113.0/24"},
+			}},
+		}}},
+	}}
+	var out bytes.Buffer
+	if err := writeComposeDeclaredNetworkPolicyNotes(&out, spec); err != nil {
+		t.Fatalf("writeComposeDeclaredNetworkPolicyNotes() error = %v", err)
+	}
+	text := out.String()
+	if strings.Contains(text, "plain") {
+		t.Fatalf("notes = %q, want the undeclared agent omitted", text)
+	}
+	for _, want := range []string{"declared", "default deny, 1 allowance(s)", "inspectable, addresses 203.0.113.0/24"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("notes = %q, want it to contain %q", text, want)
+		}
+	}
+	// A project that declares nothing is silent, and a nil spec is safe.
+	out.Reset()
+	if err := writeComposeDeclaredNetworkPolicyNotes(&out, &compose.NormalizedProjectSpec{Agents: []compose.NormalizedAgentSpec{{Name: "plain"}}}); err != nil {
+		t.Fatalf("writeComposeDeclaredNetworkPolicyNotes() error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("notes = %q, want no output for a project that declares nothing", out.String())
+	}
+	if err := writeComposeDeclaredNetworkPolicyNotes(&out, nil); err != nil {
+		t.Fatalf("writeComposeDeclaredNetworkPolicyNotes(nil) error = %v", err)
 	}
 }
 
