@@ -1084,7 +1084,9 @@ scheduler runs must reuse the same running Pod, use `sandbox_policy: sticky`;
 sticky completion keeps the Pod running and is distinct from stopped-runtime
 retention.
 
-The effective policy is snapshotted when the sandbox is created. Editing the project changes only new sandboxes. Legacy sandboxes without a policy snapshot continue to retain their runtime. `agent-compose inspect sandbox <sandbox> --json` exposes the lifecycle record through `stopped_runtime_policy`, `stopped_runtime_state`, `stopped_runtime_last_error`, and `stopped_runtime_released_at`. The states are:
+The effective policy is snapshotted when the sandbox is created. Editing the project changes only new sandboxes.
+
+The daemon also records the outbound network policy a runtime was created under. Starting a sandbox only *ensures* a runtime, so when the driver starts an existing runtime whose egress configuration does not match the declaration now in force, the daemon reports it: a warning when the running sandbox is not decided by that declaration (its runtime keeps no egress configuration, or applies one the daemon does not control), and an informational line when it already is (the forward proxy reads the declaration on every request). Editing a declaration reaches a running sandbox only through the mechanisms listed under `policy.network`; the report never claims more than that. Legacy sandboxes without a policy snapshot continue to retain their runtime. `agent-compose inspect sandbox <sandbox> --json` exposes the lifecycle record through `stopped_runtime_policy`, `stopped_runtime_state`, `stopped_runtime_last_error`, and `stopped_runtime_released_at`. The states are:
 
 - `retained`: no intentional runtime release is in progress; a stopped sandbox is expected to resume the retained runtime.
 - `release_pending`: release intent is durable, but stopping, runtime removal, or the ownership update has not been fully confirmed. The daemon retries this state after an interruption, and resume completes the pending release before creating a fresh runtime.

@@ -1062,7 +1062,9 @@ policy:
 
 Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍保留”的状态，停止 sandbox 会删除 Pod。请使用 `remove`，让 resume 根据镜像和持久挂载重新创建 Pod。若后续调度任务需要复用同一个运行中的 Pod，请使用 `sandbox_policy: sticky`；sticky 完成后会保持 Pod 运行，它与 stopped-runtime retention 是两种不同的生命周期策略。
 
-有效策略会在 sandbox 创建时生成快照；之后修改项目配置只影响新 sandbox。没有策略快照的历史 sandbox 会继续保留 runtime。`agent-compose inspect sandbox <sandbox> --json` 通过 `stopped_runtime_policy`、`stopped_runtime_state`、`stopped_runtime_last_error` 和 `stopped_runtime_released_at` 展示生命周期记录。状态含义如下：
+有效策略会在 sandbox 创建时生成快照；之后修改项目配置只影响新 sandbox。
+
+Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 sandbox 时只会*确保* runtime 存在；如果 driver 启动的是已存在的 runtime，而它的出网配置与当前生效的声明不一致，daemon 会报告这一情况：当运行中的 sandbox 并不由该声明裁决时给出 warning（其 runtime 未携带出网配置，或由 daemon 无法控制的机制执行），当它已经由该声明裁决时给出一条 information（正向代理会在每次请求时读取声明）。修改声明只能通过 `policy.network` 中列出的机制影响运行中的 sandbox，报告不会声称超出这一范围。没有策略快照的历史 sandbox 会继续保留 runtime。`agent-compose inspect sandbox <sandbox> --json` 通过 `stopped_runtime_policy`、`stopped_runtime_state`、`stopped_runtime_last_error` 和 `stopped_runtime_released_at` 展示生命周期记录。状态含义如下：
 
 - `retained`：当前没有主动释放 runtime；已停止 sandbox 应继续使用保留的 runtime 恢复。
 - `release_pending`：释放意图已经持久化，但 stop、runtime 删除或 ownership 更新尚未全部确认完成。Daemon 会在中断后重试该状态；resume 也会先完成待处理的释放，再创建新 runtime。

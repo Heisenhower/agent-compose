@@ -119,18 +119,20 @@ Docker driver, plus `verify-warn-default.sh` (13/13) for the fallback.
 
 ## Still open
 
-- **Per-sandbox policy record — delivered, with one limit.** A sandbox's runtime
-  state records the generation of the effective policy it was created under and
-  the mechanism that applied it (`open`, `driver-applied`, `declared-unenforced`,
-  `mediated`), and a start that reuses a runtime reports the difference instead
-  of assuming the declaration in force reaches it (`egress.RuntimePolicyDriftBetween`).
-  The limit: the start path *ensures* a runtime, so it cannot know whether the
-  driver built one or started an existing one. `SandboxVMInfo.RuntimeCreated`
-  now carries that fact and the Docker driver reports it; a driver that does not
-  report it is treated as reuse, which keeps the record conservative (it reports
-  a gap rather than claiming enforcement). BoxLite, Microsandbox, and k8s should
-  report it too, and the drift report should then be visible per sandbox on an API
-  surface rather than only in the daemon log.
+- **Per-sandbox policy record — delivered, with one open driver gap.** A sandbox's
+  runtime state records the generation of the effective policy it was created
+  under and the mechanism that applied it (`open`, `driver-applied`,
+  `declared-unenforced`, `mediated`), and a start that reuses a runtime reports
+  the difference instead of assuming the declaration in force reaches it
+  (`egress.RuntimePolicyDriftBetween`). Live on the Docker driver: a retained
+  runtime created before a declaration reports *not decided by the policy now in
+  force* and keeps its record, while an edit under the forward proxy reports as
+  already decided, because the proxy reads the declaration per request. The open
+  gap: the start path only *ensures* a runtime, so `SandboxVMInfo.RuntimeCreated`
+  is what distinguishes a runtime built now from one started again. The Docker
+  driver reports it; BoxLite, Microsandbox, and k8s do not yet, and are treated as
+  reuse, which reports a gap rather than claiming enforcement. The report is also
+  only in the daemon log today; it belongs on a per-sandbox read path.
 - **The engine auto-allow is reported per mechanism, not per agent at
   admission.** `ReportNetworkPolicy`'s engine-endpoint list needs a sandbox's own
   facade address, which does not exist until the sandbox does, so the admission
