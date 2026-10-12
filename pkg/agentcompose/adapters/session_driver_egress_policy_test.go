@@ -168,3 +168,67 @@ func TestSandboxDriverRecordsNothingWhenTheRuntimeReportsNoPolicy(t *testing.T) 
 		t.Fatalf("recorded egress policy = %+v, want no record for a runtime that reported none", vmState.EgressPolicy)
 	}
 }
+
+// TestSandboxDriverKeepsAnEmptyRecordWhenAReusedRuntimeCarriesNone is the
+// regression for a start that finds no record and does not create the runtime:
+// the policy resolved now must not be written into the record. A runtime created
+// before the engine kept this record, or by a driver that cannot report
+// creation, would otherwise be reported as isolated by a declaration that never
+// reached it, which is the one direction the record must never take.
+func TestSandboxDriverKeepsAnEmptyRecordWhenAReusedRuntimeCarriesNone(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := &appconfig.Config{
+		DataRoot:             root,
+		SandboxRoot:          filepath.Join(root, "sandboxes"),
+		RuntimeDriver:        driverpkg.RuntimeDriverBoxlite,
+		BoxliteHome:          filepath.Join(root, "boxlite"),
+		DefaultImage:         "guest:latest",
+		GuestWorkspacePath:   "/workspace",
+		JupyterGuestPort:     8888,
+		JupyterProxyBasePath: "/agent-compose/session",
+		SandboxStartTimeout:  2 * time.Second,
+	}
+	store, err := sandboxstore.NewWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewWithConfig returned error: %v", err)
+	}
+	session, err := store.CreateSandbox(ctx, "empty record", "", driverpkg.RuntimeDriverBoxlite, "guest:latest", "", domain.SandboxTypeManual, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+	provider := &sequenceRuntimeProvider{}
+	// The first start creates a runtime that reports no policy, so nothing is
+	// recorded for it.
+	provider.infos = append(provider.infos, domain.SandboxVMInfo{BoxID: "container-1"})
+	// The second start reuses that runtime (the driver does not report creating
+	// it, and the sandbox already started) while the declaration now resolves a
+	// policy. The record has to stay empty.
+	provider.infos = append(provider.infos, domain.SandboxVMInfo{
+		BoxID:        "container-1",
+		EgressPolicy: domain.SandboxEgressPolicy{Generation: 777, Applied: string(egress.ApplicationDriverApplied)},
+	})
+	driver := newTestSandboxDriver(config, store, nil, provider)
+
+	if err := driver.StartSandboxVM(ctx, session); err != nil {
+		t.Fatalf("first StartSandboxVM returned error: %v", err)
+	}
+	vmState, err := store.GetVMState(session.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetVMState returned error: %v", err)
+	}
+	if vmState.EgressPolicy.Recorded() {
+		t.Fatalf("recorded egress policy = %+v, want no record for a runtime that reported none", vmState.EgressPolicy)
+	}
+
+	if err := driver.StartSandboxVM(ctx, session); err != nil {
+		t.Fatalf("second StartSandboxVM returned error: %v", err)
+	}
+	vmState, err = store.GetVMState(session.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetVMState returned error: %v", err)
+	}
+	if vmState.EgressPolicy.Recorded() {
+		t.Fatalf("recorded egress policy after reusing a runtime with no record = %+v, want it left empty so the start reports that the runtime cannot be accounted for", vmState.EgressPolicy)
+	}
+}

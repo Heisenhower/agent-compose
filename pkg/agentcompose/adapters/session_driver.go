@@ -174,7 +174,14 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 		return err
 	}
 	runtimeStarted = true
-	if err := d.recordEgressRuntimePolicy(session, &vmState, previousEgressPolicy, info.EgressPolicy, info.RuntimeCreated); err != nil {
+	// Two facts say the policy resolved now is the one the running runtime has:
+	// the driver reporting that it built the runtime in this call, and this
+	// start having had no runtime to reuse at all (the sandbox never started, or
+	// its runtime was released). Drivers that cannot report creation are still
+	// covered for their first runtime, and every later start of a runtime with
+	// no record is reported instead of assumed.
+	runtimeHasCurrentPolicy := freshRuntime || info.RuntimeCreated
+	if err := d.recordEgressRuntimePolicy(session, &vmState, previousEgressPolicy, info.EgressPolicy, runtimeHasCurrentPolicy); err != nil {
 		return err
 	}
 
@@ -201,31 +208,38 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 // runtime was created under, and reports when the policy now in force is not the
 // one that created the runtime that is running.
 //
-// The record describes the *runtime*, so it is replaced only when the runtime is
-// created, which is the one moment the engine knows what was installed. On a
-// start that reuses a runtime, the difference is reported instead of recorded
-// away: a sandbox that started with an open declaration keeps its egress until
-// its runtime is recreated, and hiding that would make the engine's account of
-// it less true the longer it ran.
-func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmState *domain.VMState, previousRecord, current domain.SandboxEgressPolicy, runtimeCreated bool) error {
-	// The record describes the runtime, and the start path only *ensures* one:
-	// a retained runtime is started again with the configuration it was created
-	// with. The driver is therefore the only layer that can say whether the
-	// policy resolved now is the one the running runtime has, and it says so
-	// through SandboxVMInfo.RuntimeCreated. Without that fact the record keeps
-	// the policy the runtime has rather than the one the engine would install,
-	// which is the direction that cannot claim enforcement that is not there.
+// The record describes the *runtime*, so it is replaced only when the start
+// establishes that the running runtime was built under the policy resolved now,
+// which is what runtimeHasCurrentPolicy carries. On any other start the
+// difference is reported instead of recorded away: a sandbox that started with
+// an open declaration keeps its egress until its runtime is recreated, and
+// hiding that would make the engine's account of it less true the longer it ran.
+//
+// The caller owns runtimeHasCurrentPolicy because only it knows both facts: the
+// driver reports whether it built the runtime in this call
+// (SandboxVMInfo.RuntimeCreated), and the start path knows whether there was a
+// runtime to reuse at all.
+func (d *SandboxDriver) recordEgressRuntimePolicy(session *domain.Sandbox, vmState *domain.VMState, previousRecord, current domain.SandboxEgressPolicy, runtimeHasCurrentPolicy bool) error {
+	// The start path only *ensures* a runtime: a retained one is started again
+	// with the configuration it was created with. Without a fact saying the
+	// runtime was built now, the record keeps the policy the runtime has rather
+	// than the one the engine would install, which is the direction that cannot
+	// claim enforcement that is not there.
 	vmState.EgressPolicy = previousRecord
 	if !current.Recorded() {
 		return nil
 	}
-	previous := egressRuntimePolicyFromRecord(previousRecord)
-	if !previous.Recorded() || runtimeCreated {
-		// Either nothing was recorded before, or the driver built a runtime
-		// under the policy resolved now.
+	if runtimeHasCurrentPolicy {
 		vmState.EgressPolicy = current
 		return nil
 	}
+	previous := egressRuntimePolicyFromRecord(previousRecord)
+	// A runtime carrying no record cannot be credited with the policy resolved
+	// now: either it was created before the engine kept this record, or a driver
+	// that does not report creation built it. Writing the current policy there
+	// would claim an isolation nobody installed, so the record stays empty and
+	// the report below is what states that this runtime's egress cannot be
+	// accounted for.
 	currentPolicy := egressRuntimePolicyFromRecord(current)
 	if previous.Application == egress.ApplicationMediated && currentPolicy.Application == egress.ApplicationMediated {
 		// A mediated runtime is decided by the declaration in force on every
