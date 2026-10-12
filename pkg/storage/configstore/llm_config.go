@@ -120,45 +120,42 @@ func (s *llmStore) UpsertDeclaredConnection(ctx context.Context, provider llms.P
 // to add, and creating it anyway would only make the two endpoints peers in
 // connection selection, where one is picked at random.
 //
-// A provider id is owned while models.json declares it, even though a declaration
-// without an apiKey is persisted disabled. That projection rewrites a provider
-// row only while the row still carries the catalog scope, so taking the id over
-// made the next startup's file projection match no row and fail with a
-// non-catalog conflict; loadLLMConfig failed with it, and the daemon started
-// without its cleanup, scheduler, and deletion recovery managers on every start.
+// A declared id is owned for as long as its row carries the declaring scope, even
+// though a provider declaration without an apiKey is persisted disabled. The file
+// projection rewrites a provider row only while the row still carries the catalog
+// scope, so taking that id over made the next startup's file projection match no
+// row and fail with a non-catalog conflict; loadLLMConfig failed with it, and the
+// daemon started without its cleanup, scheduler, and deletion recovery managers on
+// every start.
 //
-// A disabled model identity carries no such contract. The binding, not the
-// identity row, is what routes a model, and the catalog's identity upsert accepts
-// another scope's enabled row without error, so a model id another source
-// switched off or abandoned is still free for the bootstrap to take over.
-// Reading it as an owner instead let a model an operator had removed from
-// models.json, or an identity a deleted API connection left behind, block the
-// whole projection forever with only a startup warning to explain it.
+// A row the file stops declaring loses that scope: the projection releases it, and
+// the environment bootstrap maintains an unset scope. So a stale row cannot keep
+// owning an id the file has moved on from, and the bootstrap recovers by itself
+// instead of yielding to a source that will never rewrite the row again.
 func envProjectionConflict(ctx context.Context, tx *sql.Tx, providerID, modelID string) (*llms.DefaultConfigConflict, error) {
-	provider, err := foreignIDOwner(ctx, tx, "provider", `SELECT scope, enabled FROM llm_provider WHERE id = ?`, providerID)
+	provider, err := foreignIDOwner(ctx, tx, "provider", `SELECT scope FROM llm_provider WHERE id = ?`, providerID)
 	if err != nil {
 		return nil, err
 	}
 	if provider != nil {
 		return provider.conflict(), nil
 	}
-	model, err := foreignIDOwner(ctx, tx, "model", `SELECT scope, enabled FROM llm_model WHERE id = ?`, modelID)
+	model, err := foreignIDOwner(ctx, tx, "model", `SELECT scope FROM llm_model WHERE id = ?`, modelID)
 	if err != nil {
 		return nil, err
 	}
-	if model == nil || !model.enabled {
-		return nil, nil
+	if model != nil {
+		return model.conflict(), nil
 	}
-	return model.conflict(), nil
+	return nil, nil
 }
 
 // llmIDOwner is the row that carries an id under a scope the environment
 // bootstrap does not own.
 type llmIDOwner struct {
-	kind    string
-	id      string
-	scope   string
-	enabled bool
+	kind  string
+	id    string
+	scope string
 }
 
 func (o *llmIDOwner) conflict() *llms.DefaultConfigConflict {
@@ -167,16 +164,14 @@ func (o *llmIDOwner) conflict() *llms.DefaultConfigConflict {
 
 // foreignIDOwner reads the row carrying id under a scope the environment
 // bootstrap does not own. An id no row carries, and one the bootstrap's own
-// projection owns, report no owner. Whether a disabled row still owns its id is
-// the caller's policy, not this read's.
+// projection owns, report no owner.
 func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*llmIDOwner, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, nil
 	}
 	var scope string
-	var enabled int
-	err := tx.QueryRowContext(ctx, query, id).Scan(&scope, &enabled)
+	err := tx.QueryRowContext(ctx, query, id).Scan(&scope)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -187,7 +182,7 @@ func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*l
 	if llms.EnvProjectionOwnsScope(scope) {
 		return nil, nil
 	}
-	return &llmIDOwner{kind: kind, id: id, scope: scope, enabled: enabled != 0}, nil
+	return &llmIDOwner{kind: kind, id: id, scope: scope}, nil
 }
 
 func upsertLLMProvider(ctx context.Context, tx *sql.Tx, provider llms.Provider, auth llms.ProviderAuth, now int64) error {

@@ -262,12 +262,12 @@ func replaceProviderModels(ctx context.Context, tx *sql.Tx, providerID, provider
 // makes it servable. Rewriting a connection's models removes its bindings and
 // deleting a connection removes the connection, but neither removed the identity
 // row it had created, so a model an operator had dropped kept claiming its id.
-// The environment bootstrap treats a foreign-scope row as an owner and yields
-// its whole projection, so such a leftover could silently disable LLM_MODEL for
-// every later daemon start.
+// The environment bootstrap treats a foreign-scope row as an owner and yields its
+// whole projection, so such a leftover could silently disable LLM_MODEL for every
+// later daemon start.
 //
 // Only API-scope rows are swept. A catalog row belongs to the models.json
-// projection, which disables what it no longer declares, and an environment row
+// projection, which releases what it no longer declares, and an environment row
 // belongs to the environment projection.
 func sweepUnreferencedAPIModels(ctx context.Context, tx *sql.Tx) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_model

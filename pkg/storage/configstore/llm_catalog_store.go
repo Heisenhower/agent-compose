@@ -24,11 +24,19 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
-		return fmt.Errorf("disable stale model catalog providers: %w", err)
+	// Release every catalog row before re-declaring what the file declares. A row
+	// the file still declares is rewritten below and gets the catalog scope back; a
+	// row the file no longer declares stays released (scope unset) and disabled, so
+	// it stops owning an id the file has moved on from. The row itself is kept
+	// because deleting it would break two promises: llm_catalog_default references
+	// the provider row with ON DELETE CASCADE, so an operator's stored default must
+	// survive a declaration that no longer serves it, and a later file must be able
+	// to restore the id.
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog providers: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE llm_model SET enabled = 0, updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
-		return fmt.Errorf("disable stale model catalog models: %w", err)
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_model SET enabled = 0, scope = '', updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog models: %w", err)
 	}
 	providerIDs := make([]string, 0, len(catalog.Providers))
 	for id := range catalog.Providers {
@@ -81,9 +89,10 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		base_url = excluded.base_url, api_key = excluded.api_key, auth_header = excluded.auth_header,
 		auth_scheme = excluded.auth_scheme, headers_json = excluded.headers_json, enabled = excluded.enabled,
 		scope = excluded.scope, updated_at = excluded.updated_at
-		WHERE llm_provider.scope = ?`,
+		WHERE llm_provider.scope IN (?, ?)`,
 		providerID, name, providerType, protocol, strings.TrimSpace(pointerString(definition.BaseURL)), apiKey,
-		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now, llms.ProviderScopeCatalog)
+		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now,
+		llms.ProviderScopeCatalog, "")
 	if err != nil {
 		return fmt.Errorf("upsert model catalog provider %q: %w", providerID, err)
 	}
@@ -141,11 +150,14 @@ func applyCatalogModel(ctx context.Context, tx *sql.Tx, upsert catalogModelUpser
 	return nil
 }
 
+// ensureCatalogModelIdentity declares a model identity the file references, and
+// reclaims the identity a previous projection released.
 func ensureCatalogModelIdentity(ctx context.Context, tx *sql.Tx, modelID string, now int64) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
 		VALUES(?, ?, '', 0, 1, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET enabled = 1, updated_at = excluded.updated_at
-		WHERE llm_model.scope = ?`, modelID, modelID, llms.ProviderScopeCatalog, now, now, llms.ProviderScopeCatalog)
+		ON CONFLICT(id) DO UPDATE SET enabled = 1, scope = excluded.scope, updated_at = excluded.updated_at
+		WHERE llm_model.scope IN (?, ?)`, modelID, modelID, llms.ProviderScopeCatalog, now, now,
+		llms.ProviderScopeCatalog, "")
 	return err
 }
 
@@ -177,8 +189,15 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 	if err != nil {
 		return fmt.Errorf("resolve model catalog default provider %q: %w", providerID, err)
 	}
-	if scope != llms.ProviderScopeCatalog {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which scope %q owns", domain.ErrInvalidArgument, reference, providerID, strings.TrimSpace(scope))
+	// A released row (unset scope) is a connection a previous models.json declared
+	// and this one does not: the row survives so a later file can restore it, but it
+	// cannot serve the default this file is asking for.
+	owner := strings.TrimSpace(scope)
+	if owner == "" {
+		return fmt.Errorf("%w: models.json default %q names connection %q, which models.json does not declare", domain.ErrInvalidArgument, reference, providerID)
+	}
+	if owner != llms.ProviderScopeCatalog {
+		return fmt.Errorf("%w: models.json default %q names connection %q, which scope %q owns", domain.ErrInvalidArgument, reference, providerID, owner)
 	}
 	if enabled == 0 {
 		return fmt.Errorf("%w: models.json default %q names connection %q, which declares no apiKey and is therefore disabled", domain.ErrInvalidArgument, reference, providerID)

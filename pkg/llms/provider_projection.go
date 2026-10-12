@@ -51,6 +51,10 @@ func AsDefaultConfigConflict(err error) (*DefaultConfigConflict, bool) {
 // the scopes the environment bootstrap itself writes qualify: an unset scope
 // and the legacy "system" default. Every other scope names an owner that
 // declared the id explicitly, so the environment must not rewrite it.
+//
+// An unset scope is also what a models.json projection leaves on the rows it
+// stops declaring: releasing them keeps the row (a stored default reference
+// depends on it) while handing the id back to the bootstrap.
 func EnvProjectionOwnsScope(scope string) bool {
 	switch strings.TrimSpace(scope) {
 	case "", ProviderScopeSystem, ProviderScopeEnvDefault:

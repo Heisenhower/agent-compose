@@ -80,23 +80,27 @@ func TestIntegrationEnvProjectionUpdatesItsOwnRows(t *testing.T) {
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://rotated.example/v1")
 }
 
-// A disabled model identity is a declaration that is switched off, so nothing
-// serves it and the environment bootstrap may take the id over — which is what
-// turning it back on means. Reading the row regardless of enabled made a model
-// an operator had removed from models.json (the projection disables what the file
-// no longer declares) block the whole environment projection forever, leaving a
-// daemon that silently lost its LLM_* configuration with only a startup warning
-// to explain it.
-func TestIntegrationEnvProjectionTakesOverDisabledModelIdentity(t *testing.T) {
+// A model identity the file no longer declares is released with the rest of the
+// dropped connection, so the environment bootstrap may take the id over — which is
+// what declaring the same model in the environment means. Reading such a row as an
+// owner made a model an operator had removed from models.json block the whole
+// environment projection forever, leaving a daemon that silently lost its LLM_*
+// configuration with only a startup warning to explain it.
+func TestIntegrationEnvProjectionTakesOverAReleasedModelIdentity(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := newProjectionTestStore(t)
 
-	insertDisabledCatalogModel(t, ctx, store.DB(), "shared-model")
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("gateway", "shared-model")); err != nil {
+		t.Fatalf("declare the model: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("release the model: %v", err)
+	}
 
 	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
 	if err != nil {
-		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the disabled model id taken over", err)
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the released model id taken over", err)
 	}
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://env.example/v1")
 	var scope string
@@ -166,13 +170,45 @@ func credentiallessCatalog(providerID, modelID string) llms.ModelCatalog {
 	}
 }
 
-func insertDisabledCatalogModel(t *testing.T, ctx context.Context, db *sql.DB, modelID string) {
-	t.Helper()
-	// The catalog projection disables a model the file no longer declares.
-	if _, err := db.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
-		VALUES(?, ?, '', 0, 0, 'catalog', 0, 0)`, modelID, modelID); err != nil {
-		t.Fatalf("insert disabled catalog model: %v", err)
+// A connection the file stops declaring must not keep owning its id. Only the
+// file projection rewrites a catalog row and the LLM service refuses to manage
+// one, so a leftover row would make every later startup's environment projection
+// yield, silently dropping the LLM_* bootstrap with no way to recover.
+func TestIntegrationEnvProjectionTakesOverAConnectionTheFileDropped(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential(llms.ProviderIDDefaultOpenAI, "shared-model")); err != nil {
+		t.Fatalf("declare the connection: %v", err)
 	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err == nil {
+		t.Fatal("the environment took over a connection models.json still declares")
+	}
+
+	// The operator removes the connection from models.json, or removes the file.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err != nil {
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the dropped id taken over", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://env.example/v1")
+	// The file projection that runs first on later startups must still succeed.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("file projection after the environment took the id over: %v", err)
+	}
+}
+
+// catalogWithCredential is credentiallessCatalog with a usable credential, so the
+// file projection declares an enabled connection.
+func catalogWithCredential(providerID, modelID string) llms.ModelCatalog {
+	catalog := credentiallessCatalog(providerID, modelID)
+	key := "catalog-key"
+	provider := catalog.Providers[providerID]
+	provider.APIKey = &key
+	catalog.Providers[providerID] = provider
+	return catalog
 }
 
 func newProjectionTestStore(t *testing.T) *ConfigStore {

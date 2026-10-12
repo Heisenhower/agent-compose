@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,6 +165,76 @@ func TestIntegrationApplyEmptyModelCatalogClearsCatalogOwnedStateButKeepsTheStor
 	}
 	if resolved.Provider.ID != legacyProvider.ID || resolved.Model.ID != legacyModel.ID {
 		t.Fatalf("resolved default = %#v, want the legacy environment default", resolved)
+	}
+}
+
+// A connection the file no longer declares is released: its rows stay (an
+// operator's stored default references the provider row with ON DELETE CASCADE,
+// and a later file may restore the declaration) but they lose the catalog scope,
+// so the id is no longer owned by a source that will never rewrite the row again.
+func TestIntegrationModelCatalogReleasesWhatTheFileNoLongerDeclares(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential("gateway", "gpt-4o")
+	declared.Default = "gateway/gpt-4o"
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), "gateway"); count != 1 {
+		t.Fatalf("bindings after declaring = %d, want 1", count)
+	}
+
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "gateway" || modelID != "gpt-4o" {
+		t.Fatalf("catalog default = %q/%q ok=%v err=%v, want the stored reference preserved", providerID, modelID, ok, err)
+	}
+	providers, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 0 {
+		t.Fatalf("enabled providers = %#v, want the released connection to serve nothing", providers)
+	}
+	models, err := store.ListEnabledLLMModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("enabled models = %#v, want the released model to serve nothing", models)
+	}
+	assertReleased(t, ctx, store.DB(), "llm_provider", "gateway")
+	assertReleased(t, ctx, store.DB(), "llm_model", "gpt-4o")
+
+	// Declaring the connection again takes the released rows back, which is what
+	// keeping them instead of deleting them promises.
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("re-declare the connection: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), "gateway", llms.ProviderScopeCatalog, "https://catalog.example/v1")
+	resolved, err := resolveCatalogModel(ctx, store, "")
+	if err != nil {
+		t.Fatalf("resolve the restored default: %v", err)
+	}
+	if resolved.Provider.ID != "gateway" || resolved.Model.ID != "gpt-4o" {
+		t.Fatalf("resolved default = %#v, want the restored catalog connection", resolved)
+	}
+}
+
+// assertReleased checks that a row the file projection stopped declaring kept its
+// data but gave up the scope that made it an owner.
+func assertReleased(t *testing.T, ctx context.Context, db *sql.DB, table, id string) {
+	t.Helper()
+	var scope string
+	var enabled int
+	if err := db.QueryRowContext(ctx, `SELECT scope, enabled FROM `+table+` WHERE id = ?`, id).Scan(&scope, &enabled); err != nil {
+		t.Fatalf("read released %s %q: %v", table, id, err)
+	}
+	if scope != "" || enabled != 0 {
+		t.Fatalf("%s %q scope = %q enabled = %d, want a released disabled row", table, id, scope, enabled)
 	}
 }
 
