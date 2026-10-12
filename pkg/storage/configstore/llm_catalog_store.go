@@ -158,16 +158,30 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 		// by the next projection.
 		return nil
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
-		return fmt.Errorf("clear model catalog default: %w", err)
-	}
 	providerID, modelID, ok := llms.SplitProviderModelReference(reference)
 	if !ok {
-		return nil
+		return fmt.Errorf("%w: models.json default %q is not a <provider>/<model> reference", domain.ErrInvalidArgument, reference)
 	}
-	var protocol string
-	if err := tx.QueryRowContext(ctx, `SELECT default_wire_api FROM llm_provider WHERE id = ?`, providerID).Scan(&protocol); err != nil {
+	// The default must name a connection models.json itself declared and that can
+	// actually serve a request. A reference to a connection this file lost control
+	// of, or to one without a credential, would otherwise be stored as the
+	// effective default while resolution ignores it: GetDefaultModel would report
+	// a default no run receives, and a run that declares no model would be routed
+	// by the connection fallback instead.
+	var scope, protocol string
+	var enabled int
+	err := tx.QueryRowContext(ctx, `SELECT scope, enabled, default_wire_api FROM llm_provider WHERE id = ?`, providerID).Scan(&scope, &enabled, &protocol)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: models.json default %q names connection %q, which models.json does not declare", domain.ErrInvalidArgument, reference, providerID)
+	}
+	if err != nil {
 		return fmt.Errorf("resolve model catalog default provider %q: %w", providerID, err)
+	}
+	if scope != llms.ProviderScopeCatalog {
+		return fmt.Errorf("%w: models.json default %q names connection %q, which scope %q owns", domain.ErrInvalidArgument, reference, providerID, strings.TrimSpace(scope))
+	}
+	if enabled == 0 {
+		return fmt.Errorf("%w: models.json default %q names connection %q, which declares no apiKey and is therefore disabled", domain.ErrInvalidArgument, reference, providerID)
 	}
 	if err := ensureCatalogModelIdentity(ctx, tx, modelID, now); err != nil {
 		return fmt.Errorf("upsert model catalog default model: %w", err)
@@ -177,6 +191,9 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 		VALUES(?, ?, ?, 10, '', '{}', 0, '')
 		ON CONFLICT(provider_id, model_id) DO NOTHING`, providerID, modelID, protocol); err != nil {
 		return fmt.Errorf("bind model catalog default: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
+		return fmt.Errorf("clear model catalog default: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
 		return fmt.Errorf("store model catalog default: %w", err)
@@ -211,6 +228,11 @@ func firstNonEmptyString(values ...string) string {
 // DefaultLLMModelReference returns the effective default model: the reference
 // models.json declared, or the one an operator set through the LLM service when
 // models.json declares none.
+//
+// The row is the operator's stored choice, not a promise that it can be served:
+// a connection removed by a models.json projection leaves the reference in place
+// so a later projection can restore it, and resolution treats it as absent until
+// then. The reference's own connection is therefore not checked here.
 func (s *llmStore) DefaultLLMModelReference(ctx context.Context) (providerID, modelID string, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx, `SELECT provider_id, model_id FROM llm_catalog_default WHERE singleton = 1`).Scan(&providerID, &modelID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -220,6 +242,18 @@ func (s *llmStore) DefaultLLMModelReference(ctx context.Context) (providerID, mo
 		return "", "", false, fmt.Errorf("query model catalog default: %w", err)
 	}
 	return providerID, modelID, true, nil
+}
+
+// clearDefaultReferenceForProvider removes a stored default naming a connection
+// the LLM service just deleted or disabled. Unlike a models.json projection,
+// which preserves the reference so a later file can restore it, an operator
+// action on the connection is deliberate: leaving the row would make
+// GetDefaultModel report a default that resolution ignores and no run receives.
+func clearDefaultReferenceForProvider(ctx context.Context, tx *sql.Tx, providerID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default WHERE provider_id = ?`, providerID); err != nil {
+		return fmt.Errorf("clear default model of provider %q: %w", providerID, err)
+	}
+	return nil
 }
 
 // SetDefaultLLMModel records the effective default model, replacing any earlier
@@ -232,6 +266,12 @@ func (s *llmStore) SetDefaultLLMModel(ctx context.Context, reference llms.ModelR
 	modelID := strings.TrimSpace(reference.ModelID)
 	if providerID == "" || modelID == "" {
 		return llms.ModelReference{}, fmt.Errorf("%w: provider_id and model_id are required", domain.ErrInvalidArgument)
+	}
+	if llms.IsDeclaredConnectionID(providerID) {
+		// A declared connection carries one sandbox's own credential and is
+		// addressable only by the run that declared it. Making it the daemon
+		// default would offer that credential to every run that names the model.
+		return llms.ModelReference{}, fmt.Errorf("%w: provider %q is a run-scoped declared connection", domain.ErrInvalidArgument, providerID)
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -261,6 +301,12 @@ func (s *llmStore) SetDefaultLLMModel(ctx context.Context, reference llms.ModelR
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
 		return llms.ModelReference{}, fmt.Errorf("store llm default model: %w", err)
+	}
+	// The reference just stored protects this model's identity row, so a previous
+	// default whose identity nothing else uses is swept here rather than left to
+	// claim its id against the environment bootstrap.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return llms.ModelReference{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return llms.ModelReference{}, fmt.Errorf("commit default model update: %w", err)

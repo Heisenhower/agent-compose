@@ -113,33 +113,49 @@ func (s *llmStore) UpsertDeclaredConnection(ctx context.Context, provider llms.P
 // environment projection would take over from another configuration source. It
 // reads inside the projection transaction, so ownership cannot change between
 // the check and the upsert that follows it.
+//
+// The report yields the whole projection, not just the offending id. That is
+// deliberate when the conflict is the model: another source already serves the
+// model the environment names, so the environment connection has nothing left
+// to add, and creating it anyway would only make the two endpoints peers in
+// connection selection, where one is picked at random. Only an enabled row
+// reports as owned, so a declaration another source switched off — or an
+// identity row a deleted connection left behind, which provider writes sweep —
+// no longer blocks the environment from taking the id over.
 func envProjectionConflict(ctx context.Context, tx *sql.Tx, providerID, modelID string) (*llms.DefaultConfigConflict, error) {
-	checks := []struct {
-		kind  string
-		id    string
-		query string
-	}{
-		{kind: "provider", id: providerID, query: `SELECT scope FROM llm_provider WHERE id = ?`},
-		{kind: "model", id: modelID, query: `SELECT scope FROM llm_model WHERE id = ?`},
+	if conflict, err := enabledForeignOwner(ctx, tx, "provider", `SELECT scope, enabled FROM llm_provider WHERE id = ?`, providerID); err != nil || conflict != nil {
+		return conflict, err
 	}
-	for _, check := range checks {
-		check.id = strings.TrimSpace(check.id)
-		if check.id == "" {
-			continue
-		}
-		var scope string
-		err := tx.QueryRowContext(ctx, check.query, check.id).Scan(&scope)
-		if errors.Is(err, sql.ErrNoRows) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read %s %q ownership: %w", check.kind, check.id, err)
-		}
-		if !llms.EnvProjectionOwnsScope(scope) {
-			return &llms.DefaultConfigConflict{Kind: check.kind, ID: check.id, Scope: strings.TrimSpace(scope)}, nil
-		}
+	return enabledForeignOwner(ctx, tx, "model", `SELECT scope, enabled FROM llm_model WHERE id = ?`, modelID)
+}
+
+// enabledForeignOwner reports the id as owned when a row carries it under a
+// scope the environment bootstrap does not own.
+//
+// A row only owns its id while it is enabled. A disabled row is a declaration
+// that is switched off, so nothing serves it and the environment may take the
+// id over — which is what turning it back on means. Reading the row regardless
+// of enabled let a model an operator had removed from models.json, or a model
+// identity a deleted API connection left behind, block the whole environment
+// projection forever with only a startup warning to explain it.
+func enabledForeignOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*llms.DefaultConfigConflict, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
 	}
-	return nil, nil
+	var scope string
+	var enabled int
+	err := tx.QueryRowContext(ctx, query, id).Scan(&scope, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s %q ownership: %w", kind, id, err)
+	}
+	if enabled == 0 || llms.EnvProjectionOwnsScope(scope) {
+		return nil, nil
+	}
+	return &llms.DefaultConfigConflict{Kind: kind, ID: id, Scope: strings.TrimSpace(scope)}, nil
 }
 
 func upsertLLMProvider(ctx context.Context, tx *sql.Tx, provider llms.Provider, auth llms.ProviderAuth, now int64) error {

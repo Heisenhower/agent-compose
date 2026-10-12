@@ -74,6 +74,59 @@ func TestDefaultModelMissing(t *testing.T) {
 	}
 }
 
+// models.json declares its default explicitly, so projecting it replaces whatever
+// reference is stored — including one an operator chose through the LLM service.
+// The caller reports that override, so the choice the service accepted does not
+// silently stop being the effective default.
+func TestLoadModelCatalogReportsAReplacedDefault(t *testing.T) {
+	cases := []struct {
+		name         string
+		store        *llmConfigStoreFake
+		wantReplaced *llms.ModelReference
+	}{
+		{
+			name: "the file replaced a stored choice",
+			store: &llmConfigStoreFake{
+				hasDefault: true, defaultProvider: "service", defaultModel: "service-model",
+				catalogDefault: &llms.ModelReference{ProviderID: "file", ModelID: "file-model"},
+			},
+			wantReplaced: &llms.ModelReference{ProviderID: "service", ModelID: "service-model"},
+		},
+		{
+			name: "the file declares the stored choice",
+			store: &llmConfigStoreFake{
+				hasDefault: true, defaultProvider: "file", defaultModel: "file-model",
+				catalogDefault: &llms.ModelReference{ProviderID: "file", ModelID: "file-model"},
+			},
+		},
+		{
+			name:  "nothing was stored to replace",
+			store: &llmConfigStoreFake{catalogDefault: &llms.ModelReference{ProviderID: "file", ModelID: "file-model"}},
+		},
+		{
+			name:  "the file declares no default",
+			store: &llmConfigStoreFake{hasDefault: true, defaultProvider: "file", defaultModel: "file-model"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			replaced, err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: t.TempDir()}, tc.store)
+			if err != nil {
+				t.Fatalf("loadModelCatalog: %v", err)
+			}
+			if tc.wantReplaced == nil {
+				if replaced != nil {
+					t.Fatalf("replaced = %#v, want none", replaced)
+				}
+				return
+			}
+			if replaced == nil || *replaced != *tc.wantReplaced {
+				t.Fatalf("replaced = %#v, want %#v", replaced, tc.wantReplaced)
+			}
+		})
+	}
+}
+
 type llmConfigStoreFake struct {
 	providers       []llms.Provider
 	models          []llms.Model
@@ -83,9 +136,17 @@ type llmConfigStoreFake struct {
 	defaultModel    string
 	upsertErr       error
 	upserts         int
+	// catalogDefault is what the fake's models.json projection writes, so a test
+	// can observe what projecting the file did to the stored default.
+	catalogDefault *llms.ModelReference
 }
 
-func (s *llmConfigStoreFake) ApplyModelCatalog(context.Context, llms.ModelCatalog) error { return nil }
+func (s *llmConfigStoreFake) ApplyModelCatalog(context.Context, llms.ModelCatalog) error {
+	if s.catalogDefault != nil {
+		s.defaultProvider, s.defaultModel, s.hasDefault = s.catalogDefault.ProviderID, s.catalogDefault.ModelID, true
+	}
+	return nil
+}
 
 func (s *llmConfigStoreFake) UpsertDefaultLLMConfig(context.Context, llms.Provider, llms.Model) error {
 	s.upserts++

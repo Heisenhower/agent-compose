@@ -14,11 +14,25 @@ import (
 type modelCatalogStoreFake struct {
 	catalog llms.ModelCatalog
 	err     error
+	// defaultProvider/defaultModel/hasDefault is the stored default, and
+	// catalogDefault is what applying the catalog leaves stored, so a test can
+	// observe whether projecting the file replaced one.
+	defaultProvider string
+	defaultModel    string
+	hasDefault      bool
+	catalogDefault  *llms.ModelReference
 }
 
 func (s *modelCatalogStoreFake) ApplyModelCatalog(_ context.Context, catalog llms.ModelCatalog) error {
 	s.catalog = catalog
+	if s.catalogDefault != nil {
+		s.defaultProvider, s.defaultModel, s.hasDefault = s.catalogDefault.ProviderID, s.catalogDefault.ModelID, true
+	}
 	return s.err
+}
+
+func (s *modelCatalogStoreFake) DefaultLLMModelReference(context.Context) (string, string, bool, error) {
+	return s.defaultProvider, s.defaultModel, s.hasDefault, nil
 }
 
 func TestLoadModelCatalogUsesDataRootAndFailsUnresolvedSecrets(t *testing.T) {
@@ -29,7 +43,7 @@ func TestLoadModelCatalogUsesDataRootAndFailsUnresolvedSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &modelCatalogStoreFake{}
-	if err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store); err != nil {
+	if _, err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store); err != nil {
 		t.Fatal(err)
 	}
 	if store.catalog.Default != "custom/literal" || *store.catalog.Providers["custom"].APIKey != "resolved-key" {
@@ -37,7 +51,7 @@ func TestLoadModelCatalogUsesDataRootAndFailsUnresolvedSecrets(t *testing.T) {
 	}
 
 	t.Setenv("CATALOG_TEST_KEY", "")
-	if err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store); err == nil || !strings.Contains(err.Error(), "CATALOG_TEST_KEY") {
+	if _, err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store); err == nil || !strings.Contains(err.Error(), "CATALOG_TEST_KEY") {
 		t.Fatalf("loadModelCatalog error = %v", err)
 	}
 }
@@ -50,7 +64,7 @@ func TestIntegrationLoadModelCatalogRejectsCrossFamilyModelProtocol(t *testing.T
 	}
 
 	store := &modelCatalogStoreFake{}
-	err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store)
+	_, err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store)
 	if err == nil || !strings.Contains(err.Error(), `incompatible with provider family "openai"`) {
 		t.Fatalf("loadModelCatalog error = %v", err)
 	}

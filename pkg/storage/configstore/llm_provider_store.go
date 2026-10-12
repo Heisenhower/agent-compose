@@ -156,6 +156,14 @@ func (s *llmStore) UpdateLLMProvider(ctx context.Context, input llms.ProviderRep
 	if err := replaceProviderModels(ctx, tx, provider.ID, provider.DefaultWireAPI, input.Models); err != nil {
 		return llms.Provider{}, err
 	}
+	if !provider.Enabled {
+		// A disabled connection cannot serve the default, and resolution already
+		// treats its reference as absent. Remove the row so GetDefaultModel does
+		// not advertise a default no run receives.
+		if err := clearDefaultReferenceForProvider(ctx, tx, provider.ID); err != nil {
+			return llms.Provider{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return llms.Provider{}, fmt.Errorf("commit provider update: %w", err)
 	}
@@ -235,6 +243,30 @@ func replaceProviderModels(ctx context.Context, tx *sql.Tx, providerID, provider
 			return fmt.Errorf("bind provider %q model %q: %w", providerID, model.ID, err)
 		}
 	}
+	return sweepUnreferencedAPIModels(ctx, tx)
+}
+
+// sweepUnreferencedAPIModels removes API-owned model identities that no
+// connection binds and no default names.
+//
+// llm_model declares a model identity; llm_provider_model is the binding that
+// makes it servable. Rewriting a connection's models removes its bindings and
+// deleting a connection removes the connection, but neither removed the identity
+// row it had created, so a model an operator had dropped kept claiming its id.
+// The environment bootstrap treats a foreign-scope row as an owner and yields
+// its whole projection, so such a leftover could silently disable LLM_MODEL for
+// every later daemon start.
+//
+// Only API-scope rows are swept. A catalog row belongs to the models.json
+// projection, which disables what it no longer declares, and an environment row
+// belongs to the environment projection.
+func sweepUnreferencedAPIModels(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_model
+		WHERE scope = ?
+		  AND id NOT IN (SELECT model_id FROM llm_provider_model)
+		  AND id NOT IN (SELECT model_id FROM llm_catalog_default)`, llms.ProviderScopeAPI); err != nil {
+		return fmt.Errorf("sweep unreferenced api model identities: %w", err)
+	}
 	return nil
 }
 
@@ -269,6 +301,16 @@ func (s *llmStore) DeleteLLMProvider(ctx context.Context, id string) error {
 		if _, err := tx.ExecContext(ctx, statement, id); err != nil {
 			return fmt.Errorf("delete llm provider configuration: %w", err)
 		}
+	}
+	// The connection is gone, so a default naming it can never be served; leaving
+	// the row would make GetDefaultModel report a default no run receives.
+	if err := clearDefaultReferenceForProvider(ctx, tx, id); err != nil {
+		return err
+	}
+	// Its model identities are gone too, so nothing else may claim they are still
+	// declared.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit provider deletion: %w", err)

@@ -12,9 +12,12 @@ import (
 	"github.com/chaitin/agent-compose/pkg/llms"
 )
 
-// modelCatalogStore is the surface that projecting models.json needs.
+// modelCatalogStore is the surface that projecting models.json needs: the write
+// surface, and the default reference read twice around it so a projection that
+// replaced a stored default can be reported.
 type modelCatalogStore interface {
 	ApplyModelCatalog(context.Context, llms.ModelCatalog) error
+	DefaultLLMModelReference(context.Context) (string, string, bool, error)
 }
 
 // llmConfigStore is the startup surface that materializing LLM configuration
@@ -38,8 +41,16 @@ func loadLLMConfig(ctx context.Context, config *appconfig.Config, store llmConfi
 	if config == nil || store == nil {
 		return fmt.Errorf("llm configuration and store are required")
 	}
-	if err := loadModelCatalog(ctx, config, store); err != nil {
+	replacedDefault, err := loadModelCatalog(ctx, config, store)
+	if err != nil {
 		return err
+	}
+	if replacedDefault != nil {
+		// models.json is the daemon's own declaration, so it wins — but an
+		// operator who chose a default through the LLM service must be able to
+		// see that the file outranked the choice.
+		slog.Warn("the default model in models.json replaced the stored default model",
+			"previous_provider_id", replacedDefault.ProviderID, "previous_model_id", replacedDefault.ModelID)
 	}
 	if err := llms.ProjectDaemonLLMConfig(ctx, config, store); err != nil {
 		conflict, ok := llms.AsDefaultConfigConflict(err)
@@ -73,17 +84,38 @@ func defaultModelMissing(ctx context.Context, store llms.CatalogStore) (bool, er
 	return strings.TrimSpace(catalog.DefaultModel()) == "", nil
 }
 
-func loadModelCatalog(ctx context.Context, config *appconfig.Config, store modelCatalogStore) error {
+func loadModelCatalog(ctx context.Context, config *appconfig.Config, store modelCatalogStore) (*llms.ModelReference, error) {
 	if config == nil || store == nil {
-		return fmt.Errorf("model catalog configuration and store are required")
+		return nil, fmt.Errorf("model catalog configuration and store are required")
 	}
 	path := filepath.Join(config.DataRoot, llms.ModelsCatalogFilename)
 	catalog, err := llms.LoadModelCatalog(path, os.LookupEnv)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	// models.json declares its default explicitly, so projecting it replaces
+	// whatever reference is stored — including one an operator chose through the
+	// LLM service. Read the previous value so the caller can report an override
+	// instead of silently outranking the choice the service accepted earlier.
+	previousProviderID, previousModelID, hadPrevious, err := store.DefaultLLMModelReference(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the stored llm default before applying %s: %w", path, err)
 	}
 	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
-		return fmt.Errorf("apply model catalog %s: %w", path, err)
+		return nil, fmt.Errorf("apply model catalog %s: %w", path, err)
 	}
-	return nil
+	// A missing previous reference is not an override, and models.json that
+	// declares no default deliberately leaves the stored reference in place, so
+	// only a reference that changed is reported.
+	if !hadPrevious {
+		return nil, nil
+	}
+	providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the llm default after applying %s: %w", path, err)
+	}
+	if ok && providerID == previousProviderID && modelID == previousModelID {
+		return nil, nil
+	}
+	return &llms.ModelReference{ProviderID: previousProviderID, ModelID: previousModelID}, nil
 }

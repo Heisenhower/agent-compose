@@ -55,7 +55,7 @@ func TestE2EModelCatalogConfiguresOpenCodeFacadeTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open stores: %v", err)
 	}
-	if err := loadModelCatalog(ctx, config, store); err != nil {
+	if _, err := loadModelCatalog(ctx, config, store); err != nil {
 		t.Fatalf("load models.json: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestE2ELoadMissingModelCatalogPreservesExistingDefault(t *testing.T) {
 		t.Fatalf("store existing default: %v", err)
 	}
 
-	if err := loadModelCatalog(ctx, config, store); err != nil {
+	if _, err := loadModelCatalog(ctx, config, store); err != nil {
 		t.Fatalf("load missing models.json: %v", err)
 	}
 

@@ -80,6 +80,50 @@ func TestIntegrationEnvProjectionUpdatesItsOwnRows(t *testing.T) {
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://rotated.example/v1")
 }
 
+// A disabled row is a declaration that is switched off, so nothing serves it and
+// the environment bootstrap may take the id over — which is what turning it back
+// on means. Reading a row regardless of enabled made a models.json connection the
+// operator had dropped (projection disables what the file no longer declares)
+// block the whole environment projection forever, leaving a daemon that silently
+// lost its LLM_* configuration with only a startup warning to explain it.
+func TestIntegrationEnvProjectionTakesOverDisabledIdentities(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	insertDisabledCatalogIdentities(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, "shared-model")
+
+	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
+	if err != nil {
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the disabled ids taken over", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://env.example/v1")
+	var scope string
+	var enabled, defaultModel int
+	if err := store.DB().QueryRowContext(ctx, `SELECT scope, enabled, default_model FROM llm_model WHERE id = ?`, "shared-model").Scan(&scope, &enabled, &defaultModel); err != nil {
+		t.Fatal(err)
+	}
+	if scope != llms.ProviderScopeEnvDefault || enabled == 0 || defaultModel == 0 {
+		t.Fatalf("model scope = %q enabled = %d default = %d, want the environment row to become the default", scope, enabled, defaultModel)
+	}
+}
+
+func insertDisabledCatalogIdentities(t *testing.T, ctx context.Context, db *sql.DB, providerID, modelID string) {
+	t.Helper()
+	// A models.json provider without an apiKey is persisted disabled, and the
+	// catalog projection disables a model the file no longer declares.
+	if _, err := db.ExecContext(ctx, `INSERT INTO llm_provider(
+		id, name, provider_type, default_wire_api, base_url, api_key, auth_header, auth_scheme, headers_json, weight, enabled, scope, created_at, updated_at)
+		VALUES(?, ?, 'openai', 'responses', 'https://api.example/v1', '', 'Authorization', 'Bearer', '{}', 10, 0, 'catalog', 0, 0)`,
+		providerID, providerID); err != nil {
+		t.Fatalf("insert disabled catalog provider: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
+		VALUES(?, ?, '', 0, 0, 'catalog', 0, 0)`, modelID, modelID); err != nil {
+		t.Fatalf("insert disabled catalog model: %v", err)
+	}
+}
+
 func newProjectionTestStore(t *testing.T) *ConfigStore {
 	t.Helper()
 	store := FromDB(newMemoryDB(t))
