@@ -80,22 +80,23 @@ func TestIntegrationEnvProjectionUpdatesItsOwnRows(t *testing.T) {
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://rotated.example/v1")
 }
 
-// A disabled row is a declaration that is switched off, so nothing serves it and
-// the environment bootstrap may take the id over — which is what turning it back
-// on means. Reading a row regardless of enabled made a models.json connection the
-// operator had dropped (projection disables what the file no longer declares)
-// block the whole environment projection forever, leaving a daemon that silently
-// lost its LLM_* configuration with only a startup warning to explain it.
-func TestIntegrationEnvProjectionTakesOverDisabledIdentities(t *testing.T) {
+// A disabled model identity is a declaration that is switched off, so nothing
+// serves it and the environment bootstrap may take the id over — which is what
+// turning it back on means. Reading the row regardless of enabled made a model
+// an operator had removed from models.json (the projection disables what the file
+// no longer declares) block the whole environment projection forever, leaving a
+// daemon that silently lost its LLM_* configuration with only a startup warning
+// to explain it.
+func TestIntegrationEnvProjectionTakesOverDisabledModelIdentity(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := newProjectionTestStore(t)
 
-	insertDisabledCatalogIdentities(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, "shared-model")
+	insertDisabledCatalogModel(t, ctx, store.DB(), "shared-model")
 
 	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
 	if err != nil {
-		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the disabled ids taken over", err)
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the disabled model id taken over", err)
 	}
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://env.example/v1")
 	var scope string
@@ -108,16 +109,66 @@ func TestIntegrationEnvProjectionTakesOverDisabledIdentities(t *testing.T) {
 	}
 }
 
-func insertDisabledCatalogIdentities(t *testing.T, ctx context.Context, db *sql.DB, providerID, modelID string) {
-	t.Helper()
-	// A models.json provider without an apiKey is persisted disabled, and the
-	// catalog projection disables a model the file no longer declares.
-	if _, err := db.ExecContext(ctx, `INSERT INTO llm_provider(
-		id, name, provider_type, default_wire_api, base_url, api_key, auth_header, auth_scheme, headers_json, weight, enabled, scope, created_at, updated_at)
-		VALUES(?, ?, 'openai', 'responses', 'https://api.example/v1', '', 'Authorization', 'Bearer', '{}', 10, 0, 'catalog', 0, 0)`,
-		providerID, providerID); err != nil {
-		t.Fatalf("insert disabled catalog provider: %v", err)
+// A models.json Provider keeps its id while the file declares it, even though a
+// declaration without an apiKey is persisted disabled. Taking that id over
+// rewrote the row's scope, and the file projection can only rewrite a provider
+// row it still owns (`WHERE scope = 'catalog'`): the next startup's projection
+// matched no row, failed with a non-catalog conflict, and loadLLMConfig failed
+// with it, so the daemon started without its cleanup, scheduler, and deletion
+// recovery managers — on every startup, with no way to recover.
+func TestIntegrationEnvProjectionKeepsDisabledDeclaredCatalogProvider(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	catalog := credentiallessCatalog(llms.ProviderIDDefaultOpenAI, "shared-model")
+	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
+		t.Fatalf("first file projection: %v", err)
 	}
+
+	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model"))
+	conflict, ok := llms.AsDefaultConfigConflict(err)
+	if !ok {
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want a default config conflict", err)
+	}
+	if conflict.Kind != "provider" || conflict.ID != llms.ProviderIDDefaultOpenAI || conflict.Scope != llms.ProviderScopeCatalog {
+		t.Fatalf("conflict = %#v", conflict)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+	var enabled int
+	var apiKey string
+	if err := store.DB().QueryRowContext(ctx, `SELECT enabled, api_key FROM llm_provider WHERE id = ?`, llms.ProviderIDDefaultOpenAI).Scan(&enabled, &apiKey); err != nil {
+		t.Fatal(err)
+	}
+	if enabled != 0 || apiKey != "" {
+		t.Fatalf("catalog provider enabled = %d api_key = %q, want the file's disabled declaration untouched", enabled, apiKey)
+	}
+
+	// The file must still be able to rewrite the row it declares.
+	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
+		t.Fatalf("second file projection after the environment projection: %v", err)
+	}
+}
+
+// credentiallessCatalog is a models.json catalog whose only Provider declares no
+// apiKey, so the file projection persists it disabled while the file keeps
+// declaring its id.
+func credentiallessCatalog(providerID, modelID string) llms.ModelCatalog {
+	baseURL, protocol := "https://catalog.example/v1", llms.APIProtocolResponses
+	return llms.ModelCatalog{
+		Providers: map[string]llms.CatalogProvider{
+			providerID: {
+				BaseURL:  &baseURL,
+				Protocol: &protocol,
+				Models:   []llms.CatalogModel{{ID: modelID}},
+			},
+		},
+	}
+}
+
+func insertDisabledCatalogModel(t *testing.T, ctx context.Context, db *sql.DB, modelID string) {
+	t.Helper()
+	// The catalog projection disables a model the file no longer declares.
 	if _, err := db.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
 		VALUES(?, ?, '', 0, 0, 'catalog', 0, 0)`, modelID, modelID); err != nil {
 		t.Fatalf("insert disabled catalog model: %v", err)
