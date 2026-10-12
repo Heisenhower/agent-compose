@@ -18,7 +18,11 @@ type ProjectSpec struct {
 	MCPServers     map[string]MCPServerSpec     `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 	OctoBusServers map[string]OctoBusServerSpec `yaml:"octobus_servers,omitempty" json:"octobus_servers,omitempty"`
 	Volumes        map[string]VolumeSpec        `yaml:"volumes,omitempty" json:"volumes,omitempty"`
-	Agents         map[string]AgentSpec         `yaml:"agents,omitempty" json:"agents,omitempty"`
+	// Policies is the project's policy library. An agent selects one by name
+	// instead of repeating the block, the same way `mcp_servers` and
+	// `workspaces` entries are reused.
+	Policies map[string]SandboxSpec `yaml:"policies,omitempty" json:"policies,omitempty"`
+	Agents   map[string]AgentSpec   `yaml:"agents,omitempty" json:"agents,omitempty"`
 }
 
 type OctoBusServerSpec struct {
@@ -79,11 +83,42 @@ type AgentSpec struct {
 	Jupyter   *JupyterSpec   `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
 }
 
-// SandboxSpec is the agent policy block: the runtime policies one agent
-// declares. The type keeps its historical name because the stable authoring
-// contract (testdata/compat/contract-v2608.1.0.json) records it for the
-// deprecated `sandbox` key.
+// SandboxSpec is a policy block: the runtime policies one agent declares, or one
+// entry of the project's `policies` library. The type keeps its historical name
+// because the stable authoring contract
+// (testdata/compat/contract-v2608.1.0.json) records it for the deprecated
+// `sandbox` key.
+// UnmarshalYAML lets an agent select a project policy by name or declare one
+// inline. A scalar is the name of a `policies` entry; a mapping is a policy
+// block, exactly like the project entry it could have referenced.
+func (s *SandboxSpec) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var ref string
+		if err := value.Decode(&ref); err != nil {
+			return err
+		}
+		*s = SandboxSpec{Ref: ref}
+		return nil
+	case yaml.MappingNode:
+		type alias SandboxSpec
+		var decoded alias
+		if err := value.Decode(&decoded); err != nil {
+			return err
+		}
+		decoded.Ref = ""
+		*s = SandboxSpec(decoded)
+		return nil
+	default:
+		return fmt.Errorf("expected a policy name or mapping, got %s", nodeKindName(value.Kind))
+	}
+}
+
 type SandboxSpec struct {
+	// Ref names a project `policies` entry. It is set only when an agent declares
+	// its policy as a scalar, the shape `mcp_servers` entries use for a project
+	// server. A policy definition in `policies` itself cannot carry a reference.
+	Ref                  string `yaml:"-" json:"-"`
 	StoppedRuntimePolicy string `yaml:"stopped_runtime_policy,omitempty" json:"stopped_runtime_policy,omitempty"`
 	// Network declares this agent's outbound network policy. A nil Network is
 	// undeclared, and undeclared keeps the engine's existing behavior:
@@ -533,6 +568,7 @@ func validateProjectNode(node *yaml.Node) error {
 		"mcp_servers":     validateMCPMap,
 		"octobus_servers": validateOctoBusMap,
 		"volumes":         validateVolumeMap,
+		"policies":        validatePolicyMap,
 		"agents":          validateAgentMap,
 	})
 }
@@ -553,6 +589,34 @@ func validateScalarOrStringList(node *yaml.Node, path string) error {
 		return validateScalar(node, path)
 	}
 	return validateStringList(node, path)
+}
+
+func validatePolicyMap(node *yaml.Node, path string) error {
+	return validateNamedMap(node, path, validatePolicyDefinition)
+}
+
+// validatePolicyDefinition validates one entry of the project's `policies`
+// library. A definition is always a block; only an agent may name one.
+func validatePolicyDefinition(node *yaml.Node, path string) error {
+	return validateMapping(node, path, map[string]nodeValidator{
+		"stopped_runtime_policy": validateScalar,
+		"network":                validateSandboxNetwork,
+	})
+}
+
+// validatePolicyReferenceOrBlock validates an agent's policy declaration, which
+// is either the name of a project policy or an inline block.
+func validatePolicyReferenceOrBlock(node *yaml.Node, path string) error {
+	if node.Kind != yaml.ScalarNode {
+		return validatePolicyDefinition(node, path)
+	}
+	// A scalar is the name of a project policy. An empty one is a mistake rather
+	// than "no policy": a project that declares the key means it, and silently
+	// treating the name as absent would drop the declaration.
+	if node.Tag == "!!null" || strings.TrimSpace(node.Value) == "" {
+		return &ValidationError{Path: path, Message: "expected the name of a project policy or an inline mapping"}
+	}
+	return validateScalar(node, path)
 }
 
 func validateWorkspaceMap(node *yaml.Node, path string) error {
@@ -580,19 +644,10 @@ func validateAgent(node *yaml.Node, path string) error {
 		"skills":        validateSkillList,
 		"volumes":       validateVolumeMountList,
 		"workspace":     validateWorkspace,
-		"policy":        validatePolicyBlock,
-		"sandbox":       validatePolicyBlock,
+		"policy":        validatePolicyReferenceOrBlock,
+		"sandbox":       validatePolicyReferenceOrBlock,
 		"scheduler":     validateScheduler,
 		"jupyter":       validateJupyter,
-	})
-}
-
-// validatePolicyBlock validates the policy block, which both the current
-// `policy` key and its deprecated `sandbox` spelling share.
-func validatePolicyBlock(node *yaml.Node, path string) error {
-	return validateMapping(node, path, map[string]nodeValidator{
-		"stopped_runtime_policy": validateScalar,
-		"network":                validateSandboxNetwork,
 	})
 }
 

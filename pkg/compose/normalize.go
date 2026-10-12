@@ -261,6 +261,14 @@ func Normalize(spec *ProjectSpec, options NormalizeOptions) (*NormalizedProjectS
 		return nil, err
 	}
 	normalized.Volumes = volumes
+	// The policy library is resolved into each agent and is not carried further:
+	// what the engine enforces is the agent's effective policy block. Every entry
+	// is normalized here so a broken definition fails the project even when no
+	// agent selects it yet.
+	policies, err := normalizePolicyMap("policies", spec.Policies)
+	if err != nil {
+		return nil, err
+	}
 
 	agentNames := make([]string, 0, len(spec.Agents))
 	for name := range spec.Agents {
@@ -273,7 +281,7 @@ func Normalize(spec *ProjectSpec, options NormalizeOptions) (*NormalizedProjectS
 			return nil, err
 		}
 		agent := spec.Agents[agentName]
-		normalizedAgent, err := normalizeAgent(agentName, agent, options, normalized)
+		normalizedAgent, err := normalizeAgent(agentName, agent, options, normalized, policies)
 		if err != nil {
 			return nil, err
 		}
@@ -295,7 +303,7 @@ func NormalizeFile(path string) (*NormalizedProjectSpec, error) {
 	return normalized, nil
 }
 
-func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, project *NormalizedProjectSpec) (NormalizedAgentSpec, error) {
+func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, project *NormalizedProjectSpec, policies map[string]NormalizedSandboxSpec) (NormalizedAgentSpec, error) {
 	enabled := true
 	if agent.Enabled != nil {
 		enabled = *agent.Enabled
@@ -358,7 +366,7 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 	if err != nil {
 		return NormalizedAgentSpec{}, err
 	}
-	policy, err := normalizeSandboxSpec(joinPath("agents", name)+"."+policyKey, declaredPolicy)
+	policy, err := normalizeAgentPolicy(joinPath("agents", name)+"."+policyKey, declaredPolicy, policies)
 	if err != nil {
 		return NormalizedAgentSpec{}, err
 	}
@@ -393,6 +401,61 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 		Scheduler:    scheduler,
 		Jupyter:      jupyter,
 	}, nil
+}
+
+// normalizePolicyMap normalizes the project's policy library. An entry is a
+// definition, never a reference to another entry, so a scalar there is rejected
+// rather than silently resolved.
+func normalizePolicyMap(path string, policies map[string]SandboxSpec) (map[string]NormalizedSandboxSpec, error) {
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(policies))
+	for name := range policies {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	normalized := make(map[string]NormalizedSandboxSpec, len(policies))
+	for _, name := range names {
+		itemPath := joinPath(path, name)
+		definition := policies[name]
+		if ref := strings.TrimSpace(definition.Ref); ref != "" {
+			return nil, &ValidationError{
+				Path:    itemPath,
+				Message: fmt.Sprintf("a project policy defines a block; it cannot reference %q", ref),
+			}
+		}
+		block, err := normalizeSandboxSpec(itemPath, &definition)
+		if err != nil {
+			return nil, err
+		}
+		if block != nil {
+			normalized[name] = *block
+		}
+	}
+	return normalized, nil
+}
+
+// normalizeAgentPolicy produces the policy block an agent actually enforces:
+// either the project policy it named, or the block it declared inline.
+//
+// A name and an inline block cannot both be present, because a scalar decodes to
+// a reference and a mapping to a block. The two forms are exclusive by
+// construction rather than by validation, so there is no precedence rule to
+// document.
+func normalizeAgentPolicy(path string, declared *SandboxSpec, policies map[string]NormalizedSandboxSpec) (*NormalizedSandboxSpec, error) {
+	if declared == nil {
+		return nil, nil
+	}
+	if ref := strings.TrimSpace(declared.Ref); ref != "" {
+		policy, ok := policies[ref]
+		if !ok {
+			return nil, &ValidationError{Path: path, Message: fmt.Sprintf("policy %q is not defined in policies", ref)}
+		}
+		selected := policy
+		return &selected, nil
+	}
+	return normalizeSandboxSpec(path, declared)
 }
 
 // resolveDeclaredPolicyBlock returns the policy block an agent declared and the
