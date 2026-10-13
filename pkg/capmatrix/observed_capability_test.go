@@ -178,3 +178,30 @@ func TestDriverDeclarationsNeverClaimToBeMeasured(t *testing.T) {
 		}
 	}
 }
+
+// TestNewSnapshotWithObservationsPersistsTheNormalizedState pins that the
+// compatibility defaults the assertion layer derives are what the snapshot
+// stores, not only what it accepts: a snapshot holding an empty state would
+// violate the three-state invariant its own Validate enforces.
+func TestNewSnapshotWithObservationsPersistsTheNormalizedState(t *testing.T) {
+	declaration := testDriverCapabilities(t, "docker", nil)
+	measured := []ObservedCapability{{
+		Dimension: ObservedUserNamespaces,
+		Enforced:  true,
+		Mechanism: "user_namespaces",
+		Observed:  "the kernel reports user.max_user_namespaces=15000",
+		Source:    SourceMeasured,
+		// State is omitted; normalization derives it.
+	}}
+	snapshot, err := NewSnapshotWithObservations([]DriverCapabilities{declaration}, nil, []string{"docker"}, measured, time.Now())
+	if err != nil {
+		t.Fatalf("NewSnapshotWithObservations() error = %v", err)
+	}
+	observations := snapshot.Observations()
+	if len(observations) != 1 {
+		t.Fatalf("observations = %+v, want the one measured observation", observations)
+	}
+	if observations[0].State != StateEnforced {
+		t.Fatalf("frozen state = %q, want %q", observations[0].State, StateEnforced)
+	}
+}

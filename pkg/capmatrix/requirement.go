@@ -361,8 +361,39 @@ func indexObservedCapabilities(observations []ObservedCapability) map[ObservedDi
 // measured carries runtime observations, such as a lower layer reporting that
 // seccomp was unavailable on a specific exec; pass nil to evaluate the startup
 // snapshot alone.
+//
+// A measured observation is appended after the frozen ones and indexed
+// last-write-wins, so it could silently replace the host probe the snapshot was
+// built from. Only the process layer reports runtime facts and only a valid
+// observation may be indexed, so anything else is refused instead of being
+// allowed to rewrite the engine's own measurement.
 func (s Snapshot) EvaluateStartPreflight(driver string, requirements []IsolationRequirement, measured []ObservedCapability) StartPreflight {
+	for _, capability := range measured {
+		if err := capability.Validate(); err != nil {
+			return refusedMeasuredObservation(driver, capability.Dimension, err.Error())
+		}
+		layer, ok := capability.Dimension.Layer()
+		if !ok || layer != LayerProcess {
+			return refusedMeasuredObservation(driver, capability.Dimension, "a runtime observation must name a process-layer dimension")
+		}
+	}
 	declared, _ := s.Driver(driver)
 	observations := append(s.Observations(), measured...)
 	return EvaluateStartPreflight(driver, requirements, declared, observations)
+}
+
+// refusedMeasuredObservation answers a runtime observation the snapshot cannot
+// index. It fails closed: an observation the engine cannot trust must not be
+// allowed to weaken a declaration.
+func refusedMeasuredObservation(driver string, dimension ObservedDimension, detail string) StartPreflight {
+	return StartPreflight{
+		Allowed: false,
+		Driver:  driver,
+		Violations: []PreflightFinding{{
+			Dimension: RequirementDimension(dimension),
+			Reason:    PreflightReasonUnknownDimension,
+			Mechanism: string(dimension),
+			Detail:    detail,
+		}},
+	}
 }

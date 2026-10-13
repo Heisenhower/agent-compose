@@ -19,16 +19,20 @@ import (
 const landlockCreateRulesetVersion = 1
 
 const (
-	mechanismSeccompSyscall       = "seccomp_syscall"
-	mechanismSeccompUserNotify    = "seccomp_user_notify"
-	mechanismLandlock             = "landlock_lsm"
-	mechanismCgroupV2             = "cgroup_v2_hierarchy"
-	mechanismUserNamespacesProbe  = "user_namespaces"
-	cgroupV2RootPath              = "/sys/fs/cgroup"
-	cgroupV2ControllersPath       = "/sys/fs/cgroup/cgroup.controllers"
-	maxUserNamespacesSysctlPath   = "/proc/sys/user/max_user_namespaces"
-	probeMissingSeccompSyscall    = "the kernel was built without CONFIG_SECCOMP or seccomp is unavailable"
-	probeMissingSeccompUserNotify = "seccomp user-space notification (SECCOMP_RET_USER_NOTIF) is unavailable; a mediated egress path cannot intercept syscalls"
+	mechanismSeccompSyscall      = "seccomp_syscall"
+	mechanismSeccompUserNotify   = "seccomp_user_notify"
+	mechanismLandlock            = "landlock_lsm"
+	mechanismCgroupV2            = "cgroup_v2_hierarchy"
+	mechanismUserNamespacesProbe = "user_namespaces"
+	cgroupV2RootPath             = "/sys/fs/cgroup"
+	cgroupV2ControllersPath      = "/sys/fs/cgroup/cgroup.controllers"
+	maxUserNamespacesSysctlPath  = "/proc/sys/user/max_user_namespaces"
+	// unprivilegedUsernsCloneSysctlPath is a distribution patch, not mainline:
+	// where it exists it gates unprivileged user-namespace creation separately
+	// from the kernel-wide limit, so a positive limit alone is not the answer.
+	unprivilegedUsernsCloneSysctlPath = "/proc/sys/kernel/unprivileged_userns_clone"
+	probeMissingSeccompSyscall        = "the kernel was built without CONFIG_SECCOMP or seccomp is unavailable"
+	probeMissingSeccompUserNotify     = "seccomp user-space notification (SECCOMP_RET_USER_NOTIF) is unavailable; a mediated egress path cannot intercept syscalls"
 )
 
 // probeSystemCapabilities answers the host-mechanism questions by asking the
@@ -187,6 +191,23 @@ func probeUserNamespaces() ObservedCapability {
 			Observed:  "the kernel reports user.max_user_namespaces=" + strings.TrimSpace(string(raw)) + ", so unprivileged user namespaces are disabled",
 			Missing:   "the kernel's user.max_user_namespaces limit must be greater than zero",
 			Source:    SourceMeasured,
+		}
+	}
+	// A distribution may gate unprivileged creation independently of the limit,
+	// so the limit is only the availability answer when that gate is open. An
+	// unreadable or unparsable gate file stays inconclusive here rather than
+	// claiming an enforcement the engine cannot verify.
+	if cloneRaw, cloneErr := os.ReadFile(unprivilegedUsernsCloneSysctlPath); cloneErr == nil {
+		clone, cloneParseErr := strconv.Atoi(strings.TrimSpace(string(cloneRaw)))
+		if cloneParseErr == nil && clone == 0 {
+			return ObservedCapability{
+				Dimension: ObservedUserNamespaces,
+				State:     StateUnsupported,
+				Mechanism: ReasonUnsupported,
+				Observed:  "the kernel reports " + unprivilegedUsernsCloneSysctlPath + "=0 and user.max_user_namespaces=" + strconv.Itoa(limit) + ", so unprivileged user namespaces are disabled",
+				Missing:   "the kernel must allow unprivileged user-namespace creation (" + unprivilegedUsernsCloneSysctlPath + " must not be zero)",
+				Source:    SourceMeasured,
+			}
 		}
 	}
 	return ObservedCapability{

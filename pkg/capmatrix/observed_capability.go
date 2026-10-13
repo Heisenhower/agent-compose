@@ -140,20 +140,24 @@ func (o ObservedCapability) Validate() error {
 	default:
 		return fmt.Errorf("%w: observed dimension %q has source %q; a measurement must be measured or simulated", ErrInvalidCapability, o.Dimension, o.Source)
 	}
-	if _, err := (assertion{
+	normalized, err := (assertion{
 		label:         fmt.Sprintf("observed dimension %q", o.Dimension),
 		enforced:      o.Enforced,
 		state:         o.State,
 		source:        o.Source,
 		mechanism:     o.Mechanism,
 		preconditions: o.Preconditions,
-	}).normalize(); err != nil {
+	}).normalize()
+	if err != nil {
 		return err
 	}
-	if o.State == StateEnforced && strings.TrimSpace(o.Missing) != "" {
+	// The checks below read the derived state, not the raw field: normalization
+	// is what supplies a caller's omitted state, so reading the raw value here
+	// would reject the very default the same call just derived.
+	if normalized.state == StateEnforced && strings.TrimSpace(o.Missing) != "" {
 		return fmt.Errorf("%w: observed dimension %q is enforced but names a missing precondition", ErrInvalidCapability, o.Dimension)
 	}
-	if o.State != StateEnforced && strings.TrimSpace(o.Missing) == "" {
+	if normalized.state != StateEnforced && strings.TrimSpace(o.Missing) == "" {
 		return fmt.Errorf("%w: observed dimension %q is not enforced but does not name what is missing", ErrInvalidCapability, o.Dimension)
 	}
 	return nil
@@ -197,11 +201,26 @@ func ProbeSystemCapabilities() ([]ObservedCapability, error) {
 func normalizeObservedCapabilities(in []ObservedCapability) ([]ObservedCapability, error) {
 	out := make([]ObservedCapability, 0, len(in))
 	for _, capability := range in {
-		if err := capability.Validate(); err != nil {
+		// Persist the compatibility defaults instead of only checking them:
+		// Validate accepts an omitted state by deriving it, so a snapshot that
+		// kept the raw value would hold an empty state that its own three-state
+		// invariant forbids.
+		normalized, err := (assertion{
+			label:         fmt.Sprintf("observed dimension %q", capability.Dimension),
+			enforced:      capability.Enforced,
+			state:         capability.State,
+			source:        capability.Source,
+			mechanism:     capability.Mechanism,
+			preconditions: capability.Preconditions,
+		}).normalize()
+		if err != nil {
 			return nil, err
 		}
-		if capability.Enforced != (capability.State == StateEnforced) {
-			return nil, fmt.Errorf("%w: observed dimension %q has enforced=%v with state %q", ErrInvalidCapability, capability.Dimension, capability.Enforced, capability.State)
+		capability.Enforced = normalized.enforced
+		capability.State = normalized.state
+		capability.Source = normalized.source
+		if err := capability.Validate(); err != nil {
+			return nil, err
 		}
 		capability.Preconditions = append([]string(nil), capability.Preconditions...)
 		out = append(out, capability)

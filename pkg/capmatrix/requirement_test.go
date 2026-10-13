@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chaitin/agent-compose/pkg/driver"
 )
@@ -276,6 +277,55 @@ func TestMeasuredLowerLayerSeccompFailureIsReportedNotEnforced(t *testing.T) {
 	}
 	if !strings.Contains(decision.Violations[0].Detail, "seccomp privileges were not set") {
 		t.Fatalf("detail = %q, want the observed lower-layer evidence", decision.Violations[0].Detail)
+	}
+}
+
+// TestSnapshotPreflightRefusesAnUnindexableMeasurement pins that a measured
+// observation can only be indexed when it is valid and belongs to the process
+// layer. It is appended after the frozen probe and indexed last-write-wins, so a
+// malformed or system-layer input could otherwise rewrite the host measurement
+// the snapshot was built from.
+func TestSnapshotPreflightRefusesAnUnindexableMeasurement(t *testing.T) {
+	declaration := testDriverCapabilities(t, "docker", nil)
+	snapshot, err := NewSnapshot([]DriverCapabilities{declaration}, nil, []string{"docker"}, time.Time{})
+	if err != nil {
+		t.Fatalf("NewSnapshot() error = %v", err)
+	}
+	// A valid process-layer measurement and no measurement at all are both
+	// allowed, so the refusals below are the new behavior and not the empty
+	// requirement set.
+	if decision := snapshot.EvaluateStartPreflight("docker", nil, nil); !decision.Allowed {
+		t.Fatalf("a nil measurement was refused: %+v", decision)
+	}
+	valid := MeasuredProcessIsolationCapabilities("boxlite", driver.ExecSecurityFacts{SeccompUnavailable: 1})
+	if decision := snapshot.EvaluateStartPreflight("boxlite", nil, valid); !decision.Allowed {
+		t.Fatalf("a valid process-layer measurement was refused: %+v", decision)
+	}
+
+	forgedHostClaim := []ObservedCapability{{
+		Dimension: ObservedSeccomp,
+		Enforced:  true,
+		Mechanism: "claimed_by_the_runtime",
+		Observed:  "a runtime claims the host kernel has seccomp",
+		Source:    SourceMeasured,
+	}}
+	decision := snapshot.EvaluateStartPreflight("docker", nil, forgedHostClaim)
+	if decision.Allowed {
+		t.Fatal("Allowed = true, want a system-layer measurement supplied by a runtime to be refused")
+	}
+	if len(decision.Violations) != 1 || !strings.Contains(decision.Violations[0].Detail, "process-layer") {
+		t.Fatalf("violations = %+v, want the process-layer refusal", decision.Violations)
+	}
+
+	invalid := []ObservedCapability{{
+		Dimension: ObservedProcessSeccomp,
+		State:     StateUnsupported,
+		Mechanism: ReasonLowerLayerUnavailable,
+		Observed:  "evidence without the required missing text",
+		Source:    SourceMeasured,
+	}}
+	if decision := snapshot.EvaluateStartPreflight("docker", nil, invalid); decision.Allowed {
+		t.Fatal("Allowed = true, want an invalid runtime measurement to be refused")
 	}
 }
 
