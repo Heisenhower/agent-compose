@@ -35,6 +35,10 @@ export async function runStreamCommand(options: RunStreamOptions = {}): Promise<
   }
   try {
     for await (const line of lines) {
+      // Closing readline on abort can still leave buffered frames to consume.
+      if (signal?.aborted) {
+        break;
+      }
       if (!line.trim()) {
         continue;
       }

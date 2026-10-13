@@ -238,7 +238,7 @@ describe("runStreamCommand", () => {
     });
   });
 
-  it("preserves cancellation during an interactive Codex reconnect", async () => {
+  it.each([false, true])("preserves cancellation during an interactive Codex reconnect with buffered input %s", async (bufferedInput) => {
     await withTempSession(async (root) => {
       const abortController = new AbortController();
       codexEventFactory = () => {
@@ -250,12 +250,17 @@ describe("runStreamCommand", () => {
         stdin: Readable.from([
           frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
           frame({ seq: 1, type: "human_message", message: "first" }),
+          ...(bufferedInput ? [
+            frame({ seq: 2, type: "human_message", message: "must not run" }),
+            frame({ seq: 3, type: "eof" }),
+          ] : []),
         ]),
         stdout,
         stderr: new MemoryWritable(),
         abortController,
       });
       const frames = parseOutput(stdout.text);
+      expect(runInputs).toEqual(["first"]);
       expect(frames.at(-1)).toMatchObject({ type: "result", stopReason: "cancelled" });
       expect(frames.some((entry) => entry.type === "error" || (entry.event as { kind?: string })?.kind === "error")).toBe(false);
     });
