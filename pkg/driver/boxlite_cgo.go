@@ -1133,6 +1133,16 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 	if err := boxliteStatusError(code, &ffiErr, "create box options"); err != nil {
 		return nil, err
 	}
+	// Ownership of options passes to the caller only on success, and createBox
+	// frees only the options it received and only when the FFI create call
+	// fails. Every error return below would therefore leak the native
+	// allocation, so the function keeps ownership until the final return.
+	optionsHandedOver := false
+	defer func() {
+		if !optionsHandedOver {
+			C.boxlite_options_free(options)
+		}
+	}()
 
 	if strings.TrimSpace(rootfsPath) != "" {
 		rootfsCString := C.CString(rootfsPath)
@@ -1229,6 +1239,7 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 		}
 	}
 
+	optionsHandedOver = true
 	return options, nil
 }
 

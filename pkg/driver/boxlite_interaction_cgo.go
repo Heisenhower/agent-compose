@@ -183,7 +183,10 @@ func (r *cgoSandboxRuntime) openBoxliteInteraction(ctx context.Context, sandbox 
 		done:          make(chan struct{}),
 		startupDone:   make(chan struct{}),
 	}
-	interaction.collector = &cgoExecCollector{stream: interaction.emitChunk, streamOnly: true}
+	// The filter is what observes lower-layer isolation failures on stderr, so a
+	// collector without one would report an interaction result that never carries
+	// the security facts the non-interactive path reports.
+	interaction.collector = &cgoExecCollector{stream: interaction.emitChunk, streamOnly: true, filter: newExecOutputFilter()}
 	interaction.awaiter = &boxliteExecAwaiter{
 		collector: interaction.collector,
 		waitCh:    make(chan boxliteExecWaitResult, 1),
