@@ -401,9 +401,18 @@ func TestUpstreamProberReportsARedactedEndpoint(t *testing.T) {
 // credential-bearing parts are removed from the excerpt as well.
 func TestProbeDetailDropsTheEndpointCredentials(t *testing.T) {
 	provider := probeTestProvider("https://user:secret@gateway.example/v1?api-key=secret")
-	detail := probeDetail(provider, `Get "https://user:secret@gateway.example/v1/models?api-key=secret": dial tcp: timeout`)
-	if strings.Contains(detail, "secret") {
-		t.Fatalf("detail = %q, want the credential removed", detail)
+	for _, detail := range []string{
+		`Get "https://user:secret@gateway.example/v1/models?api-key=secret": dial tcp: timeout`,
+		// Go's own redaction masks only the password, so the username and the query
+		// are the parts left to remove.
+		`Get "https://user:***@gateway.example/v1/responses?api-key=secret": EOF`,
+	} {
+		redacted := probeDetail(provider, detail)
+		for _, credential := range []string{"secret", "user"} {
+			if strings.Contains(redacted, credential) {
+				t.Fatalf("detail = %q, want %q removed", redacted, credential)
+			}
+		}
 	}
 }
 
@@ -414,6 +423,9 @@ func TestRedactedProbeEndpointDropsCredentials(t *testing.T) {
 		{name: "query", endpoint: "https://gateway.example/v1?api-key=secret", want: "https://gateway.example/v1"},
 		{name: "padded", endpoint: "  https://gateway.example/v1  ", want: "https://gateway.example/v1"},
 		{name: "relative", endpoint: "gateway.example/v1?api-key=secret", want: "gateway.example/v1"},
+		// The parser refuses a space in the host, so the userinfo survives parsing
+		// and has to be removed from the text.
+		{name: "unparseable", endpoint: "https://user:secret@gate way.example/v1?api-key=secret", want: "https://gate way.example/v1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := redactedProbeEndpoint(tc.endpoint); got != tc.want {

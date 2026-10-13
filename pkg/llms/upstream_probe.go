@@ -569,21 +569,21 @@ func probeBodyNamesAMissingModel(body []byte) bool {
 // environment or from models.json may carry either, and neither belongs in a log.
 func redactedProbeEndpoint(baseURL string) string {
 	trimmed := strings.TrimSpace(baseURL)
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		// Not a URL that can be rebuilt: keep what identifies the endpoint and drop
-		// everything a query or fragment could carry.
-		if index := strings.IndexAny(trimmed, "?#"); index >= 0 {
-			return trimmed[:index]
-		}
-		return trimmed
+	if parsed, err := url.Parse(trimmed); err == nil {
+		parsed.User = nil
+		parsed.RawQuery = ""
+		parsed.ForceQuery = false
+		parsed.Fragment = ""
+		parsed.RawFragment = ""
+		return parsed.String()
 	}
-	parsed.User = nil
-	parsed.RawQuery = ""
-	parsed.ForceQuery = false
-	parsed.Fragment = ""
-	parsed.RawFragment = ""
-	return parsed.String()
+	// Not a URL that can be rebuilt: keep what identifies the endpoint and drop
+	// whatever a userinfo, query, or fragment could carry.
+	redacted := trimProbeUserinfo(trimmed)
+	if index := strings.IndexAny(redacted, "?#"); index >= 0 {
+		redacted = redacted[:index]
+	}
+	return redacted
 }
 
 // probeDetail renders one probe failure for a report. The transport quotes the
@@ -596,23 +596,73 @@ func probeDetail(provider Provider, detail string) string {
 
 // redactProbeURL removes the parts of one stored base URL from a report string.
 // It is a text-level scrub because the URL reaches the detail inside a transport
-// error, already reassembled with the protocol path appended.
+// error, already reassembled with the protocol path appended and, for the
+// password, replaced by Go's own redaction.
 func redactProbeURL(value, baseURL string) string {
 	trimmed := strings.TrimSpace(baseURL)
 	if trimmed == "" {
 		return value
 	}
-	parsed, err := url.Parse(trimmed)
-	if err != nil {
-		return value
+	if userinfo := probeUserinfo(trimmed); userinfo != "" {
+		value = strings.ReplaceAll(value, userinfo+"@", "")
+		if username, _, found := strings.Cut(userinfo, ":"); found {
+			value = strings.ReplaceAll(value, username+":***@", "")
+		}
 	}
-	if parsed.User != nil {
-		value = strings.ReplaceAll(value, parsed.User.String()+"@", "")
-	}
-	if parsed.RawQuery != "" {
-		value = strings.ReplaceAll(value, "?"+parsed.RawQuery, "")
+	if query := probeQuery(trimmed); query != "" {
+		value = strings.ReplaceAll(value, "?"+query, "")
 	}
 	return value
+}
+
+// probeUserinfo returns the "user:password" segment of a base URL, or "" when it
+// carries none. A value the parser rejects is read textually, because such a URL
+// still reaches the transport error this scrubs.
+func probeUserinfo(baseURL string) string {
+	if parsed, err := url.Parse(baseURL); err == nil {
+		if parsed.User == nil {
+			return ""
+		}
+		return parsed.User.String()
+	}
+	authority := baseURL
+	if scheme := strings.Index(authority, "//"); scheme >= 0 {
+		authority = authority[scheme+2:]
+	}
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return ""
+	}
+	return authority[:at]
+}
+
+// trimProbeUserinfo removes a "user:password@" segment from a value the URL
+// parser could not read.
+func trimProbeUserinfo(value string) string {
+	userinfo := probeUserinfo(value)
+	if userinfo == "" {
+		return value
+	}
+	return strings.Replace(value, userinfo+"@", "", 1)
+}
+
+// probeQuery returns the query string of a base URL without its "?" prefix.
+func probeQuery(baseURL string) string {
+	if parsed, err := url.Parse(baseURL); err == nil {
+		return parsed.RawQuery
+	}
+	index := strings.Index(baseURL, "?")
+	if index < 0 {
+		return ""
+	}
+	query := baseURL[index+1:]
+	if fragment := strings.Index(query, "#"); fragment >= 0 {
+		query = query[:fragment]
+	}
+	return query
 }
 
 func summariseProbeDetail(detail string) string {
