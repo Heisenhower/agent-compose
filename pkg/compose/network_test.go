@@ -3,6 +3,7 @@ package compose
 import (
 	"errors"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -493,12 +494,17 @@ agents:
           - host: api.github.com
             port: 443
             protocol: https
+            allowed_ips:
+              - 203.0.113.0/24
 `, nil)
 	before := mustHash(t, spec)
 
 	cloned := spec.Redacted()
 	cloned.Agents[0].PolicyBlock().Network.Default = SandboxNetworkDefaultAllowAll
 	cloned.Agents[0].PolicyBlock().Network.Allow[0].Host = "attacker.example.com"
+	// The address list is a slice inside the copied entry, so mutating it in
+	// place only stays local if the clone copied it too.
+	cloned.Agents[0].PolicyBlock().Network.Allow[0].AllowedIPs[0] = "0.0.0.0/0"
 	cloned.Agents[0].PolicyBlock().Network.Allow = append(cloned.Agents[0].PolicyBlock().Network.Allow, NormalizedSandboxNetworkAllowSpec{Host: "extra.example.com", Port: 1, Protocol: "tcp"})
 
 	if after := mustHash(t, spec); after != before {
@@ -554,5 +560,32 @@ func TestNormalizeSandboxNetworkAllowedIPs(t *testing.T) {
 	var validation *ValidationError
 	if !errors.As(err, &validation) || validation.Path != "agents.worker.sandbox.network.allow[0].allowed_ips" {
 		t.Fatalf("error = %v, want a validation error at the allowed_ips field, got %+v", err, validation)
+	}
+}
+
+// TestNormalizeSandboxNetworkAllowBoundsTheList pins the input bound: every
+// entry and every allowed address is validated, deduplicated, and compiled
+// before a declaration can be refused, so the list is bounded rather than
+// unbounded work one request can ask the daemon to do.
+func TestNormalizeSandboxNetworkAllowBoundsTheList(t *testing.T) {
+	entries := make([]SandboxNetworkAllowSpec, 0, maxSandboxNetworkAllowEntries+1)
+	for index := 0; index <= maxSandboxNetworkAllowEntries; index++ {
+		entries = append(entries, SandboxNetworkAllowSpec{
+			Host:     "host-" + strconv.Itoa(index) + ".example.com",
+			Port:     443,
+			Protocol: "https",
+		})
+	}
+	if _, err := normalizeSandboxNetworkAllow("network.allow", entries); err == nil {
+		t.Fatal("normalizeSandboxNetworkAllow accepted more entries than the bound")
+	}
+
+	addresses := make([]string, 0, maxSandboxNetworkAllowAllowedIPs+1)
+	for index := 0; index <= maxSandboxNetworkAllowAllowedIPs; index++ {
+		addresses = append(addresses, "10."+strconv.Itoa(index/256%256)+"."+strconv.Itoa(index%256)+".1")
+	}
+	entry := []SandboxNetworkAllowSpec{{Host: "api.example.com", Port: 443, Protocol: "https", AllowedIPs: addresses}}
+	if _, err := normalizeSandboxNetworkAllow("network.allow", entry); err == nil {
+		t.Fatal("normalizeSandboxNetworkAllow accepted more allowed addresses than the bound")
 	}
 }

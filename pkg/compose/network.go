@@ -96,9 +96,21 @@ func normalizeSandboxNetworkDefault(value string) (string, error) {
 	}
 }
 
+// Bounds on one declared allowance list. Every entry and every allowed address
+// is validated, deduplicated, and compiled before the declaration can be
+// refused, so an unbounded list is work a request makes the daemon do. The
+// limits are far above any real declaration and exist only to bound that work.
+const (
+	maxSandboxNetworkAllowEntries    = 256
+	maxSandboxNetworkAllowAllowedIPs = 256
+)
+
 func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec) ([]NormalizedSandboxNetworkAllowSpec, error) {
 	if len(values) == 0 {
 		return nil, nil
+	}
+	if len(values) > maxSandboxNetworkAllowEntries {
+		return nil, &ValidationError{Path: path, Message: fmt.Sprintf("at most %d allow entries are supported, got %d", maxSandboxNetworkAllowEntries, len(values))}
 	}
 	normalized := make([]NormalizedSandboxNetworkAllowSpec, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
@@ -114,6 +126,9 @@ func normalizeSandboxNetworkAllow(path string, values []SandboxNetworkAllowSpec)
 		protocol, err := egress.ParseProtocol(value.Protocol)
 		if err != nil {
 			return nil, &ValidationError{Path: entryPath + ".protocol", Message: err.Error()}
+		}
+		if len(value.AllowedIPs) > maxSandboxNetworkAllowAllowedIPs {
+			return nil, &ValidationError{Path: entryPath + ".allowed_ips", Message: fmt.Sprintf("at most %d allowed addresses are supported per entry, got %d", maxSandboxNetworkAllowAllowedIPs, len(value.AllowedIPs))}
 		}
 		dedupeKey := fmt.Sprintf("%s\x00%d\x00%s", host, value.Port, protocol)
 		if _, duplicate := seen[dedupeKey]; duplicate {

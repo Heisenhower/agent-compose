@@ -456,8 +456,11 @@ func normalizeAgentPolicy(path string, declared *SandboxSpec, policies map[strin
 		if !ok {
 			return nil, &ValidationError{Path: path, Message: fmt.Sprintf("policy %q is not defined in policies", ref)}
 		}
-		selected := policy
-		return &selected, nil
+		// Every agent that references one library policy gets its own copy: the
+		// map value shares its Network block with the library entry, so returning
+		// it directly would let an edit through one agent change every other
+		// agent that references the same policy.
+		return cloneNormalizedSandboxSpec(&policy), nil
 	}
 	return normalizeSandboxSpec(path, declared)
 }
