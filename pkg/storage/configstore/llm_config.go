@@ -60,9 +60,10 @@ func (s *llmStore) UpsertDefaultLLMConfig(ctx context.Context, provider llms.Pro
 		// The projection yields, so the connection this bootstrap materialized in
 		// an earlier run must stop serving. Left enabled, it would be a peer of the
 		// declaring source for the conflicting model, and connection selection would
-		// choose between the two at random. Only the env_default scope is released:
-		// that scope is written by this projection alone, while an id another source
-		// owns is not the bootstrap's to release.
+		// choose between the two at random. Only a row this projection owns —
+		// env_default, or the legacy system scope it wrote before that value
+		// existed — is released; an id another source owns is not the bootstrap's
+		// to release.
 		if err := releaseEnvProjectionConnection(ctx, tx, provider.ID, now); err != nil {
 			return err
 		}
@@ -208,11 +209,24 @@ func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*l
 
 // releaseEnvProjectionConnection disables a connection the environment bootstrap
 // materialized and gives its id back, so a later projection can declare it again.
-// Only the env_default scope is released: it is written by that projection alone,
-// and an id carried by any other scope belongs to the source that declared it.
+//
+// The released scope is the one the stored row carries, and only the scopes the
+// bootstrap itself writes qualify (see EnvProjectionOwnsScope): the env_default
+// this projection writes today, the legacy system default older versions wrote,
+// and the unset scope of a row an earlier projection already released. Reading
+// the scope first also keeps the update a compare-and-swap: a row another writer
+// re-scoped in the meantime no longer matches, so its configuration stays with
+// the source that now owns it.
 func releaseEnvProjectionConnection(ctx context.Context, tx *sql.Tx, providerID string, now int64) error {
+	scope, err := storedProviderScope(ctx, tx, providerID)
+	if err != nil {
+		return err
+	}
+	if !llms.EnvProjectionOwnsScope(scope) {
+		return nil
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE id = ? AND scope = ?`,
-		now, providerID, llms.ProviderScopeEnvDefault); err != nil {
+		now, providerID, scope); err != nil {
 		return fmt.Errorf("release environment connection %q: %w", providerID, err)
 	}
 	return nil
