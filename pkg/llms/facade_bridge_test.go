@@ -180,3 +180,80 @@ func TestCrossFamilyBridgeStillRejectsUnservedPairs(t *testing.T) {
 		t.Fatal("crossFamilyBridge() served an unknown upstream protocol")
 	}
 }
+
+// TestRuntimeStreamBridgeHoldsResponsesCompletionForChatUsage pins why a pair
+// that differs must use its bridge even though both sides are OpenAI. A chat
+// upstream reports finish_reason and usage in two separate chunks, and
+// response.completed is the only Responses event that can carry usage. Encoding
+// the finish the moment it arrives, which is what two hand-assembled adapters
+// do, publishes the completion with no token counts at all, because the
+// Responses encoder ignores the standalone usage part that follows it.
+func TestRuntimeStreamBridgeHoldsResponsesCompletionForChatUsage(t *testing.T) {
+	decoder, encoder, err := RuntimeStreamBridge(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat, "deepseek-flash")
+	if err != nil {
+		t.Fatalf("RuntimeStreamBridge() error = %v", err)
+	}
+
+	upstream := []protocolbridge.RawStreamEvent{
+		{Data: []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[{"index":0,"delta":{"role":"assistant","content":"done"},"finish_reason":null}]}`)},
+		{Data: []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)},
+		{Data: []byte(`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"deepseek-flash","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":2,"total_tokens":13}}`)},
+		{Data: []byte("[DONE]")},
+	}
+
+	var encoded []protocolbridge.RawStreamEvent
+	for _, event := range upstream {
+		parts, err := decoder.Decode(event)
+		if err != nil {
+			t.Fatalf("decoder.Decode() error = %v", err)
+		}
+		for _, part := range parts {
+			events, err := encoder.Encode(part)
+			if err != nil {
+				t.Fatalf("encoder.Encode() error = %v", err)
+			}
+			encoded = append(encoded, events...)
+		}
+	}
+	closed, err := encoder.Close()
+	if err != nil {
+		t.Fatalf("encoder.Close() error = %v", err)
+	}
+	encoded = append(encoded, closed...)
+
+	var completed []byte
+	for _, event := range encoded {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(event.Data, &envelope); err != nil {
+			t.Fatalf("json.Unmarshal(%s) error = %v", event.Data, err)
+		}
+		if envelope.Type == "response.completed" {
+			completed = event.Data
+			break
+		}
+	}
+	if completed == nil {
+		t.Fatalf("stream carried no response.completed event: %v", encoded)
+	}
+
+	var payload struct {
+		Response struct {
+			Usage *struct {
+				InputTokens  *int `json:"input_tokens"`
+				OutputTokens *int `json:"output_tokens"`
+			} `json:"usage"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(completed, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(%s) error = %v", completed, err)
+	}
+	usage := payload.Response.Usage
+	if usage == nil || usage.InputTokens == nil || usage.OutputTokens == nil {
+		t.Fatalf("response.completed = %s, want the usage that arrived after the finish chunk", completed)
+	}
+	if *usage.InputTokens != 11 || *usage.OutputTokens != 2 {
+		t.Fatalf("response.completed usage = %s, want input_tokens 11 and output_tokens 2", completed)
+	}
+}

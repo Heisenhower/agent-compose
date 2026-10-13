@@ -175,19 +175,31 @@ func crossFamilyBridge(inbound, upstream protocolbridge.Protocol) (protocolbridg
 	return bridge, nil
 }
 
+// EncodeRuntimeUpstreamRequest converts a decoded inbound request into the
+// upstream wire format.
+//
+// Only an exact protocol match re-encodes through the upstream adapter. Every
+// other pair goes through the bridge registered for that pair, including pairs
+// inside one family: chat completions and Responses are different wire formats
+// with different streaming contracts, and a bridge for the pair is the only
+// thing that knows what that conversion costs. Assembling adapters by hand for
+// those pairs skipped the bridge's stream handling, which is where the
+// conversion is actually decided.
 func EncodeRuntimeUpstreamRequest(inboundProtocol, upstreamProtocol protocolbridge.Protocol, target ResolvedTarget, req *protocolbridge.LLMRequest) ([]byte, error) {
-	if inboundProtocol == upstreamProtocol || ProtocolsShareFamily(inboundProtocol, upstreamProtocol) {
+	options := protocolbridge.EncodeRequestOptions{Model: target.Model.Name}
+	normalized := normalizeRuntimeRequestForUpstream(req, upstreamProtocol)
+	if inboundProtocol == upstreamProtocol {
 		adapter, err := ProtocolAdapter(upstreamProtocol)
 		if err != nil {
 			return nil, err
 		}
-		return adapter.EncodeRequest(normalizeRuntimeRequestForUpstream(req, upstreamProtocol), protocolbridge.EncodeRequestOptions{Model: target.Model.Name})
+		return adapter.EncodeRequest(normalized, options)
 	}
 	bridge, err := crossFamilyBridge(inboundProtocol, upstreamProtocol)
 	if err != nil {
 		return nil, err
 	}
-	return bridge.EncodeUpstreamRequest(req, protocolbridge.EncodeRequestOptions{Model: target.Model.Name})
+	return bridge.EncodeUpstreamRequest(normalized, options)
 }
 
 func normalizeRuntimeRequestForUpstream(req *protocolbridge.LLMRequest, upstreamProtocol protocolbridge.Protocol) *protocolbridge.LLMRequest {
@@ -217,7 +229,7 @@ func EncodeRuntimeClientResponse(inboundProtocol, upstreamProtocol protocolbridg
 		return nil, err
 	}
 	var llmResp *protocolbridge.LLMResponse
-	if inboundProtocol == upstreamProtocol || ProtocolsShareFamily(inboundProtocol, upstreamProtocol) {
+	if inboundProtocol == upstreamProtocol {
 		upstreamAdapter, err := ProtocolAdapter(upstreamProtocol)
 		if err != nil {
 			return nil, err
@@ -239,6 +251,14 @@ func EncodeRuntimeClientResponse(inboundProtocol, upstreamProtocol protocolbridg
 	return inboundAdapter.EncodeResponse(llmResp, protocolbridge.EncodeResponseOptions{Model: target.Model.Name})
 }
 
+// RuntimeStreamBridge returns the decoder for the upstream stream and the
+// encoder for the stream the client reads.
+//
+// As in the request path, only an exact protocol match uses one adapter on both
+// ends. A differing pair uses its registered bridge, because that is where the
+// stream rules live: an OpenAI Responses client reading a chat-completions
+// stream needs response.completed held until the chat usage chunk arrives, and
+// only the bridge for that pair knows to hold it.
 func RuntimeStreamBridge(inboundProtocol, upstreamProtocol protocolbridge.Protocol, model string) (protocolbridge.StreamDecoder, protocolbridge.StreamEncoder, error) {
 	if inboundProtocol == upstreamProtocol {
 		adapter, err := ProtocolAdapter(inboundProtocol)
@@ -250,25 +270,6 @@ func RuntimeStreamBridge(inboundProtocol, upstreamProtocol protocolbridge.Protoc
 			return nil, nil, err
 		}
 		encoder, err := adapter.NewStreamEncoder(protocolbridge.StreamEncodeOptions{Model: model})
-		if err != nil {
-			return nil, nil, err
-		}
-		return decoder, encoder, nil
-	}
-	if ProtocolsShareFamily(inboundProtocol, upstreamProtocol) {
-		upstreamAdapter, err := ProtocolAdapter(upstreamProtocol)
-		if err != nil {
-			return nil, nil, err
-		}
-		inboundAdapter, err := ProtocolAdapter(inboundProtocol)
-		if err != nil {
-			return nil, nil, err
-		}
-		decoder, err := upstreamAdapter.NewStreamDecoder(protocolbridge.StreamDecodeOptions{})
-		if err != nil {
-			return nil, nil, err
-		}
-		encoder, err := inboundAdapter.NewStreamEncoder(protocolbridge.StreamEncodeOptions{Model: model})
 		if err != nil {
 			return nil, nil, err
 		}

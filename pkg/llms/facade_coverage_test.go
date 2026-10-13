@@ -109,13 +109,16 @@ func TestRuntimeFacadeHTTPAndBridgeCoverage(t *testing.T) {
 		t.Fatalf("RuntimeStreamBridge same protocol returned error: %v", err)
 	}
 	if _, _, err := RuntimeStreamBridge(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat, "gpt"); err != nil {
-		t.Fatalf("RuntimeStreamBridge shared family returned error: %v", err)
+		t.Fatalf("RuntimeStreamBridge responses to chat returned error: %v", err)
 	}
 	if _, _, err := RuntimeStreamBridge(protocolbridge.ProtocolOpenAIResponses, protocolbridge.Protocol("bad"), "gpt"); err == nil {
 		t.Fatalf("expected unsupported stream bridge error")
 	}
-	if !ProtocolsShareFamily(protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat) || ProtocolFamily("bad") != "" {
-		t.Fatalf("protocol family helpers failed")
+	if !CanConvert(ProtocolResponses, ProtocolChatCompletions) || !CanConvert(ProtocolMessages, ProtocolChatCompletions) {
+		t.Fatalf("CanConvert refused a registered bridge")
+	}
+	if CanConvert(ProtocolResponses, Protocol("bad")) || CanConvert(Protocol("bad"), ProtocolResponses) {
+		t.Fatalf("CanConvert served an unknown protocol")
 	}
 }
 
