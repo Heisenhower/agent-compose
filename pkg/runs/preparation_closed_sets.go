@@ -19,6 +19,7 @@ func normalizeRevisionClosedSetsJSON(data []byte) ([]byte, error) {
 	agents, _ := root["agents"].([]any)
 	for index, value := range agents {
 		agent, _ := value.(map[string]any)
+		restorePolicyBlockKey(agent)
 		if err := normalizeRevisionVolumes(agent["volumes"]); err != nil {
 			return nil, fmt.Errorf("agents[%d].volumes: %w", index, err)
 		}
@@ -46,6 +47,26 @@ func normalizeRevisionClosedSetsJSON(data []byte) ([]byte, error) {
 		}
 	}
 	return json.Marshal(root)
+}
+
+// restorePolicyBlockKey moves the agent policy block to the proto field the
+// revision spec is decoded into. The stored revision keeps the compose spelling
+// (`policy`), while the generated message carries the original name (`sandbox`,
+// which is also the deprecated compose spelling). The decoder discards unknown
+// fields, so leaving `policy` in place dropped the whole block: the
+// stopped-runtime policy that decides whether a stopped sandbox keeps its
+// runtime never reached sandbox creation. `policy` wins when both keys are
+// present, matching how the block is read elsewhere.
+func restorePolicyBlockKey(agent map[string]any) {
+	if agent == nil {
+		return
+	}
+	policy, declared := agent["policy"]
+	if !declared {
+		return
+	}
+	delete(agent, "policy")
+	agent["sandbox"] = policy
 }
 
 func defaultClosedSetString(object map[string]any, field, fallback string) {

@@ -332,6 +332,32 @@ tasks:
           GOCACHE={{.GO_BUILD_CACHE_DIR}} \
           {{.GO_TOOLCHAIN_ENV}} go test ./test/e2e -run '^TestE2EGracefulSandboxStopHostDaemon$' -count=1 -timeout 25m -v
 
+  test:e2e:network-policy:
+    desc: Run the opt-in host-daemon declared-network-policy execution matrix E2E test (driver from AGENT_COMPOSE_E2E_NETWORK_POLICY_DRIVER, default docker)
+    dir: '{{.TASKFILE_DIR}}'
+    deps: ['build:agent-compose']
+    cmds:
+      - |
+        image="${AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE:-agent-compose-guest:latest}"
+        if ! docker image inspect "$image" >/dev/null 2>&1; then
+          echo "Network-policy guest image $image is unavailable; run 'task image:agent-compose-guest' or set AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE" >&2
+          exit 1
+        fi
+        # The address rows need a host address a sandbox reaches that the proxy's
+        # bypass list does not cover: a fixture on the proxy's own address would
+        # never reach the proxy.
+        fixture_host="${AGENT_COMPOSE_E2E_NETWORK_POLICY_FIXTURE_HOST:-$(hostname -I 2>/dev/null | awk '{print $1}')}"
+        if [ -z "$fixture_host" ]; then
+          echo "Set AGENT_COMPOSE_E2E_NETWORK_POLICY_FIXTURE_HOST to a host address sandboxes reach" >&2
+          exit 1
+        fi
+        AGENT_COMPOSE_E2E_BINARY="$PWD/build/agent-compose" \
+          AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE="$image" \
+          AGENT_COMPOSE_E2E_NETWORK_POLICY_DRIVER="${AGENT_COMPOSE_E2E_NETWORK_POLICY_DRIVER:-docker}" \
+          AGENT_COMPOSE_E2E_NETWORK_POLICY_FIXTURE_HOST="$fixture_host" \
+          GOCACHE={{.GO_BUILD_CACHE_DIR}} \
+          {{.GO_TOOLCHAIN_ENV}} go test ./test/e2e -run '^TestE2EDocker(NetworkPolicyExecutionMatrix|DeclaredPolicyFailsClosedWithoutAReachableProxy)$' -count=1 -timeout 75m -v
+
   test:e2e:docker-workspace-resume:
     desc: Run the opt-in host-daemon Docker file-workspace restart/resume E2E test
     dir: '{{.TASKFILE_DIR}}'

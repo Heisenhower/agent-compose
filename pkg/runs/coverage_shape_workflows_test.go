@@ -2987,13 +2987,15 @@ func newTestRunAttachController(t *testing.T, frames []driverpkg.RuntimeOutputFr
 type fakeRunAttachRuntime struct {
 	fakeControllerRuntime
 	spec                driverpkg.RuntimeStartSpec
+	openCtx             context.Context
 	frames              []driverpkg.RuntimeOutputFrame
 	interaction         *fakeRunAttachInteraction
 	interactionOverride driverpkg.RuntimeInteraction
 }
 
-func (r *fakeRunAttachRuntime) OpenInteraction(_ context.Context, _ *domain.Sandbox, _ domain.VMState, spec driverpkg.RuntimeStartSpec) (driverpkg.RuntimeInteraction, error) {
+func (r *fakeRunAttachRuntime) OpenInteraction(ctx context.Context, _ *domain.Sandbox, _ domain.VMState, spec driverpkg.RuntimeStartSpec) (driverpkg.RuntimeInteraction, error) {
 	r.spec = spec
+	r.openCtx = ctx
 	if r.interactionOverride != nil {
 		return r.interactionOverride, nil
 	}
@@ -3392,4 +3394,18 @@ func TestPromptAttachProjectorLogsFinalTextTailOnLaterTurn(t *testing.T) {
 	if want := "first answer\nnext question\nsecond answer\n"; string(transcript) != want {
 		t.Fatalf("transcript = %q, want %q", string(transcript), want)
 	}
+}
+
+// Resolving the declared network policy from a persisted agent spec is the runs
+// domain's half of the egress seam, so it must carry coverage in the broader
+// shapes and not only in the unit shape.
+func TestIntegrationRunsSandboxNetworkDeclarationWorkflows(t *testing.T) {
+	t.Run("resolve from managed agent spec", TestResolveNetworkDeclarationFromManagedAgentSpec)
+	t.Run("resolve permissive default from persisted spec", TestResolveNetworkDeclarationPermissiveDefaultFromPersistedSpec)
+	t.Run("resolve store error", TestResolveNetworkDeclarationStoreError)
+	t.Run("resolve undeclared cases", TestResolveNetworkDeclarationUndeclaredCases)
+}
+
+func TestE2ERunsSandboxNetworkDeclarationWorkflows(t *testing.T) {
+	TestIntegrationRunsSandboxNetworkDeclarationWorkflows(t)
 }

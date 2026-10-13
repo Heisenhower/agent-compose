@@ -45,9 +45,17 @@ func composeRunArgs(_ *cobra.Command, args []string) error {
 }
 
 func runComposeConfigCommand(cmd *cobra.Command, cli cliOptions, options composeConfigOptions) error {
-	_, normalized, err := loadResolvedNormalizedCompose(cmd.Context(), cli)
+	_, normalized, deprecatedPolicyBlocks, err := loadResolvedNormalizedCompose(cmd.Context(), cli)
 	if err != nil {
 		return err
+	}
+	if !options.Quiet {
+		if err := writeDeprecatedPolicyBlockWarnings(cmd.ErrOrStderr(), deprecatedPolicyBlocks); err != nil {
+			return err
+		}
+		if err := writeComposeDeclaredNetworkPolicyNotes(cmd.ErrOrStderr(), normalized); err != nil {
+			return err
+		}
 	}
 	if options.Quiet {
 		return nil
@@ -88,8 +96,11 @@ func runComposeUpCommand(cmd *cobra.Command, cli cliOptions) error {
 	if cli.ProjectName != "" {
 		return commandExitError{Code: exitCodeUsage, Err: fmt.Errorf("up does not support --project-name; project identity comes from the compose file")}
 	}
-	composePath, normalized, err := loadResolvedNormalizedCompose(cmd.Context(), cli)
+	composePath, normalized, deprecatedPolicyBlocks, err := loadResolvedNormalizedCompose(cmd.Context(), cli)
 	if err != nil {
+		return err
+	}
+	if err := writeDeprecatedPolicyBlockWarnings(cmd.ErrOrStderr(), deprecatedPolicyBlocks); err != nil {
 		return err
 	}
 	specHash, err := normalized.Hash()
@@ -124,14 +135,26 @@ func runComposeUpCommand(cmd *cobra.Command, cli cliOptions) error {
 	if err := writeRunWarnings(cmd.ErrOrStderr(), warnings); err != nil {
 		return err
 	}
+	output := composeUpOutputFromResponse(msg)
+	if err := writeRunWarnings(cmd.ErrOrStderr(), composeNetworkPolicyWarnings(output.NetworkPolicies)); err != nil {
+		return err
+	}
 	if cli.JSON {
-		data, err := json.MarshalIndent(composeUpOutputFromResponse(msg), "", "  ")
+		data, err := json.MarshalIndent(output, "", "  ")
 		if err != nil {
 			return err
 		}
 		return writeCommandOutput(cmd.OutOrStdout(), append(data, '\n'))
 	}
-	return writeComposeUpText(cmd.OutOrStdout(), composeDisplayChangesFromProjectChanges(msg.GetChanges(), normalized, msg.GetProject().GetSummary().GetProjectId()))
+	if err := writeComposeUpText(cmd.OutOrStdout(), composeDisplayChangesFromProjectChanges(msg.GetChanges(), normalized, msg.GetProject().GetSummary().GetProjectId())); err != nil {
+		return err
+	}
+	if len(output.NetworkPolicies) > 0 {
+		if _, err := fmt.Fprintln(cmd.OutOrStdout()); err != nil {
+			return err
+		}
+	}
+	return writeComposeNetworkPolicyReport(cmd.OutOrStdout(), output.NetworkPolicies)
 }
 
 func runComposeDownCommand(cmd *cobra.Command, cli cliOptions) error {

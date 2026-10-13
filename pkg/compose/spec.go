@@ -18,7 +18,11 @@ type ProjectSpec struct {
 	MCPServers     map[string]MCPServerSpec     `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
 	OctoBusServers map[string]OctoBusServerSpec `yaml:"octobus_servers,omitempty" json:"octobus_servers,omitempty"`
 	Volumes        map[string]VolumeSpec        `yaml:"volumes,omitempty" json:"volumes,omitempty"`
-	Agents         map[string]AgentSpec         `yaml:"agents,omitempty" json:"agents,omitempty"`
+	// Policies is the project's policy library. An agent selects one by name
+	// instead of repeating the block, the same way `mcp_servers` and
+	// `workspaces` entries are reused.
+	Policies map[string]SandboxSpec `yaml:"policies,omitempty" json:"policies,omitempty"`
+	Agents   map[string]AgentSpec   `yaml:"agents,omitempty" json:"agents,omitempty"`
 }
 
 type OctoBusServerSpec struct {
@@ -66,13 +70,86 @@ type AgentSpec struct {
 	Skills       []SkillSpec           `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Volumes      []VolumeMountSpec     `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Workspace    *WorkspaceSpec        `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Sandbox      *SandboxSpec          `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Scheduler    *SchedulerSpec        `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
-	Jupyter      *JupyterSpec          `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
+	// Policy groups the runtime policies this agent declares. `network` holds
+	// the outbound network policy; later policies (files, and other runtime
+	// behavior) belong in this same block, so one declaration states everything
+	// the engine enforces for the agent's sandboxes.
+	Policy *SandboxSpec `yaml:"policy,omitempty" json:"policy,omitempty"`
+	// Sandbox is the deprecated spelling of Policy, kept so projects written
+	// before the rename keep parsing. Declaring both in one agent is rejected
+	// rather than silently resolved, because the two blocks could disagree.
+	Sandbox   *SandboxSpec   `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Scheduler *SchedulerSpec `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+	Jupyter   *JupyterSpec   `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
+}
+
+// SandboxSpec is a policy block: the runtime policies one agent declares, or one
+// entry of the project's `policies` library. The type keeps its historical name
+// because the stable authoring contract
+// (testdata/compat/contract-v2608.1.0.json) records it for the deprecated
+// `sandbox` key.
+// UnmarshalYAML lets an agent select a project policy by name or declare one
+// inline. A scalar is the name of a `policies` entry; a mapping is a policy
+// block, exactly like the project entry it could have referenced.
+func (s *SandboxSpec) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var ref string
+		if err := value.Decode(&ref); err != nil {
+			return err
+		}
+		*s = SandboxSpec{Ref: ref}
+		return nil
+	case yaml.MappingNode:
+		type alias SandboxSpec
+		var decoded alias
+		if err := value.Decode(&decoded); err != nil {
+			return err
+		}
+		decoded.Ref = ""
+		*s = SandboxSpec(decoded)
+		return nil
+	default:
+		return fmt.Errorf("expected a policy name or mapping, got %s", nodeKindName(value.Kind))
+	}
 }
 
 type SandboxSpec struct {
+	// Ref names a project `policies` entry. It is set only when an agent declares
+	// its policy as a scalar, the shape `mcp_servers` entries use for a project
+	// server. A policy definition in `policies` itself cannot carry a reference.
+	Ref                  string `yaml:"-" json:"-"`
 	StoppedRuntimePolicy string `yaml:"stopped_runtime_policy,omitempty" json:"stopped_runtime_policy,omitempty"`
+	// Network declares this agent's outbound network policy. A nil Network is
+	// undeclared, and undeclared keeps the engine's existing behavior:
+	// unrestricted outbound access. Default-deny is a policy that takes effect
+	// only because this block was declared; it is not an engine default (D3).
+	Network *SandboxNetworkSpec `yaml:"network,omitempty" json:"network,omitempty"`
+}
+
+// SandboxNetworkSpec declares the outbound network policy for one agent's
+// sandboxes. Declaring the block is what makes the policy exist; omitting it
+// leaves outbound access exactly as it is today.
+type SandboxNetworkSpec struct {
+	// Default is "allow-all" (the value an omitted default normalizes to) or
+	// "deny". It applies only because this block was declared.
+	Default string                    `yaml:"default,omitempty" json:"default,omitempty"`
+	Allow   []SandboxNetworkAllowSpec `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// SandboxNetworkAllowSpec is one declared allowance. Host may be a host
+// pattern whose labels are separated by "."; "*" matches exactly one label.
+type SandboxNetworkAllowSpec struct {
+	Host string `yaml:"host,omitempty" json:"host,omitempty"`
+	Port int    `yaml:"port,omitempty" json:"port,omitempty"`
+	// Protocol is optional. An omitted protocol normalizes to "any", which is
+	// an opaque allowance: the engine does not claim it can inspect it.
+	Protocol string `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	// AllowedIPs optionally restricts which addresses Host may resolve to. Each
+	// entry is an IP address or a CIDR range; a name that resolves outside them
+	// is not covered by this allowance, so a name the declaration trusts cannot
+	// be pointed at an address it does not.
+	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
 }
 
 type AgentMCPEntriesSpec []AgentMCPEntrySpec
@@ -496,6 +573,7 @@ func validateProjectNode(node *yaml.Node) error {
 		"mcp_servers":     validateMCPMap,
 		"octobus_servers": validateOctoBusMap,
 		"volumes":         validateVolumeMap,
+		"policies":        validatePolicyMap,
 		"agents":          validateAgentMap,
 	})
 }
@@ -516,6 +594,34 @@ func validateScalarOrStringList(node *yaml.Node, path string) error {
 		return validateScalar(node, path)
 	}
 	return validateStringList(node, path)
+}
+
+func validatePolicyMap(node *yaml.Node, path string) error {
+	return validateNamedMap(node, path, validatePolicyDefinition)
+}
+
+// validatePolicyDefinition validates one entry of the project's `policies`
+// library. A definition is always a block; only an agent may name one.
+func validatePolicyDefinition(node *yaml.Node, path string) error {
+	return validateMapping(node, path, map[string]nodeValidator{
+		"stopped_runtime_policy": validateScalar,
+		"network":                validateSandboxNetwork,
+	})
+}
+
+// validatePolicyReferenceOrBlock validates an agent's policy declaration, which
+// is either the name of a project policy or an inline block.
+func validatePolicyReferenceOrBlock(node *yaml.Node, path string) error {
+	if node.Kind != yaml.ScalarNode {
+		return validatePolicyDefinition(node, path)
+	}
+	// A scalar is the name of a project policy. An empty one is a mistake rather
+	// than "no policy": a project that declares the key means it, and silently
+	// treating the name as absent would drop the declaration.
+	if node.Tag == "!!null" || strings.TrimSpace(node.Value) == "" {
+		return &ValidationError{Path: path, Message: "expected the name of a project policy or an inline mapping"}
+	}
+	return validateScalar(node, path)
 }
 
 func validateWorkspaceMap(node *yaml.Node, path string) error {
@@ -543,16 +649,36 @@ func validateAgent(node *yaml.Node, path string) error {
 		"skills":        validateSkillList,
 		"volumes":       validateVolumeMountList,
 		"workspace":     validateWorkspace,
-		"sandbox":       validateSandbox,
+		"policy":        validatePolicyReferenceOrBlock,
+		"sandbox":       validatePolicyReferenceOrBlock,
 		"scheduler":     validateScheduler,
 		"jupyter":       validateJupyter,
 	})
 }
 
-func validateSandbox(node *yaml.Node, path string) error {
+func validateSandboxNetwork(node *yaml.Node, path string) error {
 	return validateMapping(node, path, map[string]nodeValidator{
-		"stopped_runtime_policy": validateScalar,
+		"default": validateScalar,
+		"allow":   validateSandboxNetworkAllowList,
 	})
+}
+
+func validateSandboxNetworkAllowList(node *yaml.Node, path string) error {
+	if err := requireKind(node, path, yaml.SequenceNode, "sequence"); err != nil {
+		return err
+	}
+	for index, item := range node.Content {
+		itemPath := fmt.Sprintf("%s[%d]", path, index)
+		if err := validateMapping(item, itemPath, map[string]nodeValidator{
+			"host":        validateScalar,
+			"port":        validateInt,
+			"protocol":    validateScalar,
+			"allowed_ips": validateStringList,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateMCPMap(node *yaml.Node, path string) error {

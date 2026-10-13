@@ -287,7 +287,7 @@ func TestSandboxRPCBridgeCreateSandboxInheritsStoppedRuntimePolicy(t *testing.T)
 		ID:         "agent-scheduler-remove-runtime",
 		Name:       "scheduler-agent-remove-runtime",
 		Enabled:    true,
-		ConfigJSON: `{"sandbox":{"stopped_runtime_policy":"remove"}}`,
+		ConfigJSON: `{"policy":{"stopped_runtime_policy":"remove"}}`,
 	})
 	ctx = schedulers.WithSandboxCreationContext(ctx, schedulers.SandboxCreationContext{
 		AgentDefinitionID: definition.ID,

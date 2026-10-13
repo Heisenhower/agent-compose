@@ -16,6 +16,7 @@ import (
 	"github.com/chaitin/agent-compose/pkg/agentcompose/api"
 	"github.com/chaitin/agent-compose/pkg/compose"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
+	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	sessionstream "github.com/chaitin/agent-compose/pkg/sandboxes"
 	"github.com/chaitin/agent-compose/pkg/schedulers"
@@ -108,6 +109,12 @@ func (projectSandboxLifecycleNotifier) NotifyDashboard(string) {
 
 type projectControllerDelegate struct {
 	controller *projects.Controller
+	// mediation answers whether the engine's own forward proxy will be in a
+	// sandbox's traffic path, so the admission report names the mechanism the
+	// creation seam would actually install. A nil value reports the driver's own
+	// mechanism, which is what a composition without a proxy has.
+	mediation sandboxEgressMediation
+	config    *appconfig.Config
 }
 
 func (d projectControllerDelegate) ValidateProject(ctx context.Context, req *connect.Request[agentcomposev2.ValidateProjectRequest]) (*connect.Response[agentcomposev2.ValidateProjectResponse], error) {
@@ -119,10 +126,15 @@ func (d projectControllerDelegate) ValidateProject(ctx context.Context, req *con
 	if err != nil {
 		return nil, projectConnectError(err)
 	}
+	reports, err := d.networkPolicyReports(normalized.Spec)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
 	return connect.NewResponse(&agentcomposev2.ValidateProjectResponse{
-		Valid:    result.Valid,
-		Issues:   validationIssuesToProto(result.Issues),
-		SpecHash: result.SpecHash,
+		Valid:           result.Valid,
+		Issues:          validationIssuesToProto(result.Issues),
+		SpecHash:        result.SpecHash,
+		NetworkPolicies: api.NetworkPolicyReportsToProto(reports),
 	}), nil
 }
 
@@ -139,7 +151,33 @@ func (d projectControllerDelegate) ApplyProject(ctx context.Context, req *connec
 	if err != nil {
 		return nil, projectConnectError(err)
 	}
-	return connect.NewResponse(applyProjectResponse(result)), nil
+	response, err := d.applyResponse(result)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(response), nil
+}
+
+// applyResponse accounts for the declared network policies of the project the
+// daemon just accepted. The reports come from the normalized spec the revision
+// persisted, so the report describes the project as stored rather than the
+// request as submitted. A report that cannot be derived is a server-side failure
+// rather than an omission: the project could not compile a policy for that
+// declaration either.
+func (d projectControllerDelegate) applyResponse(result projects.ApplyResult) (*agentcomposev2.ApplyProjectResponse, error) {
+	response := applyProjectResponse(result)
+	reports, err := agentNetworkPolicyReports(result.RevisionSpec, d.mediation, d.config)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
+	}
+	response.NetworkPolicies = api.NetworkPolicyReportsToProto(reports)
+	return response, nil
+}
+
+// networkPolicyReports accounts for the declared network policies of a spec the
+// daemon validated without applying.
+func (d projectControllerDelegate) networkPolicyReports(spec *compose.NormalizedProjectSpec) ([]driverpkg.AgentNetworkPolicyReport, error) {
+	return agentNetworkPolicyReports(spec, d.mediation, d.config)
 }
 
 func (d projectControllerDelegate) PatchProject(ctx context.Context, req *connect.Request[agentcomposev2.PatchProjectRequest], projectRef projects.ProjectRef) (*connect.Response[agentcomposev2.ApplyProjectResponse], error) {
@@ -157,7 +195,11 @@ func (d projectControllerDelegate) PatchProject(ctx context.Context, req *connec
 	if err != nil {
 		return nil, projectConnectError(err)
 	}
-	return connect.NewResponse(applyProjectResponse(result)), nil
+	response, err := d.applyResponse(result)
+	if err != nil {
+		return nil, err
+	}
+	return connect.NewResponse(response), nil
 }
 
 func applyProjectResponse(result projects.ApplyResult) *agentcomposev2.ApplyProjectResponse {

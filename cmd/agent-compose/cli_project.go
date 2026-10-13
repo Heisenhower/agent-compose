@@ -96,7 +96,10 @@ func resolveComposeAgentNameFromProject(project *agentcomposev2.Project, ref str
 }
 
 func resolveComposeProject(cli cliOptions) (string, *compose.NormalizedProjectSpec, string, error) {
-	composePath, normalized, err := loadNormalizedCompose(cli)
+	// The deprecation is reported by the commands that read and apply the local
+	// file (up, config). Commands that only resolve a project reference act on the
+	// project the daemon already stores, which normalizes the block to `policy`.
+	composePath, normalized, _, err := loadNormalizedCompose(cli)
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -108,11 +111,12 @@ func resolveComposeProject(cli cliOptions) (string, *compose.NormalizedProjectSp
 }
 
 type composeUpOutput struct {
-	Project   composeUpProjectOutput  `json:"project"`
-	Revision  composeUpRevisionOutput `json:"revision"`
-	Applied   bool                    `json:"applied"`
-	Unchanged bool                    `json:"unchanged"`
-	Changes   []composeUpChangeOutput `json:"changes"`
+	Project         composeUpProjectOutput       `json:"project"`
+	Revision        composeUpRevisionOutput      `json:"revision"`
+	Applied         bool                         `json:"applied"`
+	Unchanged       bool                         `json:"unchanged"`
+	Changes         []composeUpChangeOutput      `json:"changes"`
+	NetworkPolicies []composeNetworkPolicyOutput `json:"network_policies,omitempty"`
 }
 
 type composeDownOutput struct {
@@ -237,9 +241,10 @@ func composeUpOutputFromResponse(resp *agentcomposev2.ApplyProjectResponse) comp
 			Revision: revision.GetRevision(),
 			SpecHash: revision.GetSpecHash(),
 		},
-		Applied:   resp.GetApplied(),
-		Unchanged: resp.GetUnchanged(),
-		Changes:   changes,
+		Applied:         resp.GetApplied(),
+		Unchanged:       resp.GetUnchanged(),
+		Changes:         changes,
+		NetworkPolicies: composeNetworkPoliciesFromProto(resp.GetNetworkPolicies()),
 	}
 }
 

@@ -27,12 +27,12 @@ func createNativeTestAgent(t testing.TB, ctx context.Context, store *configstore
 	}
 	if configJSON := strings.TrimSpace(definition.ConfigJSON); configJSON != "" {
 		var config struct {
-			Sandbox *compose.NormalizedSandboxSpec `json:"sandbox"`
+			Policy *compose.NormalizedSandboxSpec `json:"policy"`
 		}
 		if err := json.Unmarshal([]byte(configJSON), &config); err != nil {
 			t.Fatalf("unmarshal native agent fixture config: %v", err)
 		}
-		agent.Sandbox = config.Sandbox
+		agent.Policy = config.Policy
 	}
 	if driver := strings.TrimSpace(definition.Driver); driver != "" {
 		agent.Driver = &compose.NormalizedDriverSpec{Name: driver}

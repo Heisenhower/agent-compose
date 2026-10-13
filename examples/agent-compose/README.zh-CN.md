@@ -11,6 +11,7 @@
 | [docker-scheduler-script-url](docker-scheduler-script-url/) | 从相对 `file` 来源加载 scheduler 脚本，并给出 HTTP 来源的替代配置。 | `config`/`up`/`ls`/`down` 不需要 |
 | [docker-scheduler-timeout](docker-scheduler-timeout/) | 端到端的定时运行：触发、执行 agent 并持久化日志。 | 定时运行需要 |
 | [k8s-scheduler-skills-mcp](k8s-scheduler-skills-mcp/) | 在 `k8s` driver 上演示 scheduler、Git 来源 skill、MCP 以及 PVC 支撑的 volume。 | 定时运行需要 |
+| [docker-policy-library](docker-policy-library/) | 项目级 `policies` 策略库：按受众拆分的策略块，由各 agent 按名引用，另含内联声明与保留已停止 runtime 的示例。 | `config`/`up`/`ls` 不需要 |
 
 ## 前置条件
 

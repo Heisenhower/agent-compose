@@ -141,8 +141,10 @@ fi
 # require a deliberate coverage-contract update.
 cat > "$tmp/e2e-tests.expected" <<'EOF'
 TestE2EDockerDaemonRetentionCleanup
+TestE2EDockerDeclaredPolicyFailsClosedWithoutAReachableProxy
 TestE2EDockerFileWorkspaceResumePreservesState
 TestE2EDockerJupyterHostDaemonStopResume
+TestE2EDockerNetworkPolicyExecutionMatrix
 TestE2EDockerRunCompletionRecoversAfterDaemonHardKill
 TestE2EDockerSkillsReuse
 TestE2EDockerStoppedSandboxRetentionArchivesAuditData

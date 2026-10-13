@@ -61,6 +61,47 @@ test starts an isolated host daemon, creates a Docker sandbox through the public
 API, verifies the unified Jupyter endpoint, then stops and resumes the sandbox
 with deliberately stale persisted port state to verify inspect-based recovery.
 
+The declared-network-policy execution matrix is opt-in because it needs a local
+Docker Engine, outbound network access, and a guest image with `curl`. It starts
+an isolated host daemon whose proxy listener is reachable from a sandbox, applies
+a project that declares `policy.network`, and asserts the enforcement a driver
+must show, row by row: an agent that declares nothing keeps unrestricted egress
+with no proxy in its environment, a declared allowance succeeds, an unlisted host
+is refused before a connection is opened, the declared host on a control-plane
+port is refused, an address named by the declaration is an entry of its own, an
+`allowed_ips` range that does not cover the destination is refused, the metadata
+address is refused even when the declaration names it, an allow list without a
+declared default restricts nothing, and an edit reaches a sandbox that is already
+running. The rows that name an address use a host-local fixture, because a
+fixture on the proxy's own address never reaches the proxy and would report the
+driver's behavior instead of the declaration's.
+
+The same rows run against any driver that starts sandboxes in the environment:
+`AGENT_COMPOSE_E2E_NETWORK_POLICY_DRIVER` selects the driver, the daemon is
+started with it, and every agent declares it. A driver that cannot start a
+sandbox there is not covered by this matrix; its enforcement declaration and the
+mechanism that would carry it stay pinned by `TestSandboxNetworkEnforcementFor`
+and `TestBoxliteEnsureSandboxRefusesDeclaredDefaultDeny` in `pkg/driver`. A
+*declared* policy this deployment cannot enforce (no guest-reachable proxy
+address) is not part of this matrix either: it is pinned at the adapter boundary
+by `TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable` in
+`pkg/agentcompose/adapters/egress_proxy_sandbox_test.go`, which asserts that such
+a start receives no proxy environment and is recorded as declared but unenforced.
+Run it with:
+
+```bash
+task test:e2e:network-policy
+```
+
+Set `AGENT_COMPOSE_E2E_NETWORK_POLICY_IMAGE` to a guest image with `curl`,
+`AGENT_COMPOSE_E2E_NETWORK_POLICY_DRIVER` to another driver, and
+`AGENT_COMPOSE_E2E_NETWORK_POLICY_HOST_ADDRESS` when the address a sandbox uses
+to reach the host is not the Docker bridge gateway. The address rows also need
+`AGENT_COMPOSE_E2E_NETWORK_POLICY_FIXTURE_HOST`, a host address the sandbox
+reaches that the daemon's proxy bypass list does not cover; the task defaults it
+to the host's first address and the test skips with the observed bypass list when
+that address is the proxy's own.
+
 The real host-daemon Docker file-workspace restart/resume E2E is also opt-in. It
 requires a reachable local Docker Engine, the Docker CLI, and a compatible local
 guest image. Build the default image and run it with:

@@ -83,6 +83,16 @@ volumes:
       purpose: agent-cache
     options: {}
 
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
 agents:
   reviewer:
     enabled: true
@@ -122,7 +132,9 @@ agents:
       - engineering
       - internal/code-review
     skills:
-      - ./skills/review
+      - name: review
+        provider: file
+        path: ./skills/review
       - name: release-check
         provider: git
         url: https://github.com/example/agent-skills.git
@@ -136,6 +148,7 @@ agents:
         read_only: false
     workspace:
       name: source
+    policy: locked-down           # selected from `policies`; never merged with it
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -147,6 +160,14 @@ agents:
     jupyter:
       enabled: false
       guest_port: 8888
+
+  # The library is a catalog, not a default: this agent declares its own block
+  # instead of naming an entry, and no entry is merged into it.
+  spot-checker:
+    provider: codex
+    policy:
+      network:
+        default: allow-all
 
 ```
 
@@ -211,6 +232,7 @@ SECRET_VALUE:
 | `mcp_servers` | map | No | Named MCP servers that agents may reference. |
 | `octobus_servers` | map | No | Named project-scoped OctoBus servers selected by qualified `capset_ids`. |
 | `volumes` | map | No | Persistent volumes managed or referenced by the project. |
+| `policies` | map | No | Named policy blocks that agents select by name instead of repeating. |
 | `agents` | map | No | Agent definitions keyed by agent name. |
 
 ### `name`
@@ -488,6 +510,44 @@ volumes:
 
 The volume map key must be a stable identifier. Agents mount project volumes through `agents.<name>.volumes`.
 
+## `policies`: project policies
+
+`policies` is the project's policy library. An entry is a policy block, exactly like the one an agent can declare inline, and an agent selects it by writing the name:
+
+```yaml
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
+agents:
+  reviewer:
+    provider: codex
+    policy: locked-down
+```
+
+A name is resolved when the project is normalized, the same way an agent `mcp_servers` reference is resolved: every agent ends up carrying its effective policy block. `policy: locked-down` and repeating that block inline normalize to the same specification and the same spec hash, so moving a shared block into `policies` changes nothing the engine enforces.
+
+The library is a catalog, and an agent declaration is a selection from it or a block of its own. The two never compose:
+
+| Agent declaration | Effective policy |
+| --- | --- |
+| `policy: locked-down` | Exactly the `locked-down` entry. |
+| `policy: {…}` inline | Exactly the inline block. |
+| no `policy` key | No policy: unrestricted egress, `remove` on stop. |
+
+One key has one shape — a name is a scalar and a block is a mapping — so an agent cannot state both, and every agent has exactly one effective policy. A library entry is not merged into an agent that declares its own block, nothing is inherited, and there is no project-wide default today. "One policy for most agents, one exception" therefore needs no composition rule: the exception declares its own block and the rest name the entry. Merging two blocks would produce a third block that appears nowhere in the file, and a reader could no longer tell what a sandbox enforces from one declaration.
+
+- A project policy defines a block; it cannot name another policy, so there are no chains to resolve.
+- Every entry is validated even when no agent selects it, so a broken definition fails the project instead of waiting for the first agent that references it.
+- An undefined name is an error and never falls back to an undeclared policy, which would leave egress unrestricted.
+- The library is an authoring convenience and is not part of the normalized specification: `agent-compose config` shows each agent's effective `policy` block rather than the name it selected.
+
 ## `agents.<name>`
 
 `agents` is a mapping keyed by agent name:
@@ -516,7 +576,8 @@ agents:
 | `skills` | list | Empty | Skill sources projected into the agent runtime. |
 | `volumes` | list | Empty | Volume and bind mounts. |
 | `workspace` | object | None | Explicitly selects a project `workspaces` entry or defines an inline workspace. |
-| `sandbox` | object | Remove stopped runtime | Sandbox lifecycle configuration. |
+| `policy` | object | Remove stopped runtime | Declared runtime policies: the stopped-runtime lifecycle and the outbound network policy. |
+| `sandbox` | object | — | Deprecated spelling of `policy`. Still accepted; declaring both is an error. |
 | `scheduler` | object | None | Automatic trigger configuration. |
 | `jupyter` | object | Disabled | Default Jupyter behavior for agent runs. |
 
@@ -1027,12 +1088,31 @@ workspace:
 
 Inline workspaces accept the same `mode` and `read_only` fields as top-level definitions. To inherit a project entry, set only `name`; its delivery mode and permissions are inherited together. A name-only reference cannot override `mode` or set `read_only: true`. To use different settings, define another project workspace or provide a complete inline source. If `name` is combined with source fields or `target`, the object is an inline workspace and must include its own valid source; it does not merge fields from a project entry.
 
-### `sandbox`: stopped runtime lifecycle
+### `policy`: declared runtime policies
+
+`policy` groups everything this agent declares about how its sandboxes behave at runtime: the stopped-runtime lifecycle and the outbound network policy. Later runtime policies belong in this same block rather than in new top-level agent keys.
+
+An agent either declares that block inline or selects a project `policies` entry by name:
+
+```yaml
+policy: locked-down        # a project policy, defined under `policies`
+```
+
+```yaml
+policy:                    # or the block itself
+  stopped_runtime_policy: retain
+```
+
+The fields below describe a policy block, whichever shape declares it. A name that no project policy defines is an error; it is never treated as no policy at all.
+
+> **`sandbox` is the deprecated spelling of `policy`.** It is still accepted so projects written before the rename keep working, and both keys accept the same fields, but new and edited projects should use `policy`. Declaring both in one agent is an error rather than a silent choice between two blocks that could disagree.
+
+#### `stopped_runtime_policy`: stopped runtime lifecycle
 
 By default, stopping a sandbox removes its driver runtime and private writable state after confirming the stop. Sandbox metadata, logs, workspace, and declared durable mounts remain, and `resume` creates a fresh runtime. To restart the same container, box, or microVM sandbox, retain its private runtime state explicitly:
 
 ```yaml
-sandbox:
+policy:
   stopped_runtime_policy: retain
 ```
 
@@ -1048,13 +1128,91 @@ scheduler runs must reuse the same running Pod, use `sandbox_policy: sticky`;
 sticky completion keeps the Pod running and is distinct from stopped-runtime
 retention.
 
-The effective policy is snapshotted when the sandbox is created. Editing the project changes only new sandboxes. Legacy sandboxes without a policy snapshot continue to retain their runtime. `agent-compose inspect sandbox <sandbox> --json` exposes the lifecycle record through `stopped_runtime_policy`, `stopped_runtime_state`, `stopped_runtime_last_error`, and `stopped_runtime_released_at`. The states are:
+The effective policy is snapshotted when the sandbox is created. Editing the project changes only new sandboxes.
+
+The daemon also records the outbound network policy a runtime was created under. Starting a sandbox only *ensures* a runtime, so when the driver starts an existing runtime whose egress configuration does not match the declaration now in force, the daemon reports it: a warning when the running sandbox is not decided by that declaration (its runtime keeps no egress configuration, or applies one the daemon does not control), and an informational line when it already is (the forward proxy reads the declaration on every request). Editing a declaration reaches a running sandbox only through the mechanisms listed under `policy.network`; the report never claims more than that. Legacy sandboxes without a policy snapshot continue to retain their runtime. `agent-compose inspect sandbox <sandbox> --json` exposes the lifecycle record through `stopped_runtime_policy`, `stopped_runtime_state`, `stopped_runtime_last_error`, and `stopped_runtime_released_at`. The states are:
 
 - `retained`: no intentional runtime release is in progress; a stopped sandbox is expected to resume the retained runtime.
 - `release_pending`: release intent is durable, but stopping, runtime removal, or the ownership update has not been fully confirmed. The daemon retries this state after an interruption, and resume completes the pending release before creating a fresh runtime.
 - `released`: runtime removal and the ownership update both completed. Resume creates a fresh runtime.
 
 For `remove`, the daemon first persists `release_pending`, then confirms a driver stop when the lifecycle record contains a start or start attempt newer than the last confirmed stop, even if the coarse VM status is `failed` rather than `running`. Only then does it remove the runtime and mark the record `released`. This ordering prevents a partially started runtime from being skipped or destructively released without a confirmed stop. The on-disk ownership-record layout is internal recovery state and is not a stable operator-facing format.
+
+### `policy.network`: declared outbound network policy
+
+`network` declares what this agent's sandboxes may reach. **It is optional, and an undeclared policy is not deny**: when `policy.network` is absent the engine keeps its existing behavior exactly, and outbound access stays unrestricted. `default: deny` is a policy that takes effect only because the block was declared; it is not an engine default.
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `default` | string | `allow-all` | Action for traffic no `allow` entry matches: `allow-all` or `deny`. |
+| `allow` | list | Empty | Explicit allowances. |
+
+Each `allow` entry:
+
+| Field | Type | Default | Purpose |
+| --- | --- | --- | --- |
+| `host` | string | Required | A host or host pattern. Labels are separated by `.`, and `*` matches exactly one label: `*.example.com` matches `api.example.com` but neither `example.com` nor `a.b.example.com`. IPv6 literals are not supported. |
+| `port` | int | Required | Destination port, 1–65535. |
+| `protocol` | string | `any` | `http`, `https`, `tcp`, `udp`, or `any`. Only `http` and `https` are modelled as inspectable at L7, and an opaque allowance (`any`, `tcp`, `udp`) is never presented as a checked one. No L7 mediator is implemented, so nothing inspects payloads today: the distinction is a modelling and reporting property, not a filter. |
+| `allowed_ips` | list | Empty | Optional IP addresses or CIDR ranges this entry's `host` may resolve to. Every address the name resolves to must fall inside one of them, or the allowance does not apply. A bare address is its own single-address range (`10.0.0.5` means `10.0.0.5/32`); entries are canonicalized and sorted. |
+
+`allowed_ips` is what ties a name to an address. Without it an allowance for `api.example.com` follows that name wherever it resolves, so a poisoned or compromised answer could send the sandbox to an address the declaration never named. With it, the engine refuses the connection unless the address it is about to use is inside the declared range, and a name that resolves to both an allowed and a disallowed address is refused rather than picked opportunistically. An address the engine never forwards to at all — loopback, link-local including the metadata address `169.254.169.254`, multicast, and the control-plane ports `2379`, `2380`, `6443`, `10250`, `10255` — stays refused whatever `allowed_ips` says.
+
+A destination that names an address (`host: 10.0.0.5`) is matched by that same address and never by a pattern: a wildcard allowance cannot reach an address the declaration did not name.
+
+```yaml
+policy:
+  network:
+    default: deny
+    allow:
+      - host: api.github.com
+        port: 443
+        protocol: https
+        allowed_ips:
+          - 140.82.112.0/20
+      - host: "*.internal.example.com"
+        port: 8080
+        protocol: tcp
+      - host: 203.0.113.7
+        port: 443
+        protocol: https
+```
+
+Hosts are lowercased, duplicate entries are rejected, and entries are sorted, so the normalized declaration enters canonical JSON and the spec hash independently of declaration order. Declaring `network` changes the hash; leaving it out keeps the hash byte-identical to a spec written before the field existed.
+
+An `allow` list restricts traffic only together with `default: deny`. Under the default `allow-all` the entries are still validated, stored, and hashed, but nothing is denied, so an `allow` list without `default: deny` leaves outbound access unrestricted.
+
+When `default: deny` applies, the engine automatically allows its own endpoints: the runtime LLM facade and the telemetry endpoint a guest exports to. These are engine-side entries, not user declarations: a project cannot declare, remove, or override them, they are as narrow as the exact endpoint the engine hands the guest, and every request they allow is recorded against an engine rule (`engine.llm-facade`, `engine.telemetry`) so the exemption is visible rather than hidden.
+
+The declaration is validated, hashed, round-trips through the API, and compiles into the engine's single egress decision model. Whether it restricts traffic depends on the runtime driver, and the driver's capability report states the strength it actually applies instead of presenting a partial mechanism as a complete one:
+
+- On Microsandbox the SDK network configuration applies the declaration: `allow` entries become ordered allow rules and traffic no engine rule or `allow` entry matches is denied under `default: deny`. Its capability report carries `strength=allowlist` plus the remaining limits, and it states what a real KVM run verified: the deny default and the allow rules hold (a name without an allowance fails to resolve, and an address allowance is refused on every other address and port), an `allowed_ips` constraint is not applied, an allowed HTTPS destination did not complete a TLS handshake, and the engine's forward proxy carries an HTTPS allowance when the sandbox can reach the daemon.
+- On every driver whose sandbox can reach the daemon — Docker, Kubernetes, and BoxLite included — **the engine enforces the declaration itself, in its own forward proxy**. The sandbox is given the proxy as its egress path (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, and the lowercase forms, none of which a project can override), the proxy authenticates that sandbox, and it decides every connection: an `allow` entry is tunnelled, anything else is answered `403` with the rule that refused it. Docker therefore carries a real strength even though the driver installs no filter of its own.
+- **The proxy refuses destinations the engine never forwards to, whatever the declaration says**: loopback, link-local (including the `169.254.169.254` metadata address), unspecified, and multicast addresses, plus the control-plane ports a cluster exposes — `2379` and `2380` (etcd), `6443` (API server), `10250` and `10255` (kubelet). Each refusal is recorded under its own engine rule (`engine.blocked-address`, `engine.blocked-port`) with the role it refused. For a `default: deny` sandbox this closes a path the sandbox would otherwise find on its own; for any sandbox it is what keeps the proxy from becoming a new route into the daemon's services or the platform hosting it.
+- The proxy resolves the destination itself and dials the address it decided against, so a name cannot resolve to something else between the decision and the connection.
+- **The limits are stated rather than implied.** A process that ignores the proxy environment still dials the internet directly and is not decided, until transparent capture puts every connection through the proxy; `udp` allowances cannot be carried by a forward proxy at all; and an IPv6 destination is refused, because the canonical endpoint identifier cannot express one.
+- When the sandbox has no address for the proxy (a deployment where the daemon is not reachable from inside the sandbox), the declaration cannot be applied and the sandbox is **reported as unenforced and still runs** — a restriction the platform cannot deliver must not become an availability failure. The daemon logs `declared network policy is not enforced` with the sandbox, driver, and reason, and the capability report states the same limit, so an unenforced declaration is never presented as a control. Set `EGRESS_UNENFORCEABLE_POLICY=refuse` to reject the sandbox in that case instead; the refusal happens while the sandbox is created (inside a run or a scheduler tick), so a deployment that requires the constraint to be real should treat the project as invalid rather than relying on that error.
+- A declaration whose default is `allow-all` (including an `allow` list without `default: deny`) never restricts traffic, is never given the proxy environment, and never makes a sandbox fail to start.
+
+**Admission reports this, so you do not have to guess.** `config` prints the declared policies (their allowances, whether each is inspectable, and any declared address ranges) to stderr while keeping the canonical spec on stdout. `up` and `apply` answer the question that matters at admission time — which mechanism will actually apply each declaration — from the daemon's own view:
+
+```
+Network policy
+  worker (driver docker)
+    declared  default deny, 1 allowance(s)
+      - api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+    enforced  forward_proxy (allowlist), the engine's forward proxy
+```
+
+A declaration the engine will not enforce is printed as `enforced  no:` with the reason and what this deployment does about it (`EGRESS_UNENFORCEABLE_POLICY=warn` or `refuse`), and the same text is written to stderr as a warning. Agents that share one gap share one warning. Agents that declared no policy are not listed — undeclared is not deny, so there is nothing to report. `agent-compose up --json` carries the same account under `network_policies`.
+
+**When a declaration takes effect.** It depends on which mechanism applies it:
+
+- The engine's forward proxy reads the declaration **on every request**, so on a proxied sandbox an edit takes effect immediately, without recreating or restarting anything. A credential is issued once per sandbox creation; the policy behind it is re-read each time.
+- A driver that applies the network configuration itself (Microsandbox) reads it when it creates the sandbox: a sandbox created after an edit uses the new declaration, while an existing sandbox that is only resumed keeps the configuration it was created with. With the default `stopped_runtime_policy: remove` the runtime is discarded on stop, so the next start creates one and picks the declaration up; a retained runtime does not.
+- On a sandbox with no reachable proxy and a current `default: deny` declaration, the unenforced report (or the `EGRESS_UNENFORCEABLE_POLICY=refuse` refusal) applies at the next start.
+
+`stopped_runtime_policy` does not share this timing: it is snapshotted onto the sandbox when the sandbox is created, so editing it affects only new sandboxes.
 
 ### `scheduler`
 

@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	agentcomposeapp "github.com/chaitin/agent-compose/pkg/agentcompose/app"
+	"github.com/chaitin/agent-compose/pkg/agentcompose/proxy"
 	"github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/fxgo/echofn"
 	"github.com/chaitin/agent-compose/pkg/fxgo/restful"
 	"github.com/chaitin/agent-compose/pkg/fxgo/utils"
 	"github.com/chaitin/agent-compose/pkg/health"
+	"github.com/chaitin/agent-compose/pkg/telemetry"
 	"io"
 	"log"
 	"log/slog"
@@ -49,10 +51,15 @@ type DaemonOptions struct {
 }
 
 type DaemonApp struct {
-	DI              do.Injector
-	Echo            *echo.Echo
-	Logger          *slog.Logger
-	Config          *config.Config
+	DI        do.Injector
+	Echo      *echo.Echo
+	Logger    *slog.Logger
+	Config    *config.Config
+	Telemetry *telemetry.Provider
+	// EgressProxy decides a sandbox's outbound connections before the daemon
+	// opens them. It is served on the TCP listener a sandbox can reach; the unix
+	// socket stays daemon-only.
+	EgressProxy     *proxy.EgressProxy
 	startBackground func(do.Injector) error
 	stopBackground  func(context.Context, do.Injector) error
 	startOnce       sync.Once
@@ -132,7 +139,12 @@ func NewDaemonApp(ctx context.Context, opts DaemonOptions) (*DaemonApp, error) {
 	app := do.MustInvoke[*echo.Echo](di)
 	logger := do.MustInvoke[*slog.Logger](di)
 	conf := do.MustInvoke[*config.Config](di)
-	installDaemonMiddleware(app, conf)
+	telemetryProvider := do.MustInvoke[*telemetry.Provider](di)
+	telemetryRecorder, err := telemetryProvider.Recorder()
+	if err != nil {
+		return nil, err
+	}
+	installDaemonMiddleware(app, conf, telemetryRecorder)
 
 	startBackground := opts.StartBackground
 	stopBackground := opts.StopBackground
@@ -149,18 +161,20 @@ func NewDaemonApp(ctx context.Context, opts DaemonOptions) (*DaemonApp, error) {
 		Echo:            app,
 		Logger:          logger,
 		Config:          conf,
+		Telemetry:       telemetryProvider,
+		EgressProxy:     do.MustInvoke[*proxy.EgressProxy](di),
 		startBackground: startBackground,
 		stopBackground:  stopBackground,
 		shutdownTimeout: 10 * time.Second,
 	}, nil
 }
 
-func installDaemonMiddleware(app *echo.Echo, conf *config.Config) {
+func installDaemonMiddleware(app *echo.Echo, conf *config.Config, recorder *telemetry.Recorder) {
 	app.Use(middleware.RequestLogger())
 	app.Use(middleware.Recover())
 	app.Use(newDaemonAuthMiddleware(conf))
 	app.Use(newDaemonTrustedHeadersMiddleware())
-	app.Use(newDaemonTraceContextMiddleware())
+	app.Use(newDaemonTraceContextMiddleware(recorder))
 }
 
 func (a *DaemonApp) StartBackground() error {
@@ -224,6 +238,16 @@ func (a *DaemonApp) shutdown(servers *daemonServers) error {
 		joined = errors.Join(joined, fmt.Errorf("stop background managers: %w", err))
 	}
 	cancelBackground()
+
+	// Flush buffered spans last so spans produced while stopping background
+	// managers are still exported.
+	telemetryCtx, cancelTelemetry := context.WithTimeout(context.Background(), a.effectiveShutdownTimeout())
+	if a.Telemetry != nil {
+		if err := a.Telemetry.Shutdown(telemetryCtx); err != nil {
+			joined = errors.Join(joined, fmt.Errorf("shutdown telemetry: %w", err))
+		}
+	}
+	cancelTelemetry()
 	return joined
 }
 
@@ -254,7 +278,16 @@ func (a *DaemonApp) listen() (*daemonServers, error) {
 		if !isLoopbackListenAddress(a.Config.HttpListen) {
 			a.Logger.Warn("HTTP_LISTEN exposes unencrypted h2c traffic; use a TLS-terminating reverse proxy before exposing this listener", "address", a.Config.HttpListen)
 		}
-		servers.add("HTTP_LISTEN", a.Config.HttpListen, tcpListener, a.Echo, nil)
+		// The egress proxy shares this listener because it is the address a
+		// sandbox can already reach; only absolute-form requests and a CONNECT
+		// carrying a proxy credential are dispatched to it, so the daemon's own
+		// clients keep their paths (and their middleware, which the proxy
+		// deliberately bypasses: it authenticates the sandbox itself).
+		handler := http.Handler(a.Echo)
+		if a.EgressProxy != nil {
+			handler = proxy.EgressDispatchHandler(a.Echo, a.EgressProxy)
+		}
+		servers.add("HTTP_LISTEN", a.Config.HttpListen, tcpListener, handler, nil)
 	}
 
 	return servers, nil

@@ -126,6 +126,10 @@ type dockerCommandInteraction struct {
 	closeSendOnce sync.Once
 	result        RuntimeResult
 	err           error
+	// securityFacts accumulates the lower-layer isolation failures observed on
+	// this exec's stderr. It is written and read on the interaction's own
+	// goroutine (copyOutput then run), never concurrently.
+	securityFacts ExecSecurityFacts
 }
 
 type dockerInteractionWriter struct {
@@ -192,6 +196,9 @@ func (w *dockerExecWriter) Write(p []byte) (int, error) {
 }
 
 func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, sandbox.Summary.ID, sandbox.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
+		return SandboxVMInfo{}, err
+	}
 	if _, err := workspaceRuntimeMountSpec(r.config, sandbox, RuntimeDriverDocker); err != nil {
 		return SandboxVMInfo{}, err
 	}
@@ -202,6 +209,10 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 	defer func() { _ = dockerClient.Close() }()
 
 	topology := r.dockerDaemonTopology(ctx, dockerClient)
+	// The topology's own network mode is used verbatim: a declared
+	// default-deny policy never reaches this point, because
+	// RequireSandboxNetworkEnforcement above refuses it before any container
+	// exists.
 	containerInfo, created, err := r.getOrCreateContainer(ctx, dockerClient, dockerContainerCreateRequest{
 		Sandbox: sandbox, VMState: vmState, ProxyState: proxyState, NetworkMode: topology.networkMode,
 	})
@@ -215,6 +226,8 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 		}
 		started = true
 	}
+	// Attach a containerized sandbox to the daemon's own network so it can
+	// reach the engine's LLM facade and telemetry endpoints.
 	if topology.containerized {
 		if err := ensureDockerContainerNetwork(ctx, dockerClient, containerInfo, string(topology.networkMode)); err != nil {
 			return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, err)
@@ -241,7 +254,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 		return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, err)
 	}
 	if !jupyterEnabled(proxyState) {
-		return SandboxVMInfo{BoxID: containerInfo.ID, ProxyState: &proxyState}, nil
+		return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, ProxyState: &proxyState}, nil
 	}
 
 	readyCtx, cancel := context.WithTimeout(ctx, r.config.JupyterReadyTimeout)
@@ -249,7 +262,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 	cancel()
 	if readyErr != nil {
 		if logText := readSandboxJupyterLog(sandbox); jupyterLogIndicatesReady(logText) {
-			return SandboxVMInfo{BoxID: containerInfo.ID, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
+			return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
 		}
 		if logText := readSandboxJupyterLog(sandbox); logText != "" {
 			return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, fmt.Errorf("%w\nGuest log:\n%s", readyErr, logText))
@@ -260,7 +273,7 @@ func (r *dockerRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmS
 		return SandboxVMInfo{}, r.cleanupDockerContainerAfterEnsureFailure(ctx, dockerClient, dockerEnsureAttemptState{ContainerID: containerInfo.ID, Created: created, Started: started}, readyErr)
 	}
 
-	return SandboxVMInfo{BoxID: containerInfo.ID, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
+	return SandboxVMInfo{BoxID: containerInfo.ID, RuntimeCreated: created, JupyterURL: jupyterDirectURL(proxyState), ProxyState: &proxyState}, nil
 }
 
 func (r *dockerRuntime) IsSandboxAlive(ctx context.Context, sandbox *Sandbox, vmState VMState) (bool, error) {
@@ -595,10 +608,11 @@ func (r *dockerRuntime) execWithStream(ctx context.Context, request dockerExecRe
 		return ExecResult{}, execTerminationResultError(RuntimeDriverDocker, execResp.ID, err, terminationErr)
 	}
 	result := ExecResult{
-		ExitCode: execInfo.ExitCode,
-		Stdout:   collector.stdout.String(),
-		Stderr:   collector.stderr.String(),
-		Output:   collector.output.String(),
+		ExitCode:      execInfo.ExitCode,
+		Stdout:        collector.stdout.String(),
+		Stderr:        collector.stderr.String(),
+		Output:        collector.output.String(),
+		SecurityFacts: collector.filter.SecurityFacts(),
 	}
 	result.Success = result.ExitCode == 0
 	return result, nil
@@ -705,11 +719,12 @@ func (i *dockerCommandInteraction) run() {
 
 	completedAt := time.Now()
 	i.result = RuntimeResult{
-		OperationID: i.operationID,
-		ExitCode:    exitCode,
-		Success:     runErr == nil && exitCode == 0,
-		StartedAt:   i.startedAt,
-		CompletedAt: completedAt,
+		OperationID:   i.operationID,
+		ExitCode:      exitCode,
+		Success:       runErr == nil && exitCode == 0,
+		StartedAt:     i.startedAt,
+		CompletedAt:   completedAt,
+		SecurityFacts: i.securityFacts.Pointer(),
 	}
 	if runErr != nil {
 		i.err = runErr
@@ -739,6 +754,7 @@ func (i *dockerCommandInteraction) copyOutput() error {
 	)
 	stdoutWriter.finish()
 	stderrWriter.finish()
+	i.securityFacts = i.securityFacts.Merge(stderrWriter.filter.SecurityFacts())
 	return err
 }
 
@@ -879,10 +895,14 @@ func (r *dockerRuntime) getOrCreateContainer(ctx context.Context, dockerClient *
 		exposedPorts, portBindings = dockerJupyterPortConfig(proxyState.GuestPort)
 		cmdText = jupyterLaunchCommand(r.config, proxyState, false)
 	}
+	env, err := r.containerEnv(ctx, sandbox, proxyState)
+	if err != nil {
+		return containerapi.InspectResponse{}, false, err
+	}
 	containerConfig := &containerapi.Config{
 		Image:        resolveSandboxGuestImage(vmState.Image, sandbox.Summary.GuestImage, defaultGuestImageForDriver(r.config, RuntimeDriverDocker)),
 		WorkingDir:   r.config.GuestWorkspacePath,
-		Env:          r.containerEnv(sandbox, proxyState),
+		Env:          env,
 		Entrypoint:   []string{"sh", "-lc"},
 		Cmd:          []string{cmdText},
 		ExposedPorts: exposedPorts,
@@ -1232,9 +1252,12 @@ func (r *dockerRuntime) containerName(sandbox *Sandbox, vmState VMState) string 
 	return firstNonEmpty(strings.TrimSpace(vmState.BoxName), strings.TrimSpace(sandbox.Summary.RuntimeRef), "agent-compose-"+sanitizeDockerContainerName(sandbox.Summary.ID))
 }
 
-func (r *dockerRuntime) containerEnv(sandbox *Sandbox, proxyState ProxyState) []string {
+func (r *dockerRuntime) containerEnv(ctx context.Context, sandbox *Sandbox, proxyState ProxyState) ([]string, error) {
 	appconfig.ApplyDefaultGuestPaths(r.config)
-	env := sandboxEnvMap(sandbox.EnvItems, sandbox.RuntimeEnvItems)
+	env, err := sandboxEnvMapWithProxy(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -1245,7 +1268,7 @@ func (r *dockerRuntime) containerEnv(sandbox *Sandbox, proxyState ProxyState) []
 	env["STATE_ROOT"] = r.config.GuestStateRoot
 	env["RUNTIME_ROOT"] = r.config.GuestRuntimeRoot
 	env["JUPYTER_TOKEN"] = proxyState.Token
-	return dockerEnvList(env)
+	return dockerEnvList(env), nil
 }
 
 func (r *dockerRuntime) waitForExecExit(ctx context.Context, dockerClient *client.Client, execID string) (containerapi.ExecInspect, error) {

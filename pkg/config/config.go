@@ -83,8 +83,11 @@ type Config struct {
 	SchedulerRunTimeout        time.Duration
 	// EventDeliveryScope bounds which Projects receive an event a Project
 	// published. Project content cannot change it.
-	EventDeliveryScope         domain.EventDeliveryScope
-	RuntimeDriver              string
+	EventDeliveryScope domain.EventDeliveryScope
+	RuntimeDriver      string
+	// EgressUnenforceablePolicy decides whether a declared network policy the
+	// selected driver cannot apply warns and runs or refuses the sandbox.
+	EgressUnenforceablePolicy  EgressUnenforceablePolicy
 	BoxliteHome                string
 	BoxliteRuntimeDir          string
 	DockerHome                 string
@@ -188,6 +191,7 @@ type configSources struct {
 	SandboxTimeouts sandboxTimeoutsConfig
 	HTTPLimits      httpLimitsConfig
 	EventDelivery   domain.EventDeliveryScope
+	EgressEnforce   EgressUnenforceablePolicy
 }
 
 func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, error) {
@@ -238,6 +242,10 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 	if err != nil {
 		return configSources{}, err
 	}
+	egressEnforce, err := loadEgressUnenforceablePolicy()
+	if err != nil {
+		return configSources{}, err
+	}
 	return configSources{
 		AgentTelemetry:  telemetry,
 		Database:        database,
@@ -253,6 +261,7 @@ func loadConfigSources(logger *slog.Logger, dataRoot string) (configSources, err
 		SandboxTimeouts: sandboxTimeouts,
 		HTTPLimits:      loadHTTPLimitsConfig(logger),
 		EventDelivery:   eventDelivery,
+		EgressEnforce:   egressEnforce,
 	}, nil
 }
 
@@ -312,6 +321,7 @@ func buildConfig(sources configSources, normalized configPathsToNormalize) *Conf
 		SchedulerRunTimeout:        timeouts.SchedulerRunTimeout,
 		EventDeliveryScope:         sources.EventDelivery,
 		RuntimeDriver:              drivers.RuntimeDriver,
+		EgressUnenforceablePolicy:  sources.EgressEnforce,
 		BoxliteHome:                normalized.BoxliteHome,
 		BoxliteRuntimeDir:          normalized.BoxliteRuntimeDir,
 		DockerHome:                 normalized.DockerHome,

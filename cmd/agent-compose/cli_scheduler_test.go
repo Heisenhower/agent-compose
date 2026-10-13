@@ -93,7 +93,7 @@ agents:
         provider: http
         url: %s/scheduler.js
 `, sourceServer.URL))
-	_, expected, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{ComposeFile: composePath})
+	_, expected, _, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{ComposeFile: composePath})
 	if err != nil {
 		t.Fatalf("load expected spec: %v", err)
 	}

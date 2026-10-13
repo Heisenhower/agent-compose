@@ -218,6 +218,9 @@ func (r *k8sRuntime) client(contextName string) (kubernetes.Interface, *rest.Con
 }
 
 func (r *k8sRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverK8s, sandbox.Summary.ID, sandbox.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
+		return SandboxVMInfo{}, err
+	}
 	if _, err := sandboxWorkspaceMount(sandbox, RuntimeDriverK8s); err != nil {
 		return SandboxVMInfo{}, err
 	}
@@ -437,6 +440,10 @@ func (r *k8sRuntime) createPod(ctx context.Context, clientset kubernetes.Interfa
 		cmdText = jupyterLaunchCommand(r.config, effective, false)
 		containerPorts = []corev1.ContainerPort{{ContainerPort: int32(effective.GuestPort)}}
 	}
+	env, err := r.containerEnv(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -460,7 +467,7 @@ func (r *k8sRuntime) createPod(ctx context.Context, clientset kubernetes.Interfa
 					Command:         []string{"sh", "-lc", cmdText},
 					Ports:           containerPorts,
 					WorkingDir:      r.config.GuestWorkspacePath,
-					Env:             k8sEnvVars(r.containerEnv(sandbox)),
+					Env:             k8sEnvVars(env),
 					VolumeMounts:    volumeMounts,
 				},
 			},
@@ -560,9 +567,12 @@ func k8sPodVolumeName(namespace, claimName string) string {
 	return "volume-" + hex.EncodeToString(digest[:])[:16]
 }
 
-func (r *k8sRuntime) containerEnv(sandbox *Sandbox) map[string]string {
+func (r *k8sRuntime) containerEnv(ctx context.Context, sandbox *Sandbox) (map[string]string, error) {
 	appconfig.ApplyDefaultGuestPaths(r.config)
-	env := sandboxEnvMap(sandbox.EnvItems, sandbox.RuntimeEnvItems)
+	env, err := sandboxEnvMapWithProxy(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -575,7 +585,7 @@ func (r *k8sRuntime) containerEnv(sandbox *Sandbox) map[string]string {
 	if base := strings.TrimRight(strings.TrimSpace(r.config.K8sRuntimeBaseURL), "/"); base != "" {
 		env["AGENT_COMPOSE_RUNTIME_BASE_URL"] = base
 	}
-	return env
+	return env, nil
 }
 
 func k8sEnvVars(env map[string]string) []corev1.EnvVar {
@@ -837,10 +847,11 @@ func (r *k8sRuntime) execWithInput(ctx context.Context, request k8sExecRequest, 
 	}
 
 	result := ExecResult{
-		ExitCode: exitCode,
-		Stdout:   collector.stdout.String(),
-		Stderr:   collector.stderr.String(),
-		Output:   collector.output.String(),
+		ExitCode:      exitCode,
+		Stdout:        collector.stdout.String(),
+		Stderr:        collector.stderr.String(),
+		Output:        collector.output.String(),
+		SecurityFacts: collector.filter.SecurityFacts(),
 	}
 	result.Success = result.ExitCode == 0
 	return result, nil

@@ -459,6 +459,12 @@ func notifyBoxliteExecExit(exitCode int, handle uintptr) {
 }
 
 func (r *cgoSandboxRuntime) EnsureSandbox(ctx context.Context, sandbox *Sandbox, vmState VMState, proxyState ProxyState) (SandboxVMInfo, error) {
+	// BoxLite binds network_enabled unconditionally and has no verified FFI
+	// binding for an allowance list, so a declared default-deny policy must
+	// fail closed here rather than run a sandbox with unrestricted egress.
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverBoxlite, sandbox.Summary.ID, sandbox.NetworkPolicy, r.config.EgressUnenforceablePolicy); err != nil {
+		return SandboxVMInfo{}, err
+	}
 	if _, err := sandboxWorkspaceMount(sandbox, RuntimeDriverBoxlite); err != nil {
 		return SandboxVMInfo{}, err
 	}
@@ -1127,6 +1133,16 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 	if err := boxliteStatusError(code, &ffiErr, "create box options"); err != nil {
 		return nil, err
 	}
+	// Ownership of options passes to the caller only on success, and createBox
+	// frees only the options it received and only when the FFI create call
+	// fails. Every error return below would therefore leak the native
+	// allocation, so the function keeps ownership until the final return.
+	optionsHandedOver := false
+	defer func() {
+		if !optionsHandedOver {
+			C.boxlite_options_free(options)
+		}
+	}()
 
 	if strings.TrimSpace(rootfsPath) != "" {
 		rootfsCString := C.CString(rootfsPath)
@@ -1185,7 +1201,10 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 	defer freeCommand()
 	C.boxlite_options_set_cmd(options, command, C.int(commandLen))
 
-	baseEnv := sandboxEnvMap(sandbox.EnvItems, sandbox.RuntimeEnvItems)
+	baseEnv, err := sandboxEnvMapWithProxy(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	if baseEnv == nil {
 		baseEnv = map[string]string{}
 	}
@@ -1220,6 +1239,7 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 		}
 	}
 
+	optionsHandedOver = true
 	return options, nil
 }
 
@@ -1435,10 +1455,11 @@ func (r *cgoSandboxRuntime) executeBox(ctx context.Context, box *cgoBoxHandle, s
 		return ExecResult{}, err
 	}
 	result := ExecResult{
-		ExitCode: exitCode,
-		Stdout:   collector.stdout.String(),
-		Stderr:   collector.stderr.String(),
-		Output:   collector.output.String(),
+		ExitCode:      exitCode,
+		Stdout:        collector.stdout.String(),
+		Stderr:        collector.stderr.String(),
+		Output:        collector.output.String(),
+		SecurityFacts: collector.filter.SecurityFacts(),
 	}
 	result.Success = result.ExitCode == 0
 	return result, nil

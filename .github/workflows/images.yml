@@ -89,9 +89,17 @@ jobs:
   # Build each image for a single architecture on a native runner, then push by
   # digest. Native arm64 runners avoid slow QEMU emulation of the Rust-based
   # microsandbox build stage. The manifest list is assembled in the merge job.
+  #
+  # Pull requests skip this job. Its only product is a pushed digest, and a pull
+  # request publishes nothing, so the sole signal it carries there is "these
+  # Dockerfiles build". The image-smoke job builds the same two Dockerfiles for
+  # linux/amd64 with load: true, verifies the daemon image, and runs the Docker
+  # lifecycle smoke, so keeping this job on pull requests compiles every image
+  # twice for one signal.
   build:
     name: Build ${{ matrix.name }} (${{ matrix.platform.tag }})
     needs: setup
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.platform.runner }}
     strategy:
       fail-fast: false
@@ -166,9 +174,13 @@ jobs:
 
   # The upstream Arch Linux base is x86_64-only, so publish this guest through
   # the same digest/tag pipeline as the default images but only for amd64.
+  # Pull requests skip it for the same reason as the build matrix above: the
+  # image-smoke job builds this Dockerfile and runs the Arch Linux guest
+  # lifecycle against it.
   build-archlinux-guest:
     name: Build agent-compose-guest-archlinux (linux/amd64)
     needs: setup
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -222,8 +234,19 @@ jobs:
   image-smoke:
     name: Full image Docker smoke (linux/amd64)
     needs:
+      - setup
       - build
       - build-archlinux-guest
+    # The two build jobs are skipped on pull requests, so this job has to keep
+    # running when its dependencies are skipped. `needs.setup.result` also
+    # carries the draft-pull-request guard that used to skip this job through a
+    # skipped dependency, and the explicit result checks preserve the push
+    # ordering: a failed build still skips the smoke.
+    if: >-
+      always() && !cancelled() &&
+      needs.setup.result == 'success' &&
+      needs.build.result != 'failure' && needs.build.result != 'cancelled' &&
+      needs.build-archlinux-guest.result != 'failure' && needs.build-archlinux-guest.result != 'cancelled'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

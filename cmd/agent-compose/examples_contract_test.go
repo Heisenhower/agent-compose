@@ -24,6 +24,7 @@ func TestExampleFilesContract(t *testing.T) {
 	examplesRoot := filepath.Join(root, "examples", "agent-compose")
 	want := map[string]exampleContract{
 		"docker-minimal":              {agentCount: 1, driver: "docker"},
+		"docker-policy-library":       {agentCount: 3, driver: "docker"},
 		"docker-scheduler-cron":       {agentCount: 1, schedulers: 1, driver: "docker"},
 		"docker-scheduler-script-url": {agentCount: 1, schedulers: 1, driver: "docker"},
 		"docker-scheduler-timeout":    {agentCount: 1, schedulers: 1, driver: "docker"},
@@ -57,7 +58,7 @@ func TestExampleFilesContract(t *testing.T) {
 			for _, readme := range []string{"README.md", "README.zh-CN.md"} {
 				assertExampleFileExists(t, filepath.Join(dir, readme))
 			}
-			_, normalized, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{
+			_, normalized, _, err := loadResolvedNormalizedCompose(context.Background(), cliOptions{
 				ComposeFile: filepath.Join(dir, "agent-compose.yml"),
 			})
 			if err != nil {

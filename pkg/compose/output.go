@@ -65,6 +65,7 @@ type orderedAgentSpec struct {
 	Skills       []NormalizedSkillSpec       `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Volumes      []NormalizedVolumeMountSpec `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Workspace    *WorkspaceSpec              `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+	Policy       *NormalizedSandboxSpec      `yaml:"policy,omitempty" json:"policy,omitempty"`
 	Sandbox      *NormalizedSandboxSpec      `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 	Scheduler    *NormalizedSchedulerSpec    `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
 	Jupyter      *JupyterSpec                `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
@@ -168,7 +169,8 @@ func (s *NormalizedProjectSpec) ordered(redactSecrets bool) orderedProjectSpec {
 			Skills:       outputSkillSpecs(agent.Skills, redactSecrets),
 			Volumes:      cloneNormalizedVolumeMountSpecs(agent.Volumes),
 			Workspace:    outputWorkspace(agent.Workspace, redactSecrets),
-			Sandbox:      agent.Sandbox,
+			Policy:       cloneNormalizedSandboxSpec(agent.Policy),
+			Sandbox:      cloneNormalizedSandboxSpec(agent.Sandbox),
 			Scheduler:    cloneNormalizedSchedulerSpec(agent.Scheduler),
 			Jupyter:      cloneJupyterSpec(agent.Jupyter),
 		})
@@ -215,7 +217,8 @@ func (s *NormalizedProjectSpec) clone(redactSecrets bool) *NormalizedProjectSpec
 			Skills:       cloneNormalizedSkillSpecs(agent.Skills),
 			Volumes:      cloneNormalizedVolumeMountSpecs(agent.Volumes),
 			Workspace:    agent.Workspace,
-			Sandbox:      agent.Sandbox,
+			Policy:       cloneNormalizedSandboxSpec(agent.Policy),
+			Sandbox:      cloneNormalizedSandboxSpec(agent.Sandbox),
 			Scheduler:    agent.Scheduler,
 			Jupyter:      agent.Jupyter,
 		})
@@ -538,6 +541,39 @@ func cloneJupyterSpec(value *JupyterSpec) *JupyterSpec {
 	}
 	cloned := *value
 	return &cloned
+}
+
+// cloneNormalizedSandboxSpec deep-clones the nested network declaration. The
+// sandbox spec is otherwise shared by pointer between the ordered output and
+// the normalized spec, which would let a caller that mutates one view change
+// the canonical JSON of the other.
+func cloneNormalizedSandboxSpec(value *NormalizedSandboxSpec) *NormalizedSandboxSpec {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	if value.Network != nil {
+		network := *value.Network
+		network.Allow = cloneNormalizedNetworkAllow(value.Network.Allow)
+		cloned.Network = &network
+	}
+	return &cloned
+}
+
+// cloneNormalizedNetworkAllow copies the allowances deeply, including each
+// entry's address list. A shallow copy would share that backing array with the
+// source declaration, so an in-place edit through one view would change the
+// canonical JSON and hash the clone exists to protect.
+func cloneNormalizedNetworkAllow(values []NormalizedSandboxNetworkAllowSpec) []NormalizedSandboxNetworkAllowSpec {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]NormalizedSandboxNetworkAllowSpec, len(values))
+	for i, value := range values {
+		value.AllowedIPs = append([]string(nil), value.AllowedIPs...)
+		cloned[i] = value
+	}
+	return cloned
 }
 
 func compareString(a string, b string) int {

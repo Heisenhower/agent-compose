@@ -8,9 +8,11 @@ import (
 
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/egress"
 	"github.com/chaitin/agent-compose/pkg/execution"
 	domain "github.com/chaitin/agent-compose/pkg/model"
 	"github.com/chaitin/agent-compose/pkg/sandboxes"
+	"github.com/chaitin/agent-compose/pkg/telemetry"
 )
 
 type SandboxRuntime interface {
@@ -62,12 +64,28 @@ type RuntimeProvider interface {
 
 type runtimeProvider struct {
 	config   *appconfig.Config
+	recorder *telemetry.Recorder
 	runtimes map[string]SandboxRuntime
+	// egressProxy mediates a declaring sandbox's egress through the engine's
+	// forward proxy. Its zero value is inert: no credential store, no sandbox
+	// loader, no mediation, and the unenforced-declaration gate still applies.
+	egressProxy SandboxEgressProxy
 }
 
 type driverRuntimeAdapter struct {
 	runtime    driverpkg.SandboxRuntime
 	executions *sandboxExecutions
+	recorder   *telemetry.Recorder
+	// networkPolicies derives the driver-boundary egress policy from the
+	// sandbox's declared compose network policy. Its zero value is inert: an
+	// adapter built without a resolver resolves no declaration and leaves
+	// NetworkPolicy nil (D3).
+	networkPolicies driverSandboxNetworkPolicy
+	// egressProxy, when available, routes a declaring sandbox's HTTP traffic
+	// through the engine's own forward proxy and marks the driver-boundary
+	// policy as mediated, so the driver reports enforcement instead of warning
+	// that the declaration is unenforced.
+	egressProxy SandboxEgressProxy
 }
 
 // guestFileRuntimeAdapter adds the no-shared-filesystem capabilities only to
@@ -87,12 +105,39 @@ type ProxyStateGetter interface {
 	GetProxyState(sandboxID string) (domain.ProxyState, error)
 }
 
-func NewRuntimeProvider(config *appconfig.Config, proxyStateGetter ProxyStateGetter) (RuntimeProvider, error) {
+// RuntimeProviderOption customizes how the provider decorates the driver
+// runtimes it hands out.
+type RuntimeProviderOption func(*runtimeProvider)
+
+// WithRuntimeRecorder attaches the daemon recorder to every driver runtime, so
+// driver operations export as child spans and metrics of the run that requested
+// them. A nil recorder leaves the runtimes untraced.
+func WithRuntimeRecorder(recorder *telemetry.Recorder) RuntimeProviderOption {
+	return func(provider *runtimeProvider) { provider.recorder = recorder }
+}
+
+// WithSandboxEgressProxy attaches the engine-side egress proxy mediation: a
+// sandbox that declares deny semantics is handed the proxy as its egress path
+// and the driver-boundary policy records that the engine, not the driver,
+// decides its connections. Without it, a sandbox whose driver cannot apply the
+// declaration stays on the unenforced-declaration path.
+func WithSandboxEgressProxy(mediation SandboxEgressProxy) RuntimeProviderOption {
+	return func(provider *runtimeProvider) {
+		mediation.config = provider.config
+		provider.egressProxy = mediation
+	}
+}
+
+func NewRuntimeProvider(config *appconfig.Config, proxyStateGetter ProxyStateGetter, networkDeclarations SandboxNetworkDeclarationResolver, opts ...RuntimeProviderOption) (RuntimeProvider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("runtime provider config is required")
 	}
 	if err := driverpkg.ValidateCompiledRuntimeDriver(config.RuntimeDriver); err != nil {
 		return nil, classifyRuntimeProviderError(err)
+	}
+	provider := &runtimeProvider{config: config}
+	for _, option := range opts {
+		option(provider)
 	}
 
 	boxliteRuntime, err := driverpkg.NewBoxliteRuntime(config)
@@ -122,17 +167,19 @@ func NewRuntimeProvider(config *appconfig.Config, proxyStateGetter ProxyStateGet
 		return nil, err
 	}
 	executions := newSandboxExecutions()
-	return &runtimeProvider{
-		config: config,
-		runtimes: map[string]SandboxRuntime{
-			driverpkg.RuntimeDriverBoxlite:      driverRuntimeAdapter{runtime: boxliteRuntime, executions: executions},
-			driverpkg.RuntimeDriverDocker:       driverRuntimeAdapter{runtime: dockerRuntime, executions: executions},
-			driverpkg.RuntimeDriverMicrosandbox: driverRuntimeAdapter{runtime: microsandboxRuntime, executions: executions},
-			driverpkg.RuntimeDriverK8s: guestFileRuntimeAdapter{driverRuntimeAdapter{
-				runtime: k8sRuntime, executions: executions,
-			}},
-		},
-	}, nil
+	networkPolicies := driverSandboxNetworkPolicy{config: config, declarations: networkDeclarations}
+	// The mediation decides with the same resolved declaration and engine
+	// endpoints as the driver-boundary policy, so both read one seam.
+	provider.egressProxy.networkPolicies = networkPolicies
+	provider.runtimes = map[string]SandboxRuntime{
+		driverpkg.RuntimeDriverBoxlite:      driverRuntimeAdapter{runtime: boxliteRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
+		driverpkg.RuntimeDriverDocker:       driverRuntimeAdapter{runtime: dockerRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
+		driverpkg.RuntimeDriverMicrosandbox: driverRuntimeAdapter{runtime: microsandboxRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy},
+		driverpkg.RuntimeDriverK8s: guestFileRuntimeAdapter{driverRuntimeAdapter{
+			runtime: k8sRuntime, executions: executions, recorder: provider.recorder, networkPolicies: networkPolicies, egressProxy: provider.egressProxy,
+		}},
+	}
+	return provider, nil
 }
 
 func (p *runtimeProvider) ForDriver(driver string) (SandboxRuntime, error) {
@@ -168,15 +215,97 @@ func (p *runtimeProvider) ForSession(session *domain.Sandbox) (SandboxRuntime, e
 	return p.ForDriver(driver)
 }
 
+// driverSandbox maps a domain sandbox to the driver-boundary value and attaches
+// the network policy its project declared.
+//
+// The derived policy is not optional for any path that can reach a driver's
+// EnsureSandbox: the guest-file paths materialize the runtime implicitly, so a
+// sandbox handed to the driver without the policy would create a Pod or
+// container before the enforcement gate ever saw the declaration. Every such
+// call site must use this helper rather than execution.ToDriverSandbox directly.
+func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain.Sandbox) (*driverpkg.Sandbox, domain.SandboxEgressPolicy, error) {
+	driverSandbox := execution.ToDriverSandbox(session)
+	// The driver-boundary policy is derived from the project's normalized
+	// declaration, not from the domain session, and only a declared policy sets
+	// it. An undeclared sandbox keeps a nil policy and today's behavior (D3).
+	// The effective policy is compiled from the same read, so the generation
+	// recorded below always belongs to the declaration the driver was given.
+	policy, effective, err := r.networkPolicies.resolve(ctx, session)
+	if err != nil {
+		return nil, domain.SandboxEgressPolicy{}, err
+	}
+	mediated := false
+	if driverSandbox != nil {
+		driverSandbox.NetworkPolicy = policy
+		// A declaration that denies by default is only really enforced where the
+		// engine is in the traffic path. Routing the guest through the forward
+		// proxy is what puts it there, and the same step records the mediation
+		// on the policy so no driver can believe in one the engine did not wire.
+		//
+		// The credential and the environment that carries it are resolved by the
+		// driver, and only when it creates a runtime: a guest reads its
+		// environment once, so issuing here on every ensure would mint live
+		// credentials no guest could ever present. Whether the engine can mediate
+		// at all is a pure fact about the deployment and this sandbox, so the
+		// report below still knows it before the driver runs.
+		if policy != nil && policy.DenyByDefault() && r.egressProxy.available(session) {
+			driverSandbox.ProxyEnv = r.egressProxy.proxyEnvProvider(session)
+			policy.MediatedByForwardProxy = true
+			mediated = true
+		}
+	}
+	// Record what this creation is about to install. The record is the only way
+	// a later start can tell which policy the runtime that is running was built
+	// for, because a declaration read at creation cannot be recovered from the
+	// declaration that is in force then.
+	record := r.egressRuntimePolicy(session, policy, effective, mediated)
+	return driverSandbox, record, nil
+}
+
+// egressRuntimePolicy describes the effective policy this creation installs for
+// a sandbox: the generation the proxy will decide against, and how the policy
+// reaches the runtime. The generation comes from the same compilation the proxy
+// uses (policyForSession), so a decision the proxy records carries a generation
+// that can be compared with this one.
+func (r driverRuntimeAdapter) egressRuntimePolicy(session *domain.Sandbox, policy *driverpkg.SandboxNetworkPolicy, effective egress.Policy, mediated bool) domain.SandboxEgressPolicy {
+	application := egress.ApplicationOpen
+	switch {
+	case mediated:
+		application = egress.ApplicationMediated
+	case policy != nil && policy.DenyByDefault():
+		// The declaration denies by default and the engine is not in the traffic
+		// path, so whatever the driver does with it is what the runtime gets. A
+		// driver that applies nothing leaves the sandbox unrestricted.
+		if driverpkg.SandboxNetworkEnforcementFor(session.Summary.Driver).Strength == driverpkg.SandboxEgressStrengthNone {
+			application = egress.ApplicationUnenforced
+		} else {
+			application = egress.ApplicationDriverApplied
+		}
+	}
+	return sandboxEgressPolicyRecord(egress.RuntimePolicy{Generation: effective.Generation(), Application: application})
+}
+
 func (r driverRuntimeAdapter) EnsureSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, proxyState domain.ProxyState) (domain.SandboxVMInfo, error) {
-	info, err := r.runtime.EnsureSandbox(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), execution.ToDriverProxyState(proxyState))
+	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxEnsure, session, vmState.Driver)
+	startedAt := time.Now()
+	driverSandbox, egressPolicy, err := r.driverSandbox(ctx, session)
+	if err != nil {
+		endSpan(err)
+		return domain.SandboxVMInfo{}, err
+	}
+	info, err := r.runtime.EnsureSandbox(ctx, driverSandbox, execution.ToDriverVMState(vmState), execution.ToDriverProxyState(proxyState))
+	r.recorder.RecordSandboxCreate(ctx, runtimeDriverName(session, vmState.Driver), time.Since(startedAt), err)
+	endSpan(err)
 	if err != nil {
 		return domain.SandboxVMInfo{}, err
 	}
-	return execution.FromDriverSandboxVMInfo(info), nil
+	domainInfo := execution.FromDriverSandboxVMInfo(info)
+	domainInfo.EgressPolicy = egressPolicy
+	return domainInfo, nil
 }
 
 func (r driverRuntimeAdapter) StopSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState) (bool, error) {
+	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxStop, session, vmState.Driver)
 	if r.executions != nil {
 		r.executions.ensureBlocked(session.Summary.ID)
 		// Preserve the runtime driver's complete stop deadline. The sandbox stop
@@ -185,26 +314,36 @@ func (r driverRuntimeAdapter) StopSandbox(ctx context.Context, session *domain.S
 		r.executions.cancel(session.Summary.ID)
 	}
 	missing, err := r.runtime.StopSandbox(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState))
+	endSpan(err)
 	return missing, err
 }
 
 func (r driverRuntimeAdapter) RemoveSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState) error {
-	return r.runtime.RemoveSandbox(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState))
+	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxRemove, session, vmState.Driver)
+	err := r.runtime.RemoveSandbox(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState))
+	endSpan(err)
+	return err
 }
 
 func (r driverRuntimeAdapter) Exec(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, spec domain.ExecSpec) (domain.ExecResult, error) {
+	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxExec, session, vmState.Driver)
 	execCtx, marked, finish, err := r.beginExecution(ctx, session, spec)
 	if err != nil {
+		endSpan(err)
 		return domain.ExecResult{}, err
 	}
 	defer finish()
 	result, err := r.runtime.Exec(execCtx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), execution.ToDriverExecSpec(marked))
+	reportMeasuredLowerLayerIsolationFacts(session.Summary.ID, vmState.Driver, result.SecurityFacts)
+	endSpan(err)
 	return execution.FromDriverExecResult(result), classifyExecTerminationError(err)
 }
 
 func (r driverRuntimeAdapter) ExecStream(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, spec domain.ExecSpec, stream domain.ExecStreamWriter) (domain.ExecResult, error) {
+	ctx, endSpan := startRuntimeSpan(ctx, r.recorder, telemetry.SpanSandboxExec, session, vmState.Driver)
 	execCtx, marked, finish, err := r.beginExecution(ctx, session, spec)
 	if err != nil {
+		endSpan(err)
 		return domain.ExecResult{}, err
 	}
 	defer finish()
@@ -214,6 +353,8 @@ func (r driverRuntimeAdapter) ExecStream(ctx context.Context, session *domain.Sa
 		}
 	}
 	result, err := r.runtime.ExecStream(execCtx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), execution.ToDriverExecSpec(marked), driverStream)
+	reportMeasuredLowerLayerIsolationFacts(session.Summary.ID, vmState.Driver, result.SecurityFacts)
+	endSpan(err)
 	return execution.FromDriverExecResult(result), classifyExecTerminationError(err)
 }
 
@@ -233,7 +374,9 @@ func (r driverRuntimeAdapter) OpenInteraction(ctx context.Context, session *doma
 	if err != nil {
 		return nil, err
 	}
+	execCtx, endSpan := startRuntimeSpan(execCtx, r.recorder, telemetry.SpanSandboxInteraction, session, vmState.Driver)
 	interaction, err := interactor.OpenInteraction(execCtx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), marked)
+	endSpan(err)
 	if err != nil {
 		finish()
 		return nil, err
@@ -242,6 +385,8 @@ func (r driverRuntimeAdapter) OpenInteraction(ctx context.Context, session *doma
 		RuntimeInteraction: interaction,
 		finish:             finish,
 		done:               make(chan struct{}),
+		sandboxID:          session.Summary.ID,
+		driverName:         vmState.Driver,
 	}
 	go tracked.finishWhenContextEnds(execCtx)
 	return tracked, nil
@@ -282,7 +427,11 @@ func (r guestFileRuntimeAdapter) ReadGuestFile(ctx context.Context, session *dom
 	if !ok {
 		return nil, domain.ClassifyError(domain.ErrUnsupported, "runtime does not support reading guest files directly", nil)
 	}
-	return reader.ReadGuestFile(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), guestPath)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
+	if err != nil {
+		return nil, err
+	}
+	return reader.ReadGuestFile(ctx, driverSandbox, execution.ToDriverVMState(vmState), guestPath)
 }
 
 func (r guestFileRuntimeAdapter) ReadGuestDir(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, guestDir, hostDestDir string) error {
@@ -292,7 +441,11 @@ func (r guestFileRuntimeAdapter) ReadGuestDir(ctx context.Context, session *doma
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support reading guest directories directly", nil)
 	}
-	return reader.ReadGuestDir(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), guestDir, hostDestDir)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
+	if err != nil {
+		return err
+	}
+	return reader.ReadGuestDir(ctx, driverSandbox, execution.ToDriverVMState(vmState), guestDir, hostDestDir)
 }
 
 func (r guestFileRuntimeAdapter) WriteGuestFile(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, guestPath string, content []byte) error {
@@ -302,7 +455,11 @@ func (r guestFileRuntimeAdapter) WriteGuestFile(ctx context.Context, session *do
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support writing guest files directly", nil)
 	}
-	return writer.WriteGuestFile(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), guestPath, content)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
+	if err != nil {
+		return err
+	}
+	return writer.WriteGuestFile(ctx, driverSandbox, execution.ToDriverVMState(vmState), guestPath, content)
 }
 
 func (r guestFileRuntimeAdapter) WriteGuestDir(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, hostSrcDir, guestDir string) error {
@@ -312,5 +469,9 @@ func (r guestFileRuntimeAdapter) WriteGuestDir(ctx context.Context, session *dom
 	if !ok {
 		return domain.ClassifyError(domain.ErrUnsupported, "runtime does not support writing guest directories directly", nil)
 	}
-	return writer.WriteGuestDir(ctx, execution.ToDriverSandbox(session), execution.ToDriverVMState(vmState), hostSrcDir, guestDir)
+	driverSandbox, _, err := r.driverSandbox(ctx, session)
+	if err != nil {
+		return err
+	}
+	return writer.WriteGuestDir(ctx, driverSandbox, execution.ToDriverVMState(vmState), hostSrcDir, guestDir)
 }

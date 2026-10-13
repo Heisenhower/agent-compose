@@ -73,7 +73,7 @@ func AgentSpecsToProto(agents []compose.NormalizedAgentSpec) []*agentcomposev2.A
 			CapsetIds:    capabilities.NormalizeCapsetIDs(agent.CapsetIDs),
 			Skills:       SkillSpecsToProto(agent.Skills),
 			Workspace:    WorkspaceSpecToProto(agent.Workspace),
-			Sandbox:      SandboxSpecToProto(agent.Sandbox),
+			Sandbox:      SandboxSpecToProto(agent.PolicyBlock()),
 			Scheduler:    SchedulerSpecToProto(agent.Scheduler),
 			Jupyter:      JupyterSpecToProto(agent.Jupyter),
 			Volumes:      VolumeMountSpecsToProto(agent.Volumes),
@@ -88,7 +88,21 @@ func SandboxSpecToProto(sandbox *compose.NormalizedSandboxSpec) *agentcomposev2.
 	if sandbox == nil {
 		return nil
 	}
-	return &agentcomposev2.SandboxSpec{StoppedRuntimePolicy: sandbox.StoppedRuntimePolicy}
+	result := &agentcomposev2.SandboxSpec{StoppedRuntimePolicy: sandbox.StoppedRuntimePolicy}
+	if sandbox.Network == nil {
+		return result
+	}
+	network := &agentcomposev2.SandboxNetworkSpec{Default: sandbox.Network.Default}
+	for _, entry := range sandbox.Network.Allow {
+		network.Allow = append(network.Allow, &agentcomposev2.SandboxNetworkAllowSpec{
+			Host:       entry.Host,
+			Port:       int32(entry.Port),
+			Protocol:   entry.Protocol,
+			AllowedIps: append([]string(nil), entry.AllowedIPs...),
+		})
+	}
+	result.Network = network
+	return result
 }
 
 func MCPServerSpecsToProto(values map[string]compose.NormalizedMCPServerSpec) []*agentcomposev2.MCPServerSpec {
