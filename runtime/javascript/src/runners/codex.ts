@@ -68,6 +68,8 @@ function reconnectEvent(message: string): Extract<AgentEvent, { kind: "retry" }>
 
 export class CodexRunner {
   private readonly itemState = new Map<string, string | CodexItemState>();
+  private reconnectMessage?: string;
+  private turnCompleted = false;
 
   constructor(
     private readonly options: RunnerOptions,
@@ -268,6 +270,7 @@ export class CodexRunner {
       return;
     }
     if (event.type === "turn.completed") {
+      this.turnCompleted = true;
       // Codex accounts usage per turn, not per model call, and reports input
       // tokens inclusive of the cached prefix; subtract so `inputTokens` means
       // the same thing across providers. `cache_write_input_tokens` is present
@@ -302,6 +305,7 @@ export class CodexRunner {
       // streamed turn is still running; let the SDK finish or report turn.failed.
       const retry = reconnectEvent(message);
       if (retry) {
+        this.reconnectMessage = message;
         this.emit(retry);
         return;
       }
@@ -410,6 +414,8 @@ export class CodexRunner {
     };
 
     try {
+      this.reconnectMessage = undefined;
+      this.turnCompleted = false;
       const turnOptions = this.options.outputSchema || this.options.abortController
         ? {
           ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
@@ -419,6 +425,11 @@ export class CodexRunner {
       const { events } = await thread.runStreamed(promptText, turnOptions);
       for await (const event of events) {
         this.handleEvent(event as Record<string, unknown>, result);
+      }
+      if (this.reconnectMessage && !this.turnCompleted && !cancellationRequested(this.options.abortController?.signal)) {
+        const message = `Codex stream ended before turn.completed after ${this.reconnectMessage}`;
+        this.emit({ kind: "error", severity: "fatal", message });
+        throw new Error(message);
       }
     } catch (error) {
       if (!cancellationRequested(this.options.abortController?.signal)) {
