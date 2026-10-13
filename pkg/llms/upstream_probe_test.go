@@ -350,6 +350,8 @@ func TestClassifyProbeResponse(t *testing.T) {
 		{name: "not found", protocol: ProtocolResponses, status: 404, body: `not found`, want: ProbeUnsupported},
 		{name: "not found naming a missing model", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"The model \u0060nope\u0060 does not exist","code":"model_not_found"}}`, want: ProbeInconclusive},
 		{name: "not found for an absent route", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"route not found"}}`, want: ProbeUnsupported},
+		{name: "localized model rejection", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"模型不存在或无权访问","type":"not_found_error"}}`, want: ProbeInconclusive},
+		{name: "localized route rejection", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"路由不存在","type":"not_found_error"}}`, want: ProbeUnsupported},
 		{name: "method not allowed", protocol: ProtocolChatCompletions, status: 405, body: ``, want: ProbeUnsupported},
 		{name: "not implemented", protocol: ProtocolMessages, status: 501, body: ``, want: ProbeUnsupported},
 		{name: "unauthorized", protocol: ProtocolResponses, status: 401, body: `{"error":{"message":"bad key"}}`, want: ProbeAuthFailed},

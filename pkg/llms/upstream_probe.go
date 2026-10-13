@@ -551,10 +551,15 @@ func summariseProbeBody(body []byte) string {
 // model-not-found error. The probe names a model it took from the connection or
 // from the endpoint's own model list, so a rejection that names the model says
 // nothing about whether the protocol is served.
+//
+// Gateways localise this message and the machine-readable type does not
+// separate a missing model from a missing route, so the marker list carries the
+// wordings observed from real deployments alongside the English ones.
 func probeBodyNamesAMissingModel(body []byte) bool {
 	lowered := strings.ToLower(string(body))
 	for _, marker := range []string{
 		"model_not_found", "model not found", "unknown model", "no such model", "model does not exist",
+		"模型不存在",
 	} {
 		if strings.Contains(lowered, marker) {
 			return true
