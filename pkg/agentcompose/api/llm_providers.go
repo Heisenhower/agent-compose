@@ -99,12 +99,12 @@ func (h *LLMHandler) UpdateProvider(ctx context.Context, req *connect.Request[ag
 // writtenProviderResponse converts a connection this handler just wrote, reading
 // the declared models once for both the response and the post-write probe.
 //
-// The write is committed before this runs, so an enrichment failure must not be
-// reported as a failed mutation: a client that retried a Create would hit
-// ErrAlreadyExists for configuration that was applied, and a connection that
-// exists would read like one that does not. The connection is reported without a
-// model list instead, which is how a connection that declares no models looks on
-// the wire, and a later read answers the same question exactly.
+// The write is committed before this runs, so a failed read must not be reported
+// as a failed mutation: a client that retried a Create would hit ErrAlreadyExists
+// for configuration that was applied, and a connection that exists would read
+// like one that does not. The connection is reported without a model list
+// instead, which is how a connection that declares no models looks on the wire,
+// and a later read answers the same question exactly.
 func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.Provider) (*agentcomposev2.LLMProvider, error) {
 	bindings, err := h.providers.ListLLMProviderModelConfigs(ctx)
 	if err != nil {
@@ -112,14 +112,7 @@ func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.
 		bindings = nil
 	}
 	h.probeUpstream(ctx, provider, bindings)
-	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(provider))
-	if err == nil {
-		return converted, nil
-	}
-	// A binding this write just stored does not decode: report the connection
-	// rather than the failure of the description that follows it.
-	slog.Warn("llm connection model list could not be reported", "connection", provider.ID, "error", err)
-	return providerToV2(provider, nil, h.cachedCapabilities(provider))
+	return providerToV2(provider, bindings, h.cachedCapabilities(provider))
 }
 
 // probeUpstream runs the synchronous post-write protocol check, bounded by the
