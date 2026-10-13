@@ -482,7 +482,7 @@ func loadLLMEnvConfig(logger *slog.Logger) llmEnvConfig {
 	runtimeBaseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("AGENT_COMPOSE_RUNTIME_BASE_URL")), "/")
 
 	llmTimeout := 60 * time.Second
-	if raw := os.Getenv("LLM_TIMEOUT"); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("LLM_TIMEOUT")); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err != nil {
 			logger.Warn("failed to parse LLM_TIMEOUT", "value", raw, "error", err)
 		} else {
@@ -504,7 +504,10 @@ func loadLLMEnvConfig(logger *slog.Logger) llmEnvConfig {
 		}
 	}
 	llmProbeTimeout := DefaultLLMProbeTimeout
-	if raw := os.Getenv("LLM_PROBE_TIMEOUT"); raw != "" {
+	// The value is trimmed like the other environment switches: a value copied
+	// into a .env file routinely carries the whitespace around it, and the probe
+	// budget otherwise silently fell back to the default.
+	if raw := strings.TrimSpace(os.Getenv("LLM_PROBE_TIMEOUT")); raw != "" {
 		if parsed, err := time.ParseDuration(raw); err != nil {
 			logger.Warn("failed to parse LLM_PROBE_TIMEOUT", "value", raw, "error", err)
 		} else if parsed <= 0 {
