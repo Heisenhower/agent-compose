@@ -74,17 +74,17 @@ for daemon_dockerfile in "$DAEMON_DOCKERFILE" "$LOCAL_DAEMON_DOCKERFILE"; do
     "configurable Buf install in $(basename "$daemon_dockerfile")"
 done
 
-# Both daemon builds keep the Go build cache out of the layer diff. Their stages
-# copy only /usr/local/go out of the golang image, so they do not inherit
-# GOPATH=/go: the module cache is /root/go/pkg/mod and a mount on /go/pkg/mod
-# caches a directory the build never touches. The published Dockerfile
-# deliberately does not mount the module cache: BuildKit restores the layer that
-# already carries it, while a restored cache mount would come back empty and
-# make the build re-download every module.
+# Both daemon builds keep the Go build cache out of the layer diff and leave the
+# module cache inside the layer. Their stages copy only /usr/local/go out of the
+# golang image, so they do not inherit GOPATH=/go: the module cache is
+# /root/go/pkg/mod. Mounting it would push it out of the layer, and the later
+# `RUN buf generate` compiles protoc-gen-go through `go tool` without a mount, so
+# it would find an empty cache and download the module graph again. A mount would
+# also not survive the cache export (moby/buildkit#3011).
 for daemon_dockerfile in "$DAEMON_DOCKERFILE" "$LOCAL_DAEMON_DOCKERFILE"; do
   forbid_regex "$(<"$daemon_dockerfile")" \
-    'target=/go/pkg/mod' \
-    "dead module cache mount path in $(basename "$daemon_dockerfile")"
+    'type=cache,target=[^[:space:]]*pkg/mod' \
+    "module cache mount in $(basename "$daemon_dockerfile")"
   require_regex "$(<"$daemon_dockerfile")" \
     '--mount=type=cache,target=/root/\.cache/go-build' \
     "Go build cache mount in $(basename "$daemon_dockerfile")"

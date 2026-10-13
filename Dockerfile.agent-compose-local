@@ -23,11 +23,12 @@ COPY go.mod go.sum ./
 COPY proto/go.mod proto/go.sum ./proto/
 # This stage copies only /usr/local/go out of the golang image, so it does not
 # inherit GOPATH=/go: the module cache the build reads and writes is
-# /root/go/pkg/mod. A cache mount on any other path caches nothing.
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    go env -w GOPROXY="${GOPROXY}" && go mod download
-RUN --mount=type=cache,target=/root/go/pkg/mod \
-    GOBIN=/usr/local/bin go install github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}
+# /root/go/pkg/mod, and it stays in the layer rather than behind a cache mount.
+# A mounted module cache is never written into the layer, and `RUN buf generate`
+# below compiles protoc-gen-go through `go tool` without a mount, so mounting it
+# would leave that step an empty cache and make it download the graph again.
+RUN go env -w GOPROXY="${GOPROXY}" && go mod download
+RUN GOBIN=/usr/local/bin go install github.com/bufbuild/buf/cmd/buf@${BUF_VERSION}
 COPY cmd ./cmd
 COPY internal ./internal
 COPY pkg ./pkg
@@ -37,8 +38,9 @@ COPY buf.yaml buf.gen.yaml ./
 RUN buf generate
 ARG VERSION=0
 ARG TARGETARCH
+# Only the build cache is mounted here: it is scratch, so keeping it out of the
+# layer diff has no effect on the steps that follow.
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    --mount=type=cache,target=/root/go/pkg/mod \
     target_arch="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     ./scripts/build-agent-compose-binary.sh \
       --profile linux-full \
