@@ -178,13 +178,47 @@ func applyCatalogModel(ctx context.Context, tx *sql.Tx, upsert catalogModelUpser
 
 // ensureCatalogModelIdentity declares a model identity the file references, and
 // reclaims the identity a previous projection released.
+//
+// It follows the same ownership rule the provider upsert applies
+// (CatalogProjectionOwnsScope) rather than accepting only its own rows. The
+// identity row is what the environment projection reads to decide whether another
+// source already serves the model it names, so a row the bootstrap kept owning
+// made the file's declaration invisible to it: the environment materialized a
+// second connection for the same model, and connection selection picked between
+// the two peers at random. Reclaiming the row is also what the manual promises
+// for an id the environment materialized on its own.
+//
+// An identity an explicit source owns is left alone. Model identities are shared
+// by id and the binding written by the caller is what makes the model servable, so
+// a model an LLM-service or run-scoped writer declared keeps its scope and its
+// metadata.
 func ensureCatalogModelIdentity(ctx context.Context, tx *sql.Tx, modelID string, now int64) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
+	scope, err := storedModelScope(ctx, tx, modelID)
+	if err != nil {
+		return err
+	}
+	if !llms.CatalogProjectionOwnsScope(scope) {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
 		VALUES(?, ?, '', 0, 1, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET enabled = 1, scope = excluded.scope, updated_at = excluded.updated_at
-		WHERE llm_model.scope IN (?, ?)`, modelID, modelID, llms.ProviderScopeCatalog, now, now,
-		llms.ProviderScopeCatalog, "")
+		WHERE llm_model.scope = ?`, modelID, modelID, llms.ProviderScopeCatalog, now, now, scope)
 	return err
+}
+
+// storedModelScope reads the scope of the stored model identity carrying modelID,
+// or "" when no row declares that id.
+func storedModelScope(ctx context.Context, tx *sql.Tx, modelID string) (string, error) {
+	var scope string
+	err := tx.QueryRowContext(ctx, `SELECT scope FROM llm_model WHERE id = ?`, modelID).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read model %q scope: %w", modelID, err)
+	}
+	return strings.TrimSpace(scope), nil
 }
 
 func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now int64) error {

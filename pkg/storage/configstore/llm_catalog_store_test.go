@@ -280,6 +280,43 @@ func TestIntegrationModelCatalogTakesOverEnvironmentOwnedProvider(t *testing.T) 
 	}
 }
 
+// The model id is the other half of the same ownership rule: an identity the
+// environment bootstrap materialized is reclaimed by the file that declares it,
+// exactly as a Provider id is. While the bootstrap kept owning the identity, the
+// environment projection could not see the file's declaration, materialized a
+// second connection for the same model, and connection selection picked between
+// the two peers at random.
+func TestIntegrationModelCatalogReclaimsTheModelIdentityTheEnvironmentMaterialized(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model")); err != nil {
+		t.Fatalf("project the environment: %v", err)
+	}
+	// The file declares the same model id under a connection of its own.
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("gateway", "shared-model")); err != nil {
+		t.Fatalf("the file declared a model id the environment materialized: %v", err)
+	}
+
+	var scope string
+	if err := store.DB().QueryRowContext(ctx, `SELECT scope FROM llm_model WHERE id = ?`, "shared-model").Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != llms.ProviderScopeCatalog {
+		t.Fatalf("model identity scope = %q, want the file to own the id it declares", scope)
+	}
+
+	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
+	conflict, ok := llms.AsDefaultConfigConflict(err)
+	if !ok {
+		t.Fatalf("environment projection error = %v, want it to yield to the file that now owns the model id", err)
+	}
+	if conflict.Kind != "model" || conflict.ID != "shared-model" || conflict.Scope != llms.ProviderScopeCatalog {
+		t.Fatalf("conflict = %#v", conflict)
+	}
+}
+
 // Releasing a row is not a claim the file can never take back: once the
 // environment bootstrap has taken the id over, declaring it in models.json again
 // takes the row back instead of failing every later startup.
