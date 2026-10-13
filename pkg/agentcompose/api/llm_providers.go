@@ -67,7 +67,7 @@ func (h *LLMHandler) ListProviders(ctx context.Context, req *connect.Request[age
 	}
 	result := make([]*agentcomposev2.LLMProvider, 0, len(page))
 	for _, provider := range page {
-		converted, err := providerToV2(provider, bindings, h.cachedCapabilities(provider))
+		converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
 		if err != nil {
 			return nil, ConnectErrorForDomain(err)
 		}
@@ -107,14 +107,14 @@ func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.
 		bindings = nil
 	}
 	h.probeUpstream(ctx, provider, bindings)
-	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(provider))
+	converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
 	if err == nil {
 		return converted
 	}
 	slog.Warn("llm connection model list could not be reported", "connection", provider.ID, "error", err)
 	// The model list is the only part of the conversion that carries an error, so
 	// describing the connection without it cannot fail.
-	summary, _ := providerToV2(provider, nil, h.cachedCapabilities(provider))
+	summary, _ := providerToV2(provider, nil, h.providerCapabilities(provider, bindings))
 	return summary
 }
 
@@ -132,6 +132,15 @@ func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider, 
 	}
 	model := declaredProbeModel(bindings, provider.ID)
 	h.prober.ProbeConnection(ctx, llms.ProviderForModel(provider, bindings, model), model)
+}
+
+// providerCapabilities reads the verdict probeUpstream wrote, which is keyed by
+// the endpoint the probe actually reached. Reading the cache with the connection
+// instead reported no capabilities for exactly the connections whose declared
+// model overrides the base url, because the probe stored its verdict under the
+// model endpoint and the response looked for it under the connection.
+func (h *LLMHandler) providerCapabilities(provider llms.Provider, bindings []llms.ProviderModelBinding) *llms.UpstreamProbeResult {
+	return h.cachedCapabilities(llms.ProviderForModel(provider, bindings, declaredProbeModel(bindings, provider.ID)))
 }
 
 // declaredProbeModel returns the first declared model id in stable order, or ""

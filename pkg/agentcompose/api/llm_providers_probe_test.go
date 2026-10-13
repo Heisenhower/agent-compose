@@ -131,6 +131,71 @@ func TestProviderWriteDoesNotProbeADisabledConnection(t *testing.T) {
 	}
 }
 
+// A verdict belongs to the endpoint the probe reached, so a connection whose
+// declared model overrides the base url must have its capabilities read from that
+// model endpoint. Reading the cache with the connection reported none for exactly
+// the connections whose models each have their own endpoint.
+func TestProviderResponsesReportCapabilitiesFromTheProbedModelEndpoint(t *testing.T) {
+	ctx := context.Background()
+	store := newLLMTestStore(t)
+	modelEndpoint := "https://model.example/v1"
+	recorder := &recordingUpstreamProber{cachedByBaseURL: map[string]llms.UpstreamProbeResult{
+		modelEndpoint: {
+			Endpoint: modelEndpoint, Model: "deployed",
+			Protocols: []llms.ProtocolProbe{{Protocol: llms.APIProtocolResponses, Outcome: llms.ProbeSupported}},
+		},
+	}}
+	handler := NewLLMHandler(nil, store).WithUpstreamProbe(recorder)
+	spec := &agentcomposev2.LLMProviderSpec{
+		Id: "gateway", BaseUrl: "https://connection.example/v1", Protocol: "responses", ApiKey: proto.String("upstream-secret"),
+		Models: &agentcomposev2.LLMProviderModels{Models: []*agentcomposev2.LLMModelSpec{
+			{Id: "deployed", BaseUrl: modelEndpoint},
+		}},
+	}
+
+	created, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec}))
+	if err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	assertProbedModelCapabilities(t, "the write response", created.Msg.GetProvider())
+
+	read, err := handler.GetProvider(ctx, connect.NewRequest(&agentcomposev2.GetProviderRequest{Id: "gateway"}))
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	assertProbedModelCapabilities(t, "the read response", read.Msg.GetProvider())
+
+	listed, err := handler.ListProviders(ctx, connect.NewRequest(&agentcomposev2.ListProvidersRequest{}))
+	if err != nil {
+		t.Fatalf("ListProviders: %v", err)
+	}
+	if providers := listed.Msg.GetProviders(); len(providers) != 1 {
+		t.Fatalf("listed providers = %#v, want one", providers)
+	} else {
+		assertProbedModelCapabilities(t, "the list response", providers[0])
+	}
+
+	if got := recorder.last().BaseURL; got != modelEndpoint {
+		t.Fatalf("probed endpoint = %q, want the declared model endpoint %q", got, modelEndpoint)
+	}
+	for _, endpoint := range recorder.capabilityEndpoints() {
+		if endpoint != modelEndpoint {
+			t.Fatalf("capabilities read for %q, want the probed model endpoint %q", endpoint, modelEndpoint)
+		}
+	}
+}
+
+func assertProbedModelCapabilities(t *testing.T, source string, provider *agentcomposev2.LLMProvider) {
+	t.Helper()
+	capabilities := provider.GetCapabilities()
+	if capabilities == nil {
+		t.Fatalf("%s reports no capabilities, want the probed model endpoint's verdict", source)
+	}
+	if capabilities.GetProbedModel() != "deployed" {
+		t.Fatalf("%s capabilities = %#v, want the verdict for the probed model", source, capabilities)
+	}
+}
+
 // failingBindingStore fails the model list a write is described with, while the
 // write itself still reaches the store underneath. A test can also replace the
 // list the store returns to describe a stored model the response cannot carry.
@@ -189,6 +254,10 @@ type recordingUpstreamProber struct {
 	mu     sync.Mutex
 	calls  []probeCall
 	cached map[string]llms.UpstreamProbeResult
+	// cachedByBaseURL answers the way the real prober does: a verdict belongs to
+	// the endpoint that was probed, not to the connection that reached it.
+	cachedByBaseURL map[string]llms.UpstreamProbeResult
+	capabilityCalls []llms.Provider
 }
 
 func (r *recordingUpstreamProber) ProbeConnection(_ context.Context, provider llms.Provider, model string) {
@@ -200,8 +269,23 @@ func (r *recordingUpstreamProber) ProbeConnection(_ context.Context, provider ll
 func (r *recordingUpstreamProber) Capabilities(provider llms.Provider) (llms.UpstreamProbeResult, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.capabilityCalls = append(r.capabilityCalls, provider)
+	if result, ok := r.cachedByBaseURL[provider.BaseURL]; ok {
+		return result, true
+	}
 	result, ok := r.cached[provider.ID]
 	return result, ok
+}
+
+// capabilityEndpoints reports the endpoints capabilities were read for.
+func (r *recordingUpstreamProber) capabilityEndpoints() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	endpoints := make([]string, 0, len(r.capabilityCalls))
+	for _, provider := range r.capabilityCalls {
+		endpoints = append(endpoints, provider.BaseURL)
+	}
+	return endpoints
 }
 
 func (r *recordingUpstreamProber) last() llms.Provider {

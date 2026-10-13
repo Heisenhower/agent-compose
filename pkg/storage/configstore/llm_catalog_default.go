@@ -75,17 +75,21 @@ func refuseCatalogDefault(ctx context.Context, tx *sql.Tx, declared string, caus
 	return &llms.CatalogDefaultDropped{Declared: declared, Stored: previous, Reason: cause.Error()}, nil
 }
 
-// storedDefaultResolves reports whether an enabled connection actually binds the
-// model a stored reference names, which is what makes it usable as the default.
+// storedDefaultResolves reports whether the connection a stored reference names is
+// still enabled, which is what makes the reference usable as the default.
+//
+// The model does not have to be one the connection enumerates: the catalog
+// resolves a default by naming its connection outright and keeps the model opaque,
+// so a literal model is served with the connection's defaults. Requiring a binding
+// here deleted an operator's working default whenever the file declared one it
+// could not apply.
 func storedDefaultResolves(ctx context.Context, tx *sql.Tx, reference string) (bool, error) {
-	providerID, modelID, ok := llms.SplitProviderModelReference(reference)
+	providerID, _, ok := llms.SplitProviderModelReference(reference)
 	if !ok {
 		return false, nil
 	}
 	var count int
-	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM llm_provider connection
-		JOIN llm_provider_model binding ON binding.provider_id = connection.id
-		WHERE connection.id = ? AND connection.enabled != 0 AND binding.model_id = ?`, providerID, modelID).Scan(&count)
+	err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM llm_provider WHERE id = ? AND enabled != 0`, providerID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("read whether the stored llm default resolves: %w", err)
 	}

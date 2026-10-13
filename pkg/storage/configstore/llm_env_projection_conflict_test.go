@@ -407,6 +407,60 @@ func TestIntegrationEnvProjectionKeepsAModelNoEnabledConnectionServes(t *testing
 	}
 }
 
+// The file projection reclaims a model identity's scope on every startup, while
+// the connection the environment materialized stays enabled. Reading that
+// connection as the identity's owner made the bootstrap treat its own row as
+// another source's and release it on the second start, so the deployment lost the
+// only connection that could serve the model.
+func TestIntegrationEnvProjectionKeepsItsOwnConnectionAcrossRestarts(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol := "https://catalog.example/v1", llms.APIProtocolResponses
+	file := llms.ModelCatalog{Providers: map[string]llms.CatalogProvider{
+		"local": {BaseURL: &baseURL, Protocol: &protocol, Models: []llms.CatalogModel{{ID: "gpt-4o"}}},
+	}}
+	provider, model := envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("gpt-4o")
+	for start := 1; start <= 2; start++ {
+		if err := store.ApplyModelCatalog(ctx, file); err != nil {
+			t.Fatalf("start %d: ApplyModelCatalog: %v", start, err)
+		}
+		if err := store.UpsertDefaultLLMConfig(ctx, provider, model); err != nil {
+			t.Fatalf("start %d: UpsertDefaultLLMConfig error = %v, want the bootstrap to keep its own connection", start, err)
+		}
+		providers, err := store.ListEnabledLLMProviders(ctx)
+		if err != nil {
+			t.Fatalf("start %d: ListEnabledLLMProviders: %v", start, err)
+		}
+		serving := false
+		for _, candidate := range providers {
+			if candidate.ID == llms.ProviderIDDefaultOpenAI {
+				serving = true
+			}
+		}
+		if !serving {
+			t.Fatalf("start %d: enabled connections = %#v, want the environment connection", start, providers)
+		}
+	}
+
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	selected, err := loaded.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	target, err := loaded.Resolve("", selected, nil)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", selected, err)
+	}
+	if target.Provider.ID != llms.ProviderIDDefaultOpenAI {
+		t.Fatalf("resolved by %q, want the environment connection %q", target.Provider.ID, llms.ProviderIDDefaultOpenAI)
+	}
+}
+
 // insertServingCatalogConnection declares a catalog identity that an enabled
 // connection actually binds, which is what makes it an owner the environment
 // bootstrap must not take an id from.

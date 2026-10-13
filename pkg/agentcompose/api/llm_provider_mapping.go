@@ -115,15 +115,15 @@ func (h *LLMHandler) providerResponse(ctx context.Context, provider llms.Provide
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}
-	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(provider))
+	converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}
 	return converted, nil
 }
 
-// cachedCapabilities returns the advisory probe verdict, or nil when probing is
-// disabled or the connection has not been probed yet.
+// cachedCapabilities returns the advisory probe verdict for the endpoint provider
+// names, or nil when probing is disabled or that endpoint has not been probed yet.
 func (h *LLMHandler) cachedCapabilities(provider llms.Provider) *llms.UpstreamProbeResult {
 	if h == nil || h.prober == nil {
 		return nil

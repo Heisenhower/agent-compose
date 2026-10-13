@@ -452,6 +452,51 @@ func TestIntegrationModelCatalogDropsADefaultOwnedByAnotherScope(t *testing.T) {
 	}
 }
 
+// The catalog resolves a default by naming its connection outright and keeps the
+// model opaque, so a stored default naming a model the connection does not
+// enumerate is still served. Refusing a file declaration must not delete it for
+// want of a binding row.
+func TestIntegrationModelCatalogKeepsALiteralStoredDefault(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol, fileKey := "https://gateway.example/v1", llms.APIProtocolChatCompletions, "gateway-key"
+	gateway := llms.CatalogProvider{BaseURL: &baseURL, Protocol: &protocol, APIKey: &fileKey, Models: []llms.CatalogModel{{ID: "declared-model"}}}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Providers: map[string]llms.CatalogProvider{"gateway": gateway}}); err != nil {
+		t.Fatalf("declare the file connection: %v", err)
+	}
+	if _, err := store.SetDefaultLLMModel(ctx, llms.ModelReference{ProviderID: "gateway", ModelID: "literal-model"}); err != nil {
+		t.Fatalf("set the operator default: %v", err)
+	}
+
+	err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
+		Default:   llms.CatalogDefault("ghost/whatever"),
+		Providers: map[string]llms.CatalogProvider{"gateway": gateway},
+	})
+	dropped, ok := llms.AsCatalogDefaultDropped(err)
+	if !ok {
+		t.Fatalf("ApplyModelCatalog error = %v, want the unknown connection reported", err)
+	}
+	if dropped.Declared != "ghost/whatever" || dropped.Stored != "" {
+		t.Fatalf("dropped = %#v, want the stored literal default kept", dropped)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "gateway" || modelID != "literal-model" {
+		t.Fatalf("stored default = %q/%q ok=%v err=%v, want the literal default kept", providerID, modelID, ok, err)
+	}
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	target, err := loaded.Resolve("", "literal-model", nil)
+	if err != nil {
+		t.Fatalf("Resolve(literal-model): %v", err)
+	}
+	if target.Provider.ID != "gateway" {
+		t.Fatalf("resolved by %q, want gateway", target.Provider.ID)
+	}
+}
+
 // The file is the only way to declare that the daemon has no catalog default: an
 // absent key keeps the stored reference so a runtime choice survives a restart,
 // and an explicitly empty one clears it so the environment fallback applies.
