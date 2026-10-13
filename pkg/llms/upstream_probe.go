@@ -194,7 +194,7 @@ func (p *UpstreamProber) LookupUpstreamProbe(provider Provider) (UpstreamProbeRe
 // re-probed, so repeated triggers do not repeat identical upstream traffic.
 func (p *UpstreamProber) Probe(ctx context.Context, req UpstreamProbeRequest) (UpstreamProbeResult, error) {
 	provider := req.Provider
-	result := UpstreamProbeResult{Endpoint: strings.TrimSpace(provider.BaseURL)}
+	result := UpstreamProbeResult{Endpoint: redactedProbeEndpoint(provider.BaseURL)}
 	if result.Endpoint == "" {
 		return result, fmt.Errorf("probe connection %q: a base url is required", provider.ID)
 	}
@@ -290,17 +290,17 @@ func (p *UpstreamProber) listModels(ctx context.Context, provider Provider, head
 	endpoint := upstreamModelsEndpoint(provider)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, summariseProbeDetail(err.Error())
+		return nil, probeDetail(provider, err.Error())
 	}
 	copyProbeHeaders(request.Header, headers)
 	response, err := p.client.Do(request)
 	if err != nil {
-		return nil, summariseProbeDetail(err.Error())
+		return nil, probeDetail(provider, err.Error())
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, probeBodyLimit))
 	if err != nil {
-		return nil, summariseProbeDetail("read response: " + err.Error())
+		return nil, probeDetail(provider, "read response: "+err.Error())
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return nil, fmt.Sprintf("HTTP %d", response.StatusCode)
@@ -340,18 +340,18 @@ func (p *UpstreamProber) probeProtocol(ctx context.Context, provider Provider, h
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, EndpointForProvider(provider, string(protocol)), bytes.NewReader(payload))
 	if err != nil {
-		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: summariseProbeDetail(err.Error())}
+		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: probeDetail(provider, err.Error())}
 	}
 	copyProbeHeaders(request.Header, headers)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := p.client.Do(request)
 	if err != nil {
-		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: summariseProbeDetail(err.Error())}
+		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: probeDetail(provider, err.Error())}
 	}
 	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(io.LimitReader(response.Body, probeBodyLimit))
 	if err != nil {
-		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: summariseProbeDetail("read response: " + err.Error())}
+		return ProtocolProbe{Protocol: protocol, Outcome: ProbeInconclusive, Detail: probeDetail(provider, "read response: "+err.Error())}
 	}
 	return ClassifyProbeResponse(protocol, response.StatusCode, body)
 }
@@ -374,6 +374,15 @@ func ClassifyProbeResponse(protocol Protocol, statusCode int, body []byte) Proto
 		probe.Outcome = ProbeInconclusive
 		probe.Detail = fmt.Sprintf("HTTP %d with a body that does not match %s: %s", statusCode, protocol, summariseProbeBody(body))
 	case statusCode == http.StatusNotFound || statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented:
+		// A 404 can also be the answer to a model the endpoint does not serve
+		// rather than to an absent route, and the probe names a model. The body
+		// is the only thing that tells the two apart, so a model-level rejection
+		// claims nothing rather than reporting the protocol as absent.
+		if statusCode == http.StatusNotFound && probeBodyNamesAMissingModel(body) {
+			probe.Outcome = ProbeInconclusive
+			probe.Detail = fmt.Sprintf("HTTP %d reported a model the endpoint does not serve: %s", statusCode, summariseProbeBody(body))
+			return probe
+		}
 		probe.Outcome = ProbeUnsupported
 		probe.Detail = fmt.Sprintf("HTTP %d", statusCode)
 	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
@@ -536,6 +545,74 @@ func copyProbeHeaders(destination, source http.Header) {
 // excerpt. It carries no request headers, so no credential reaches the log.
 func summariseProbeBody(body []byte) string {
 	return summariseProbeDetail(string(body))
+}
+
+// probeBodyNamesAMissingModel reports whether a response body is a gateway's
+// model-not-found error. The probe names a model it took from the connection or
+// from the endpoint's own model list, so a rejection that names the model says
+// nothing about whether the protocol is served.
+func probeBodyNamesAMissingModel(body []byte) bool {
+	lowered := strings.ToLower(string(body))
+	for _, marker := range []string{
+		"model_not_found", "model not found", "unknown model", "no such model", "model does not exist",
+	} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactedProbeEndpoint removes the credential-bearing parts of a connection's
+// stored base URL before the probe reports it. Only the API-managed write path
+// rejects userinfo and a query string; a connection materialized from the daemon
+// environment or from models.json may carry either, and neither belongs in a log.
+func redactedProbeEndpoint(baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		// Not a URL that can be rebuilt: keep what identifies the endpoint and drop
+		// everything a query or fragment could carry.
+		if index := strings.IndexAny(trimmed, "?#"); index >= 0 {
+			return trimmed[:index]
+		}
+		return trimmed
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String()
+}
+
+// probeDetail renders one probe failure for a report. The transport quotes the
+// URL it called — with the query string, and with the userinfo Go keeps while
+// masking only the password — so the connection's own credential-bearing parts
+// are removed from the excerpt as well.
+func probeDetail(provider Provider, detail string) string {
+	return summariseProbeDetail(redactProbeURL(detail, provider.BaseURL))
+}
+
+// redactProbeURL removes the parts of one stored base URL from a report string.
+// It is a text-level scrub because the URL reaches the detail inside a transport
+// error, already reassembled with the protocol path appended.
+func redactProbeURL(value, baseURL string) string {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return value
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return value
+	}
+	if parsed.User != nil {
+		value = strings.ReplaceAll(value, parsed.User.String()+"@", "")
+	}
+	if parsed.RawQuery != "" {
+		value = strings.ReplaceAll(value, "?"+parsed.RawQuery, "")
+	}
+	return value
 }
 
 func summariseProbeDetail(detail string) string {

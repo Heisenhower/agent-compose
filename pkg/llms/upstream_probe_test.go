@@ -348,6 +348,8 @@ func TestClassifyProbeResponse(t *testing.T) {
 		{name: "html success", protocol: ProtocolResponses, status: 200, body: `<html>ok</html>`, want: ProbeInconclusive},
 		{name: "wrong shape", protocol: ProtocolResponses, status: 200, body: `{"object":"chat.completion","choices":[]}`, want: ProbeInconclusive},
 		{name: "not found", protocol: ProtocolResponses, status: 404, body: `not found`, want: ProbeUnsupported},
+		{name: "not found naming a missing model", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"The model \u0060nope\u0060 does not exist","code":"model_not_found"}}`, want: ProbeInconclusive},
+		{name: "not found for an absent route", protocol: ProtocolResponses, status: 404, body: `{"error":{"message":"route not found"}}`, want: ProbeUnsupported},
 		{name: "method not allowed", protocol: ProtocolChatCompletions, status: 405, body: ``, want: ProbeUnsupported},
 		{name: "not implemented", protocol: ProtocolMessages, status: 501, body: ``, want: ProbeUnsupported},
 		{name: "unauthorized", protocol: ProtocolResponses, status: 401, body: `{"error":{"message":"bad key"}}`, want: ProbeAuthFailed},
@@ -362,6 +364,60 @@ func TestClassifyProbeResponse(t *testing.T) {
 			probe := ClassifyProbeResponse(tc.protocol, tc.status, []byte(tc.body))
 			if probe.Outcome != tc.want {
 				t.Fatalf("outcome = %q (detail %q), want %q", probe.Outcome, probe.Detail, tc.want)
+			}
+		})
+	}
+}
+
+// The endpoint a probe reports is logged and returned with the verdict, so the
+// credential a connection may carry in its URL must not survive into it.
+func TestUpstreamProberReportsARedactedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			writeProbeJSON(w, `{"object":"list","data":[{"id":"served-model"}]}`)
+		case "/v1/responses":
+			writeProbeJSON(w, `{"object":"response","output":[{"type":"message"}]}`)
+		case "/v1/chat/completions":
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	provider := probeTestProvider(strings.Replace(server.URL, "http://", "http://user:secret@", 1) + "?api-key=secret")
+	result, err := NewUpstreamProber(server.Client()).Probe(context.Background(), UpstreamProbeRequest{Provider: provider, Model: "served-model"})
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if strings.Contains(result.Endpoint, "secret") || strings.Contains(result.Endpoint, "api-key") {
+		t.Fatalf("reported endpoint = %q, want the credential-bearing parts removed", result.Endpoint)
+	}
+}
+
+// A failure detail quotes the URL the probe called, so the connection's own
+// credential-bearing parts are removed from the excerpt as well.
+func TestProbeDetailDropsTheEndpointCredentials(t *testing.T) {
+	provider := probeTestProvider("https://user:secret@gateway.example/v1?api-key=secret")
+	detail := probeDetail(provider, `Get "https://user:secret@gateway.example/v1/models?api-key=secret": dial tcp: timeout`)
+	if strings.Contains(detail, "secret") {
+		t.Fatalf("detail = %q, want the credential removed", detail)
+	}
+}
+
+func TestRedactedProbeEndpointDropsCredentials(t *testing.T) {
+	for _, tc := range []struct{ name, endpoint, want string }{
+		{name: "plain", endpoint: "https://gateway.example/v1", want: "https://gateway.example/v1"},
+		{name: "userinfo", endpoint: "https://user:secret@gateway.example/v1", want: "https://gateway.example/v1"},
+		{name: "query", endpoint: "https://gateway.example/v1?api-key=secret", want: "https://gateway.example/v1"},
+		{name: "padded", endpoint: "  https://gateway.example/v1  ", want: "https://gateway.example/v1"},
+		{name: "relative", endpoint: "gateway.example/v1?api-key=secret", want: "gateway.example/v1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactedProbeEndpoint(tc.endpoint); got != tc.want {
+				t.Fatalf("redactedProbeEndpoint(%q) = %q, want %q", tc.endpoint, got, tc.want)
 			}
 		})
 	}
