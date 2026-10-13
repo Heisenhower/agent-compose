@@ -113,6 +113,61 @@ func TestIntegrationEnvProjectionTakesOverAReleasedModelIdentity(t *testing.T) {
 	}
 }
 
+// A projection that yields releases the connection it materialized. Left enabled,
+// that row would stay a peer of the declaring source for the conflicting model,
+// and connection selection — which deliberately does not rank configuration
+// sources — would hand a run to either of them at random.
+func TestIntegrationEnvProjectionReleasesItsConnectionWhenItYields(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model")); err != nil {
+		t.Fatalf("first environment projection: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("gateway", "shared-model")); err != nil {
+		t.Fatalf("the file declares the same model: %v", err)
+	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model")); err == nil {
+		t.Fatal("the environment projection did not yield to the file that declares the model")
+	}
+	assertReleased(t, ctx, store.DB(), "llm_provider", llms.ProviderIDDefaultOpenAI)
+
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.DefaultModel(); got != "shared-model" {
+		t.Fatalf("DefaultModel() = %q, want the file's connection to serve the model", got)
+	}
+	for i := 0; i < 8; i++ {
+		target, err := loaded.Resolve("", "shared-model", llms.DefaultProtocolPreference())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target.Provider.ID != "gateway" {
+			t.Fatalf("resolved connection = %q, want only the file's connection to serve the model", target.Provider.ID)
+		}
+	}
+
+	// Releasing is not permanent: once the file stops declaring the model, the
+	// next projection materializes the environment connection again.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the declaration: %v", err)
+	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model")); err != nil {
+		t.Fatalf("recover the released connection: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, "https://env.example/v1")
+	recovered, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recovered.DefaultModel(); got != "shared-model" {
+		t.Fatalf("DefaultModel() = %q after recovery, want the environment model", got)
+	}
+}
+
 // A models.json Provider keeps its id while the file declares it, even though a
 // declaration without an apiKey is persisted disabled. Taking that id over
 // rewrote the row's scope, and the file projection can only rewrite a provider

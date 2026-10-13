@@ -32,6 +32,11 @@ func (s *llmStore) HasLLMProvider(ctx context.Context, providerID string) (bool,
 	return exists, nil
 }
 
+// UpsertDefaultLLMConfig materializes the daemon environment's LLM connection. A
+// projection that yields to another configuration source releases the connection
+// it materialized first, so yielding leaves nothing behind: the id it would have
+// claimed keeps its existing owner, and no row stays enabled beside it to serve
+// the same model as a peer in connection selection.
 func (s *llmStore) UpsertDefaultLLMConfig(ctx context.Context, provider llms.Provider, model llms.Model) error {
 	now := time.Now().UTC().Unix()
 	var ok bool
@@ -52,6 +57,18 @@ func (s *llmStore) UpsertDefaultLLMConfig(ctx context.Context, provider llms.Pro
 	if conflict, err := envProjectionConflict(ctx, tx, provider.ID, model.ID); err != nil {
 		return err
 	} else if conflict != nil {
+		// The projection yields, so the connection this bootstrap materialized in
+		// an earlier run must stop serving. Left enabled, it would be a peer of the
+		// declaring source for the conflicting model, and connection selection would
+		// choose between the two at random. Only the env_default scope is released:
+		// that scope is written by this projection alone, while an id another source
+		// owns is not the bootstrap's to release.
+		if err := releaseEnvProjectionConnection(ctx, tx, provider.ID, now); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit released llm default config: %w", err)
+		}
 		return conflict
 	}
 	// The bootstrap presentation can come from the environment (for example an
@@ -187,6 +204,18 @@ func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*l
 		return nil, nil
 	}
 	return &llmIDOwner{kind: kind, id: id, scope: scope}, nil
+}
+
+// releaseEnvProjectionConnection disables a connection the environment bootstrap
+// materialized and gives its id back, so a later projection can declare it again.
+// Only the env_default scope is released: it is written by that projection alone,
+// and an id carried by any other scope belongs to the source that declared it.
+func releaseEnvProjectionConnection(ctx context.Context, tx *sql.Tx, providerID string, now int64) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE id = ? AND scope = ?`,
+		now, providerID, llms.ProviderScopeEnvDefault); err != nil {
+		return fmt.Errorf("release environment connection %q: %w", providerID, err)
+	}
+	return nil
 }
 
 func upsertLLMProvider(ctx context.Context, tx *sql.Tx, provider llms.Provider, auth llms.ProviderAuth, now int64) error {
