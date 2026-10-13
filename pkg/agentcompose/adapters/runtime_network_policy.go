@@ -59,13 +59,10 @@ func (d driverSandboxNetworkPolicy) inputs(ctx context.Context, session *domain.
 	return declaration, engineEndpoints, nil
 }
 
-// policy returns the driver-boundary policy for session, or nil when the
-// sandbox declared no network policy (D3: undeclared is not deny). A declared
-// policy always yields a non-nil policy, permissive ones included, so a caller
-// can tell "undeclared" from "declared allow" rather than guessing.
 // effectivePolicy compiles the policy this sandbox's declaration resolves to:
 // the same compilation the forward proxy decides with, so a generation a
 // decision records and the generation recorded for a runtime are comparable.
+// An undeclared sandbox resolves to the pass-through policy (D3).
 func (d driverSandboxNetworkPolicy) effectivePolicy(ctx context.Context, session *domain.Sandbox) (egress.Policy, error) {
 	declaration, engineEndpoints, err := d.inputs(ctx, session)
 	if err != nil {
@@ -78,19 +75,30 @@ func (d driverSandboxNetworkPolicy) effectivePolicy(ctx context.Context, session
 	return policy, nil
 }
 
-func (d driverSandboxNetworkPolicy) policy(ctx context.Context, session *domain.Sandbox) (*driverpkg.SandboxNetworkPolicy, error) {
+// resolve returns both the driver-boundary policy and the compiled policy the
+// engine decides with, from one declaration read. A caller that needs both must
+// not resolve twice: an apply landing between the two reads would attach one
+// declaration to the driver and record another declaration's generation.
+//
+// The driver policy is nil when the sandbox declared no network policy (D3:
+// undeclared is not deny), while a declared policy always yields a non-nil one,
+// permissive ones included, so a caller can tell "undeclared" from "declared
+// allow". The compiled policy is the pass-through policy in the undeclared case.
+func (d driverSandboxNetworkPolicy) resolve(ctx context.Context, session *domain.Sandbox) (*driverpkg.SandboxNetworkPolicy, egress.Policy, error) {
 	declaration, engineEndpoints, err := d.inputs(ctx, session)
 	if err != nil {
-		return nil, err
+		return nil, egress.Policy{}, err
+	}
+	effective, err := egress.EffectiveNetworkPolicy(declaration, engineEndpoints)
+	if err != nil {
+		return nil, egress.Policy{}, fmt.Errorf("compile the egress policy for sandbox %s: %w", session.Summary.ID, err)
 	}
 	if declaration == nil {
-		return nil, nil
+		return nil, effective, nil
 	}
-	// The compose declaration carries no deny domains yet, so the engine
-	// supplies none rather than inventing an exemption list.
 	policy, err := driverpkg.SandboxNetworkPolicyFromDeclaration(declaration, engineEndpoints, nil)
 	if err != nil {
-		return nil, fmt.Errorf("compile sandbox network policy for %s: %w", session.Summary.ID, err)
+		return nil, egress.Policy{}, fmt.Errorf("compile sandbox network policy for %s: %w", session.Summary.ID, err)
 	}
-	return &policy, nil
+	return &policy, effective, nil
 }

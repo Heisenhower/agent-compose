@@ -228,7 +228,9 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 	// The driver-boundary policy is derived from the project's normalized
 	// declaration, not from the domain session, and only a declared policy sets
 	// it. An undeclared sandbox keeps a nil policy and today's behavior (D3).
-	policy, err := r.networkPolicies.policy(ctx, session)
+	// The effective policy is compiled from the same read, so the generation
+	// recorded below always belongs to the declaration the driver was given.
+	policy, effective, err := r.networkPolicies.resolve(ctx, session)
 	if err != nil {
 		return nil, domain.SandboxEgressPolicy{}, err
 	}
@@ -256,10 +258,7 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 	// a later start can tell which policy the runtime that is running was built
 	// for, because a declaration read at creation cannot be recovered from the
 	// declaration that is in force then.
-	record, err := r.egressRuntimePolicy(ctx, session, policy, mediated)
-	if err != nil {
-		return nil, domain.SandboxEgressPolicy{}, err
-	}
+	record := r.egressRuntimePolicy(session, policy, effective, mediated)
 	return driverSandbox, record, nil
 }
 
@@ -268,11 +267,7 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 // reaches the runtime. The generation comes from the same compilation the proxy
 // uses (policyForSession), so a decision the proxy records carries a generation
 // that can be compared with this one.
-func (r driverRuntimeAdapter) egressRuntimePolicy(ctx context.Context, session *domain.Sandbox, policy *driverpkg.SandboxNetworkPolicy, mediated bool) (domain.SandboxEgressPolicy, error) {
-	effective, err := r.networkPolicies.effectivePolicy(ctx, session)
-	if err != nil {
-		return domain.SandboxEgressPolicy{}, err
-	}
+func (r driverRuntimeAdapter) egressRuntimePolicy(session *domain.Sandbox, policy *driverpkg.SandboxNetworkPolicy, effective egress.Policy, mediated bool) domain.SandboxEgressPolicy {
 	application := egress.ApplicationOpen
 	switch {
 	case mediated:
@@ -287,7 +282,7 @@ func (r driverRuntimeAdapter) egressRuntimePolicy(ctx context.Context, session *
 			application = egress.ApplicationDriverApplied
 		}
 	}
-	return sandboxEgressPolicyRecord(egress.RuntimePolicy{Generation: effective.Generation(), Application: application}), nil
+	return sandboxEgressPolicyRecord(egress.RuntimePolicy{Generation: effective.Generation(), Application: application})
 }
 
 func (r driverRuntimeAdapter) EnsureSandbox(ctx context.Context, session *domain.Sandbox, vmState domain.VMState, proxyState domain.ProxyState) (domain.SandboxVMInfo, error) {
