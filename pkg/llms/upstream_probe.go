@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"time"
@@ -479,18 +481,43 @@ func responseMatchesProtocol(protocol Protocol, body []byte) bool {
 
 // upstreamModelsEndpoint derives /models from the endpoint one protocol uses,
 // so it follows the same base-path normalization as a real call.
+//
+// The protocol path is removed from the URL's path instead of from the raw
+// string. A base URL may carry a query string — an Azure OpenAI deployment names
+// its api-version that way — and a suffix match against the whole URL never hits
+// then, which appended /models after the query and probed a URL no deployment
+// serves. The query survives the rewrite, because it is part of the deployment's
+// address rather than of the protocol path.
 func upstreamModelsEndpoint(provider Provider) string {
 	protocol := ProtocolResponses
 	if NormalizeProviderType(provider.ProviderType) == ProviderFamilyAnthropic {
 		protocol = ProtocolMessages
 	}
-	endpoint := strings.TrimRight(EndpointForProvider(provider, string(protocol)), "/")
-	for _, suffix := range []string{"/responses", "/chat/completions", "/messages"} {
-		if strings.HasSuffix(endpoint, suffix) {
-			return strings.TrimSuffix(endpoint, suffix) + "/models"
+	stripProtocolPath := func(endpointPath string) string {
+		for _, suffix := range []string{"/responses", "/chat/completions", "/messages"} {
+			if strings.HasSuffix(endpointPath, suffix) {
+				return strings.TrimSuffix(endpointPath, suffix)
+			}
 		}
+		return endpointPath
 	}
-	return endpoint + "/models"
+	endpoint := strings.TrimRight(EndpointForProvider(provider, string(protocol)), "/")
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		// EndpointForProvider builds its result from parsed URLs, so this is a
+		// malformed configuration rather than a shape to reason about: ask for
+		// the models path under whatever the operator typed.
+		return stripProtocolPath(endpoint) + "/models"
+	}
+	cleanPath := strings.TrimRight(stripProtocolPath(parsed.Path), "/")
+	if cleanPath == "" {
+		cleanPath = "/"
+	}
+	parsed.Path = path.Join(cleanPath, "models")
+	// The original path may have been percent-encoded; the rewritten one is not,
+	// so drop the raw form and let String re-encode the path it now holds.
+	parsed.RawPath = ""
+	return parsed.String()
 }
 
 func copyProbeHeaders(destination, source http.Header) {

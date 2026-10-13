@@ -393,6 +393,31 @@ func TestUpstreamModelsEndpointFollowsProviderFamily(t *testing.T) {
 	}
 }
 
+// A base URL may carry a query string — an Azure OpenAI deployment names its
+// api-version that way — and the protocol path has to be removed from the URL's
+// path rather than from the raw string. With a query present the suffix match
+// never hit, so the probe appended /models after the query and asked for a URL
+// no deployment serves.
+func TestUpstreamModelsEndpointKeepsAQueryString(t *testing.T) {
+	openai := probeTestProvider("https://gateway.example/openai/deployments/deployment?api-version=2024-01-01")
+	if got := upstreamModelsEndpoint(openai); got != "https://gateway.example/openai/deployments/deployment/v1/models?api-version=2024-01-01" {
+		t.Fatalf("configured openai models endpoint = %q", got)
+	}
+	anthropic := openai
+	anthropic.ProviderType = ProviderFamilyAnthropic
+	anthropic.DefaultWireAPI = APIProtocolMessages
+	if got := upstreamModelsEndpoint(anthropic); got != "https://gateway.example/openai/deployments/deployment/models?api-version=2024-01-01" {
+		t.Fatalf("configured anthropic models endpoint = %q", got)
+	}
+	// The bootstrap scope stores a bare base URL, so its endpoint carries no
+	// protocol path yet — and its query is still not part of the models path.
+	bootstrap := openai
+	bootstrap.Scope = ProviderScopeEnvDefault
+	if got := upstreamModelsEndpoint(bootstrap); got != "https://gateway.example/openai/deployments/deployment/models?api-version=2024-01-01" {
+		t.Fatalf("bootstrap models endpoint = %q", got)
+	}
+}
+
 func probeTestProvider(baseURL string) Provider {
 	return Provider{
 		ID:             "gateway",
