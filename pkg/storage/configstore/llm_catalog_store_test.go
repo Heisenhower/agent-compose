@@ -226,6 +226,55 @@ func TestIntegrationModelCatalogReleasesWhatTheFileNoLongerDeclares(t *testing.T
 
 // assertReleased checks that a row the file projection stopped declaring kept its
 // data but gave up the scope that made it an owner.
+// A file that stops declaring a model must not leave an API-owned identity
+// behind. The identity is what tells the environment bootstrap that an id already
+// has an owner, so a row no binding and no default reference names any more would
+// make a later LLM_MODEL yield its whole projection.
+func TestIntegrationModelCatalogReleaseSweepsAnIdentityOnlyItsBindingKeptAlive(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+	key := "api-key"
+
+	// An API connection declares the model, and the file binds the same id to a
+	// connection of its own.
+	if _, err := store.CreateLLMProvider(ctx, llms.ProviderReplacement{
+		ID: "api-gateway", BaseURL: "https://api.example/v1", Protocol: llms.APIProtocolResponses, APIKey: &key,
+		Models: declaredModels(llms.ModelSpec{ID: "shared-model"}),
+	}); err != nil {
+		t.Fatalf("create the api connection: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("file-gateway", "shared-model")); err != nil {
+		t.Fatalf("declare the file connection: %v", err)
+	}
+
+	// The API connection goes away. Its model identity stays because the file still
+	// binds the id, which is what keeps the environment bootstrap out of the way.
+	if err := store.DeleteLLMProvider(ctx, "api-gateway"); err != nil {
+		t.Fatalf("delete the api connection: %v", err)
+	}
+	if count := countModelIdentities(t, ctx, store.DB(), "shared-model"); count != 1 {
+		t.Fatalf("model identities after the deletion = %d, want the file binding to keep the identity", count)
+	}
+
+	// The file drops the model too, so nothing references the identity any more.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the file model: %v", err)
+	}
+	if count := countModelIdentities(t, ctx, store.DB(), "shared-model"); count != 0 {
+		t.Fatalf("model identities after the release = %d, want the unreferenced api identity swept", count)
+	}
+}
+
+func countModelIdentities(t *testing.T, ctx context.Context, db *sql.DB, modelID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM llm_model WHERE id = ?`, modelID).Scan(&count); err != nil {
+		t.Fatalf("count model identities for %q: %v", modelID, err)
+	}
+	return count
+}
+
 func assertReleased(t *testing.T, ctx context.Context, db *sql.DB, table, id string) {
 	t.Helper()
 	var scope string

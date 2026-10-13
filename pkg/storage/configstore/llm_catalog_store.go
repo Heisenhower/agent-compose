@@ -62,6 +62,17 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	if err := applyCatalogDefault(ctx, tx, catalog.Default, now); err != nil {
 		return err
 	}
+	// The file may have dropped a model whose binding was the only thing keeping
+	// an API-owned identity alive, and a default reference it replaced may have
+	// been the same for a literal model an operator chose. An unreferenced
+	// identity still claims the id: the environment bootstrap treats a row that
+	// belongs to another source as an owner and yields its whole projection, so a
+	// leftover would silently disable LLM_MODEL. The sweep runs here rather than
+	// beside each release because only the fully projected state says which ids
+	// are still referenced.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit model catalog transaction: %w", err)
 	}
@@ -285,13 +296,6 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
 		return fmt.Errorf("store model catalog default: %w", err)
-	}
-	// The file's reference replaced whatever was stored. A literal model an
-	// operator had made the default through the LLM service is kept alive by that
-	// stored reference alone, so it is unreferenced now and must not keep claiming
-	// its model id.
-	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
-		return err
 	}
 	return nil
 }
