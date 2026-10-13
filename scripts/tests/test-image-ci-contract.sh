@@ -74,6 +74,22 @@ for daemon_dockerfile in "$DAEMON_DOCKERFILE" "$LOCAL_DAEMON_DOCKERFILE"; do
     "configurable Buf install in $(basename "$daemon_dockerfile")"
 done
 
+# Both daemon builds keep the Go build cache out of the layer diff and leave the
+# module cache inside the layer. Their stages copy only /usr/local/go out of the
+# golang image, so they do not inherit GOPATH=/go: the module cache is
+# /root/go/pkg/mod. Mounting it would push it out of the layer, and the later
+# `RUN buf generate` compiles protoc-gen-go through `go tool` without a mount, so
+# it would find an empty cache and download the module graph again. A mount would
+# also not survive the cache export (moby/buildkit#3011).
+for daemon_dockerfile in "$DAEMON_DOCKERFILE" "$LOCAL_DAEMON_DOCKERFILE"; do
+  forbid_regex "$(<"$daemon_dockerfile")" \
+    'type=cache,target=[^[:space:]]*pkg/mod' \
+    "module cache mount in $(basename "$daemon_dockerfile")"
+  require_regex "$(<"$daemon_dockerfile")" \
+    '--mount=type=cache,target=/root/\.cache/go-build' \
+    "Go build cache mount in $(basename "$daemon_dockerfile")"
+done
+
 for guest_dockerfile in "$GUEST_DOCKERFILE" "$ARCHLINUX_GUEST_DOCKERFILE"; do
   require_regex "$(<"$guest_dockerfile")" \
     '^ARG[[:space:]]+GO_VERSION=1\.26\.7$' \
@@ -100,6 +116,39 @@ for guest_dockerfile in "$GUEST_DOCKERFILE" "$ARCHLINUX_GUEST_DOCKERFILE"; do
   require_regex "$(<"$guest_dockerfile")" \
     '^ARG[[:space:]]+PIP_TRUSTED_HOST[[:space:]]*$' \
     "empty trusted PyPI host default in $(basename "$guest_dockerfile")"
+done
+
+# Every guest image installs the runtime dependency trees before the sources
+# arrive. npm ci reads only the manifests, so a source-only change has to
+# repackage the runtime instead of downloading the tree again. Line ordering is
+# the assertion: manifests first, then npm ci, then the full source tree.
+require_dependency_layer() { # $1=Dockerfile $2=manifest COPY $3=source COPY $4=label
+  local dockerfile=$1 manifest_copy=$2 source_copy=$3 label=$4
+  local manifest_line source_line npm_ci_line
+  manifest_line=$(grep -nF -- "$manifest_copy" "$dockerfile" | head -n 1 | cut -d: -f1 || true)
+  source_line=$(grep -nF -- "$source_copy" "$dockerfile" | head -n 1 | cut -d: -f1 || true)
+  if [[ -z $manifest_line || -z $source_line ]]; then
+    fail "$label dependency layer in $(basename "$dockerfile")"
+    return
+  fi
+  npm_ci_line=$(awk -v start="$manifest_line" 'NR > start && /npm ci/ { print NR; exit }' "$dockerfile")
+  if [[ -z $npm_ci_line ]] || ((manifest_line >= npm_ci_line)) || ((npm_ci_line >= source_line)); then
+    fail "$label dependencies in $(basename "$dockerfile") are not installed before its sources are copied"
+  fi
+}
+
+for guest_dockerfile in "$GUEST_DOCKERFILE" "$ARCHLINUX_GUEST_DOCKERFILE" "$DEVBOX_DOCKERFILE"; do
+  [[ -f $guest_dockerfile ]] || continue
+  require_dependency_layer "$guest_dockerfile" \
+    'COPY runtime/javascript/package.json runtime/javascript/package-lock.json /tmp/agent-compose-runtime/' \
+    'COPY runtime/javascript /tmp/agent-compose-runtime' \
+    'guest runtime'
+done
+for guest_dockerfile in "$GUEST_DOCKERFILE" "$ARCHLINUX_GUEST_DOCKERFILE"; do
+  require_dependency_layer "$guest_dockerfile" \
+    'COPY runtime/agent-compose-runtime-sdk/package.json runtime/agent-compose-runtime-sdk/package-lock.json /tmp/agent-compose-runtime-sdk/' \
+    'COPY runtime/agent-compose-runtime-sdk /tmp/agent-compose-runtime-sdk' \
+    'guest runtime SDK'
 done
 
 guest_builder_source=$(<"$GUEST_BUILDER")
@@ -269,6 +318,8 @@ if [[ -n $build_job ]]; then
     'per-image/per-architecture GHA cache read'
   require_regex "$build_job" 'cache-to:[[:space:]]*type=gha,mode=max,scope=\$\{\{[[:space:]]*matrix\.name[[:space:]]*\}\}-\$\{\{[[:space:]]*matrix\.platform\.arch' \
     'per-image/per-architecture GHA cache write'
+  require_regex "$build_job" "^    if:[[:space:]]*github\\.event_name[[:space:]]*!=[[:space:]]*[\"']pull_request[\"']" \
+    'build job skipping pull requests'
 
   upload_step=$(step_containing "$build_job" 'actions/upload-artifact@')
   if [[ -z $upload_step ]]; then
@@ -333,6 +384,8 @@ if [[ -n $archlinux_build_job ]]; then
     'Arch Linux guest amd64 GHA cache read'
   require_regex "$archlinux_build_job" 'cache-to:[[:space:]]*type=gha,mode=max,scope=agent-compose-guest-archlinux-amd64' \
     'Arch Linux guest amd64 GHA cache write'
+  require_regex "$archlinux_build_job" "^    if:[[:space:]]*github\\.event_name[[:space:]]*!=[[:space:]]*[\"']pull_request[\"']" \
+    'Arch Linux guest build skipping pull requests'
 
   archlinux_upload_step=$(step_containing "$archlinux_build_job" 'actions/upload-artifact@')
   if [[ -z $archlinux_upload_step ]]; then
@@ -352,6 +405,16 @@ if [[ -n $image_smoke_job ]]; then
     'image-smoke dependency on native builds'
   require_regex "$image_smoke_job" '^[[:space:]]*-[[:space:]]*build-archlinux-guest[[:space:]]*$' \
     'image-smoke dependency on Arch Linux guest build'
+  require_regex "$image_smoke_job" '^[[:space:]]*-[[:space:]]*setup[[:space:]]*$' \
+    'image-smoke dependency on setup'
+  require_regex "$image_smoke_job" 'always\(\)' \
+    'image-smoke running when the native builds are skipped'
+  require_regex "$image_smoke_job" "needs\\.setup\\.result[[:space:]]*==[[:space:]]*[\"']success[\"']" \
+    'image-smoke setup success gate'
+  require_regex "$image_smoke_job" "needs\\.build\\.result[[:space:]]*!=[[:space:]]*[\"']failure[\"']" \
+    'image-smoke failed daemon build gate'
+  require_regex "$image_smoke_job" "needs\\.build-archlinux-guest\\.result[[:space:]]*!=[[:space:]]*[\"']failure[\"']" \
+    'image-smoke failed Arch Linux build gate'
   require_regex "$image_smoke_job" 'runs-on:[[:space:]]*ubuntu-latest' 'image-smoke amd64 runner'
   require_regex "$image_smoke_job" 'linux/amd64' 'image-smoke amd64 platform'
   require_regex "$image_smoke_job" 'go install github\.com/bufbuild/buf/cmd/buf@v1\.68\.1' \
