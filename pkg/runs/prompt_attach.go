@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +27,7 @@ type preparedPromptInteraction struct {
 	LogsPath           string
 	AgentConfig        execution.AgentConfig
 	SchemaPath         string
+	SkillNames         []string
 	Env                map[string]string
 	ManagedEnv         map[string]string
 	VMState            domain.VMState
@@ -106,11 +108,21 @@ func (c *Controller) preparePromptInteractionRuntime(ctx context.Context, runCtx
 		env = llms.MergeManagedExecEnv(env, managedEnv)
 		agentConfig.Model = promptAttachRuntimeModel(agentConfig, managedEnv)
 	}
+	var skillNames []string
+	if providerNeedsNamedSkills(agentConfig.Provider) {
+		skillNames, err = execution.PublishedAgentSkillNames(sandbox)
+		if err != nil {
+			// The session still starts, with whichever names could be
+			// trusted; this warning is what makes the missing skills visible.
+			slog.Warn("some published agent skills are unavailable to the interactive session", "run_id", run.RunID, "sandbox_id", sandbox.Summary.ID, "provider", agentConfig.Provider, "named_skills", skillNames, "error", err)
+		}
+	}
 	return preparedPromptInteraction{
 		Run:                run,
 		LogsPath:           logsPath,
 		AgentConfig:        agentConfig,
 		SchemaPath:         schemaPath,
+		SkillNames:         skillNames,
 		Env:                env,
 		ManagedEnv:         managedEnv,
 		VMState:            vmState,
@@ -175,7 +187,7 @@ func (c *Controller) runPromptInteractionSession(ctx context.Context, runCtx int
 	defer func() { _ = interaction.CloseSend() }()
 	projector := newPersistentPromptAttachProjector(context.WithoutCancel(ctx), persistentPromptAttachProjectorDeps{Run: run, Sandbox: sandbox, LogsPath: logsPath, Hub: c.runLogs, EventStore: c.configDB})
 	input := &promptWrapperInput{interaction: interaction}
-	if err := input.Start(prepared.AgentConfig, c.config, prepared.SchemaPath); err != nil {
+	if err := input.Start(promptStartFrame{Agent: prepared.AgentConfig, Config: c.config, SchemaPath: prepared.SchemaPath, SkillNames: prepared.SkillNames}); err != nil {
 		transition.ExitCode = 1
 		transition.Error = fmt.Sprintf("agent execution failed: %v", err)
 		return transition, err
@@ -313,7 +325,39 @@ type promptWrapperInput struct {
 	seq         int
 }
 
-func (w *promptWrapperInput) Start(agent execution.AgentConfig, config *appconfig.Config, schemaPath string) error {
+// promptStartFrame bundles what the guest runner needs to open an interactive
+// session: the agent, the guest paths, and the per-run schema and skills.
+type promptStartFrame struct {
+	Agent      execution.AgentConfig
+	Config     *appconfig.Config
+	SchemaPath string
+	// SkillNames are the skills sandbox preparation published for this agent.
+	// They reach the runner only for providers that need them; see
+	// providerNeedsNamedSkills.
+	SkillNames []string
+}
+
+// providerNeedsNamedSkills reports whether a provider's runner loads only the
+// skills named for the session. pi and dsh do, so an attached session without
+// names sees none. codex, claude and opencode discover the skills directory on
+// their own; naming skills for them changes what they load and, for codex, the
+// system context that decides whether a stored thread is resumed.
+//
+// This follows what the harness versions pinned in
+// guest-images/Dockerfile.agent-compose-guest were observed to do
+// (CODEX_VERSION 0.146.0, CLAUDE_CODE_VERSION 2.1.220, OPENCODE_VERSION 1.18.9).
+// Nothing asserts it automatically: recheck when one of those is bumped.
+func providerNeedsNamedSkills(provider string) bool {
+	switch domain.NormalizeAgentKind(provider) {
+	case "pi", "dsh":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *promptWrapperInput) Start(start promptStartFrame) error {
+	agent, config, schemaPath := start.Agent, start.Config, start.SchemaPath
 	frame := map[string]any{
 		"v":         1,
 		"seq":       w.nextSeq(),
@@ -328,6 +372,9 @@ func (w *promptWrapperInput) Start(agent execution.AgentConfig, config *appconfi
 	}
 	if strings.TrimSpace(schemaPath) != "" {
 		frame["outputSchemaFile"] = strings.TrimSpace(schemaPath)
+	}
+	if len(start.SkillNames) > 0 && providerNeedsNamedSkills(agent.Provider) {
+		frame["skills"] = start.SkillNames
 	}
 	return w.send(frame)
 }

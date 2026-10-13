@@ -221,3 +221,80 @@ func TestAgentSkillsConcurrentPreparationSerializesPublication(t *testing.T) {
 	}
 	assertSkillProjectionMatches(t, session, skills)
 }
+
+func TestPublishedAgentSkillNamesFollowsLastPreparation(t *testing.T) {
+	publishedNames := func(t *testing.T, session *domain.Sandbox) []string {
+		t.Helper()
+		names, err := PublishedAgentSkillNames(session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return names
+	}
+	session, skills := skillProjectionFixture(t, 1)
+	if got := publishedNames(t, session); len(got) != 0 {
+		t.Fatalf("names before preparation = %v, want none", got)
+	}
+	projectSkills(t, session, skills)
+	if got := publishedNames(t, session); !reflect.DeepEqual(got, []string{"pdf"}) {
+		t.Fatalf("names after preparation = %v, want [pdf]", got)
+	}
+	projectSkills(t, session, nil)
+	if got := publishedNames(t, session); len(got) != 0 {
+		t.Fatalf("names after skills were removed = %v, want none", got)
+	}
+	if got := publishedNames(t, nil); got != nil {
+		t.Fatalf("names without a sandbox = %v, want nil", got)
+	}
+}
+
+// A runner fails to start on a named skill it cannot find, so a listed skill
+// that is gone from disk is dropped from the names and reported instead.
+func TestPublishedAgentSkillNamesOmitsSkillsMissingFromDisk(t *testing.T) {
+	session, skills := skillProjectionFixture(t, 1)
+	skills = append(skills, ResolvedAgentSkill{Name: "docx", LocalDir: skills[0].LocalDir})
+	projectSkills(t, session, skills)
+	gone := skills[0].Name
+	if err := os.RemoveAll(filepath.Join(HostAgentSkillsDir(session), gone)); err != nil {
+		t.Fatal(err)
+	}
+	names, err := PublishedAgentSkillNames(session)
+	if err == nil || !strings.Contains(err.Error(), gone) {
+		t.Fatalf("err = %v, want it to name the missing skill %q", err, gone)
+	}
+	if !reflect.DeepEqual(names, []string{skills[1].Name}) {
+		t.Fatalf("names = %v, want only the skill still on disk %q", names, skills[1].Name)
+	}
+}
+
+// An unusable manifest must not read as "no skills declared": the caller would
+// start the runner without names and the agent would silently lose its skills.
+func TestPublishedAgentSkillNamesReportsUntrustedManifest(t *testing.T) {
+	for name, damage := range map[string]func(t *testing.T, manifestPath string){
+		"undecodable": func(t *testing.T, manifestPath string) {
+			if err := os.WriteFile(manifestPath, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"newer version": func(t *testing.T, manifestPath string) {
+			if err := os.WriteFile(manifestPath, []byte(`{"version":3,"names":["pdf"]}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"missing beside skill directories": func(t *testing.T, manifestPath string) {
+			if err := os.Remove(manifestPath); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			session, skills := skillProjectionFixture(t, 1)
+			projectSkills(t, session, skills)
+			damage(t, filepath.Join(HostAgentSkillsDir(session), agentSkillsManifestFileName))
+			names, err := PublishedAgentSkillNames(session)
+			if err == nil || len(names) != 0 {
+				t.Fatalf("names = %v, err = %v, want no names and an error", names, err)
+			}
+		})
+	}
+}

@@ -9,8 +9,50 @@ import (
 	"testing"
 	"time"
 
+	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
+	"github.com/chaitin/agent-compose/pkg/execution"
 )
+
+// A runner that only loads explicitly named skills sees none unless the start
+// frame names them, so the frame must carry what sandbox preparation published.
+// Providers that discover skills themselves keep a frame without names.
+func TestPromptAttachStartFrameNamesPublishedSkills(t *testing.T) {
+	config := &appconfig.Config{GuestStateRoot: "/state", GuestWorkspacePath: "/workspace", GuestHomePath: "/root"}
+	startFrame := func(t *testing.T, provider string, skillNames []string) map[string]any {
+		t.Helper()
+		interaction := &closingRuntimeInteraction{}
+		input := &promptWrapperInput{interaction: interaction}
+		if err := input.Start(promptStartFrame{Agent: execution.AgentConfig{Provider: provider}, Config: config, SkillNames: skillNames}); err != nil {
+			t.Fatal(err)
+		}
+		if len(interaction.sent) != 1 {
+			t.Fatalf("sent frames = %d, want 1", len(interaction.sent))
+		}
+		var frame map[string]any
+		if err := json.Unmarshal(interaction.sent[0].Data, &frame); err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+
+	published := []string{"review", "needs_underscore"}
+	for _, provider := range []string{"dsh", "deepseek", "pi", "pi-agent"} {
+		frame := startFrame(t, provider, published)
+		skills, _ := frame["skills"].([]any)
+		if len(skills) != 2 || skills[0] != "review" || skills[1] != "needs_underscore" {
+			t.Fatalf("%s start frame skills = %#v, want the published names", provider, frame["skills"])
+		}
+	}
+	for _, provider := range []string{"codex", "claude", "opencode", ""} {
+		if _, ok := startFrame(t, provider, published)["skills"]; ok {
+			t.Fatalf("%q start frame names skills, want none for a provider that discovers them", provider)
+		}
+	}
+	if _, ok := startFrame(t, "dsh", nil)["skills"]; ok {
+		t.Fatal("start frame names skills for an agent that declares none")
+	}
+}
 
 func TestAttachInputPumpsCloseRuntimeInputOnReceiveError(t *testing.T) {
 	receiveErr := errors.New("stream reset")
