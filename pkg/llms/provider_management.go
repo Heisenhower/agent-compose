@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	domain "github.com/chaitin/agent-compose/pkg/model"
+	"golang.org/x/net/http/httpguts"
 )
 
 // ProviderScopeAPI identifies providers managed through the public LLM service.
@@ -258,12 +259,27 @@ func normalizeModelSpec(model ModelSpec) (ModelSpec, error) {
 	if model.MaxOutputTokens > MaxModelOutputTokens {
 		return ModelSpec{}, fmt.Errorf("%w: model %q max_output_tokens must not exceed %d", domain.ErrInvalidArgument, model.ID, MaxModelOutputTokens)
 	}
-	for key, value := range model.Headers {
-		if strings.TrimSpace(key) == "" || strings.ContainsAny(key+value, "\r\n") {
-			return ModelSpec{}, fmt.Errorf("%w: model %q has an invalid header", domain.ErrInvalidArgument, model.ID)
-		}
+	if err := checkHeaderNames(model.Headers); err != nil {
+		return ModelSpec{}, fmt.Errorf("%w: model %q: %w", domain.ErrInvalidArgument, model.ID, err)
 	}
 	return model, nil
+}
+
+// checkHeaderNames reports the first declared header the HTTP transport would
+// refuse: a name outside the field-name grammar, or a value it cannot send. The
+// transport rejects both when a request is finally made, so checking here turns a
+// configuration mistake into an invalid-argument answer instead of a failure on
+// every run that uses the connection.
+func checkHeaderNames(headers map[string]string) error {
+	for name, value := range headers {
+		if name != strings.TrimSpace(name) || !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("header %q is not a valid HTTP field name", name)
+		}
+		if !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("header %q has an invalid value", name)
+		}
+	}
+	return nil
 }
 
 // ValidateModelSpecProtocol reports whether a model protocol fits the connection

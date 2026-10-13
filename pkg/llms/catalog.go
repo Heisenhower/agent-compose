@@ -188,6 +188,9 @@ func validateCatalogProvider(id string, provider CatalogProvider) error {
 	if provider.Protocol == nil || !supportedCatalogProtocol(*provider.Protocol) {
 		return fmt.Errorf("provider %q requires a supported protocol", id)
 	}
+	if err := checkHeaderNames(provider.Headers); err != nil {
+		return fmt.Errorf("provider %q: %w", id, err)
+	}
 	seen := make(map[string]struct{}, len(provider.Models))
 	for _, model := range provider.Models {
 		modelID := strings.TrimSpace(model.ID)
@@ -210,6 +213,9 @@ func validateCatalogProvider(id string, provider CatalogProvider) error {
 		}
 		if model.MaxOutputTokens != nil && *model.MaxOutputTokens <= 0 {
 			return fmt.Errorf("provider %q model %q maxOutputTokens must be positive", id, modelID)
+		}
+		if err := checkHeaderNames(model.Headers); err != nil {
+			return fmt.Errorf("provider %q model %q: %w", id, modelID, err)
 		}
 		// The catalog declares the cap as a JSON number while the public contract
 		// reports it as a 32-bit integer, so a larger cap would reach a client as a

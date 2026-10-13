@@ -127,6 +127,9 @@ func TestNormalizeProviderModels(t *testing.T) {
 		{name: "cap above the reportable range", model: ModelSpec{ID: "gpt-4o", MaxOutputTokens: MaxModelOutputTokens + 1}},
 		{name: "blank header", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{" ": "value"}}},
 		{name: "header newline", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{"x-tier": "batch\r\nx-key: injected"}}},
+		{name: "header name with a space", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{"X Tier": "batch"}}},
+		{name: "empty header name", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{"": "batch"}}},
+		{name: "header name separator", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{"x:tier": "batch"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := ProviderReplacement{ID: "gateway-1", BaseURL: "https://example.com/v1", Protocol: APIProtocolResponses, APIKey: &key, Models: &[]ModelSpec{tc.model}}
