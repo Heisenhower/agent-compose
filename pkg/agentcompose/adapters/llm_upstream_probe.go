@@ -24,13 +24,15 @@ type LLMUpstreamProber struct {
 	timeout time.Duration
 	logger  *slog.Logger
 	prober  *llms.UpstreamProber
-	// sweep tracks the background startup sweep so shutdown can wait for it.
-	sweep sync.WaitGroup
-	// sweepCancel ends the context the running sweep probes under. A sweep only
-	// exists between StartProbeConfigured and the wait that observes its end, so
-	// the field is set there and consumed by WaitProbeConfigured.
+	// sweepMu guards the handle shutdown uses to end the background startup sweep
+	// and to wait for it: sweepCancel ends the context it probes under, and
+	// sweepDone is closed by its goroutine. Both are published together before the
+	// goroutine starts, so a wait either observes the sweep it must stop — and
+	// then waits for that sweep's own goroutine to return — or observes that no
+	// sweep exists.
 	sweepMu     sync.Mutex
 	sweepCancel context.CancelFunc
+	sweepDone   chan struct{}
 }
 
 // NewLLMUpstreamProber builds the prober from daemon configuration.
@@ -74,14 +76,20 @@ func (p *LLMUpstreamProber) StartProbeConfigured(ctx context.Context, store llms
 		ctx = context.Background()
 	}
 	sweepCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	// The goroutine is started while the handle is held, so a wait can never
+	// cancel a sweep whose goroutine has not been started yet.
 	p.sweepMu.Lock()
 	p.sweepCancel = cancel
-	p.sweepMu.Unlock()
-	p.sweep.Add(1)
+	p.sweepDone = done
 	go func() {
-		defer p.sweep.Done()
+		defer close(done)
+		// Releasing the derived context here keeps its timer and parent link from
+		// outliving the sweep.
+		defer cancel()
 		p.ProbeConfigured(sweepCtx, store)
 	}()
+	p.sweepMu.Unlock()
 }
 
 // WaitProbeConfigured stops a running sweep and waits for it to finish, honoring
@@ -97,34 +105,24 @@ func (p *LLMUpstreamProber) WaitProbeConfigured(ctx context.Context) error {
 	if p == nil {
 		return nil
 	}
-	p.cancelSweep()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		p.sweep.Wait()
-	}()
+	p.sweepMu.Lock()
+	cancel, done := p.sweepCancel, p.sweepDone
+	p.sweepMu.Unlock()
+	if done == nil {
+		return nil
+	}
+	cancel()
 	if ctx == nil {
 		<-done
 		return nil
 	}
+	// The wait is on the sweep's own goroutine, so the returned error is the only
+	// signal that a sweep outlived the deadline.
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
 		return fmt.Errorf("wait for the llm upstream probe sweep: %w", ctx.Err())
-	}
-}
-
-// cancelSweep ends the context of a sweep that is still running. It is safe to
-// call when no sweep exists, and it clears the cancel func so a second wait does
-// not cancel a sweep that started after the first one finished.
-func (p *LLMUpstreamProber) cancelSweep() {
-	p.sweepMu.Lock()
-	cancel := p.sweepCancel
-	p.sweepCancel = nil
-	p.sweepMu.Unlock()
-	if cancel != nil {
-		cancel()
 	}
 }
 
