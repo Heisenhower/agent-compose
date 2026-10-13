@@ -204,6 +204,89 @@ func TestEgressProxyTunnelsAnAllowedConnect(t *testing.T) {
 	}
 }
 
+// TestEgressProxyTunnelsBytesSentWithTheConnectRequest covers the hijacked
+// buffer: a client may pipeline its first tunnel bytes with the CONNECT request,
+// and those bytes sit in the server's bufio reader once the connection is
+// hijacked. Copying from the bare connection would leave them there and stall
+// the client.
+func TestEgressProxyTunnelsBytesSentWithTheConnectRequest(t *testing.T) {
+	policies := &proxyTestPolicies{policies: []egress.Policy{allowEndpointPolicy("allowed.example:443/https")}}
+	upstreamSide, upstream := net.Pipe()
+	defer func() { _ = upstreamSide.Close() }()
+	proxyServer, _ := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.Dial = func(context.Context, string, string) (net.Conn, error) { return upstream, nil }
+	})
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	// One write, so the request and the first tunnel bytes reach the proxy
+	// together and the bytes are buffered before it hijacks.
+	request := "CONNECT allowed.example:443 HTTP/1.1\r\nHost: allowed.example:443\r\n" +
+		"Proxy-Authorization: " + proxyBasicAuth(testSandboxID, testCredential) + "\r\n\r\nping"
+	if _, err := connection.Write([]byte(request)); err != nil {
+		t.Fatalf("writing CONNECT with pipelined bytes: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodConnect})
+	if err != nil {
+		t.Fatalf("reading the tunnel response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", response.StatusCode)
+	}
+	if err := upstreamSide.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("setting the read deadline: %v", err)
+	}
+	received := make([]byte, 4)
+	if _, err := io.ReadFull(upstreamSide, received); err != nil {
+		t.Fatalf("reading the pipelined bytes: %v", err)
+	}
+	if string(received) != "ping" {
+		t.Fatalf("upstream received %q, want %q", received, "ping")
+	}
+}
+
+// TestEgressProxyBoundsAnUpstreamThatNeverAnswers pins the response-header
+// bound: a dial that succeeds proves nothing about an upstream that accepts the
+// connection and then stays silent, which would otherwise pin the handler
+// goroutine, and its daemon connection, for as long as the guest keeps the
+// request open.
+func TestEgressProxyBoundsAnUpstreamThatNeverAnswers(t *testing.T) {
+	policies := &proxyTestPolicies{policies: []egress.Policy{allowEndpointPolicy("allowed.example:80/http")}}
+	upstreamSide, upstream := net.Pipe()
+	defer func() { _ = upstreamSide.Close() }()
+	// Drain the forwarded request so it is fully written, then stay silent: the
+	// bound under test is the wait for response headers, not the write.
+	go func() { _, _ = io.Copy(io.Discard, upstreamSide) }()
+	proxyServer, _ := newTestEgressProxy(t, policies, func(options *EgressProxyOptions) {
+		options.DialTimeout = 100 * time.Millisecond
+		options.Dial = func(context.Context, string, string) (net.Conn, error) { return upstream, nil }
+	})
+	server := httptest.NewServer(proxyServer)
+	defer server.Close()
+
+	connection := dialProxy(t, server)
+	defer func() { _ = connection.Close() }()
+	request := "GET http://allowed.example/ HTTP/1.1\r\nHost: allowed.example\r\n" +
+		"Proxy-Authorization: " + proxyBasicAuth(testSandboxID, testCredential) + "\r\n\r\n"
+	if _, err := connection.Write([]byte(request)); err != nil {
+		t.Fatalf("writing the request: %v", err)
+	}
+	if err := connection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("setting the read deadline: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("reading the response: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 after the response-header bound", response.StatusCode)
+	}
+}
+
 func TestEgressProxyDeniesAnUndeclaredDestination(t *testing.T) {
 	policies := &proxyTestPolicies{policies: []egress.Policy{allowEndpointPolicy("allowed.example:443/https")}}
 	proxyServer, recorder := newTestEgressProxy(t, policies)
@@ -700,6 +783,12 @@ func TestEgressDestinationFromRequest(t *testing.T) {
 		{name: "connect to an opaque port", method: http.MethodConnect, host: "db.example:5432", want: egressDestination{host: "db.example", port: 5432, protocol: egress.ProtocolTCP}},
 		{name: "absolute form without a port", method: http.MethodGet, url: "http://api.example/path", want: egressDestination{host: "api.example", port: 80, protocol: egress.ProtocolHTTP}},
 		{name: "absolute form with a port", method: http.MethodGet, url: "http://api.example:8080/path", want: egressDestination{host: "api.example", port: 8080, protocol: egress.ProtocolHTTP}},
+		{name: "absolute form https without a port", method: http.MethodGet, url: "https://api.example/path", want: egressDestination{host: "api.example", port: 443, protocol: egress.ProtocolHTTPS}},
+		{name: "absolute form https with a port", method: http.MethodGet, url: "https://api.example:8443/path", want: egressDestination{host: "api.example", port: 8443, protocol: egress.ProtocolHTTPS}},
+		{name: "absolute form with an unsupported scheme", method: http.MethodGet, url: "ftp://api.example/path", wantErr: true},
+		// An explicit zero is preserved so endpoint validation refuses it,
+		// rather than silently becoming the protocol's default port.
+		{name: "absolute form with an explicit zero port", method: http.MethodGet, url: "http://api.example:0/path", want: egressDestination{host: "api.example", port: 0, protocol: egress.ProtocolHTTP}},
 		{name: "upper case host is normalized", method: http.MethodConnect, host: "API.Example:443", want: egressDestination{host: "api.example", port: 443, protocol: egress.ProtocolHTTPS}},
 		{name: "connect without a port", method: http.MethodConnect, host: "api.example", wantErr: true},
 		{name: "no destination at all", method: http.MethodGet, wantErr: true},

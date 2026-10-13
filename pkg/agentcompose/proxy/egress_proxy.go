@@ -410,7 +410,11 @@ func (p *EgressProxy) tunnel(w http.ResponseWriter, r *http.Request, destination
 		_, _ = io.Copy(dst, src)
 		copyDone <- struct{}{}
 	}
-	go copyOne(upstream, client)
+	// The client-to-upstream direction reads through the hijacked buffer, not
+	// the bare connection: bytes the HTTP server already read into its bufio
+	// reader would otherwise be skipped, stalling a client that sends data
+	// immediately after CONNECT.
+	go copyOne(upstream, buffer)
 	go copyOne(client, upstream)
 	<-copyDone
 	return nil
@@ -432,7 +436,12 @@ func (p *EgressProxy) forwardHTTP(w http.ResponseWriter, r *http.Request, destin
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return p.dial(ctx, network, address)
 		},
-		DisableKeepAlives: true,
+		// The dial bound only covers connecting. An upstream that accepts the
+		// connection and then never answers would pin this handler goroutine, and
+		// its daemon connection, for as long as the guest keeps the request open,
+		// so the response has its own bound derived from the same dial budget.
+		ResponseHeaderTimeout: p.dialTimeout,
+		DisableKeepAlives:     true,
 	}
 	defer transport.CloseIdleConnections()
 	response, err := transport.RoundTrip(outbound)
@@ -461,19 +470,24 @@ func egressDestinationFromRequest(r *http.Request) (egressDestination, error) {
 	}
 	hostname := host
 	port := 0
+	portPresent := false
 	if parsedHost, parsedPort, err := net.SplitHostPort(host); err == nil {
 		hostname = parsedHost
 		port, err = parsePort(parsedPort)
 		if err != nil {
 			return egressDestination{}, err
 		}
+		portPresent = true
 	}
 	hostname = strings.ToLower(strings.Trim(strings.TrimSpace(hostname), "[]"))
 	if hostname == "" {
 		return egressDestination{}, errors.New("the request names no destination host")
 	}
-	protocol := egress.ProtocolHTTP
-	if r.Method == http.MethodConnect {
+	// Every branch below assigns the protocol or returns, so it is declared
+	// without a default rather than initialized and immediately overwritten.
+	var protocol egress.Protocol
+	switch {
+	case r.Method == http.MethodConnect:
 		protocol = egress.ProtocolTCP
 		switch port {
 		case 443:
@@ -481,11 +495,26 @@ func egressDestinationFromRequest(r *http.Request) (egressDestination, error) {
 		case 80:
 			protocol = egress.ProtocolHTTP
 		}
+	case r.URL == nil || strings.EqualFold(r.URL.Scheme, "http"):
+		protocol = egress.ProtocolHTTP
+	case strings.EqualFold(r.URL.Scheme, "https"):
+		// An absolute-form request names its scheme, and ignoring it would dial
+		// an https request to :80 in plaintext and record it under a protocol the
+		// declaration never named.
+		protocol = egress.ProtocolHTTPS
+	default:
+		return egressDestination{}, fmt.Errorf("the request names unsupported scheme %q", r.URL.Scheme)
 	}
-	if port == 0 {
-		if protocol == egress.ProtocolHTTP {
+	// A port that was present is honored even when it is invalid, so an explicit
+	// :0 reaches endpoint validation and is refused instead of silently
+	// becoming the protocol's default port.
+	if !portPresent {
+		switch protocol {
+		case egress.ProtocolHTTP:
 			port = 80
-		} else {
+		case egress.ProtocolHTTPS:
+			port = 443
+		default:
 			return egressDestination{}, errors.New("the request names no destination port")
 		}
 	}
