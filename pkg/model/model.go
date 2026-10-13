@@ -538,7 +538,12 @@ type VMState struct {
 	// creation because the answer cannot be recovered afterwards: a runtime
 	// created before a declaration existed keeps the egress it started with, and
 	// only this record can say which policy that was.
-	EgressPolicy SandboxEgressPolicy `json:"egress_policy,omitempty"`
+	//
+	// omitzero, not omitempty: omitempty has no effect on a struct, so the key
+	// was always written even when every field was zero. A record with nothing
+	// recorded is now genuinely absent, which readers already treat as "no fact
+	// recorded" because the zero value is what a missing key decodes to.
+	EgressPolicy SandboxEgressPolicy `json:"egress_policy,omitzero"`
 }
 
 // SandboxEgressPolicy is the persisted form of the egress fact recorded for a
