@@ -217,6 +217,7 @@ func TestNormalizeSandboxNetwork(t *testing.T) {
 			got := normalized.Agents[0].PolicyBlock().Network
 			if got == nil {
 				t.Fatal("network declaration was dropped during normalization")
+				return
 			}
 			if got.Default != tc.want.Default {
 				t.Fatalf("default = %q, want %q", got.Default, tc.want.Default)

@@ -145,6 +145,7 @@ func TestEnsureSandboxCarriesDeclaredNetworkPolicyToDriverBoundary(t *testing.T)
 			}
 			if policy == nil {
 				t.Fatal("NetworkPolicy = nil, want the declared policy at the driver boundary")
+				return
 			}
 			if got := policy.DenyByDefault(); got != tt.wantDenyByDef {
 				t.Fatalf("DenyByDefault() = %v, want %v (policy %+v)", got, tt.wantDenyByDef, policy)
