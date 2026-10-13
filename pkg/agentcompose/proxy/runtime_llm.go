@@ -200,6 +200,10 @@ func (h runtimeLLMHandler) handle(c echo.Context, inboundProtocol protocolbridge
 			Body:             upstreamBody,
 			Target:           target,
 			UpstreamProtocol: upstreamProtocol,
+			// The guest asks for the model by the name it was given. A Grok
+			// reply is recognized from that name, not from the connection's
+			// configured model, which may be blank on a passthrough.
+			RequestedModel: llmReq.Model,
 		})
 	}
 	upstreamBody, err := llms.EncodeRuntimeUpstreamRequest(inboundProtocol, upstreamProtocol, target, llmReq)
@@ -302,6 +306,7 @@ type proxyTransparentRequest struct {
 	Body             []byte
 	Target           llms.ResolvedTarget
 	UpstreamProtocol protocolbridge.Protocol
+	RequestedModel   string
 }
 
 func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparentRequest) error {
@@ -344,10 +349,28 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 	}
 	llms.CopyRuntimeResponseHeaders(c.Response().Header(), resp.Header)
 	c.Response().WriteHeader(resp.StatusCode)
-	if err := llms.CopyRuntimeResponseBody(c.Response().Writer, resp); err != nil && !errors.Is(err, http.ErrAbortHandler) {
+	if err := copyTransparentRuntimeResponse(c.Response().Writer, resp, req.RequestedModel, upstreamProtocol); err != nil && !errors.Is(err, http.ErrAbortHandler) {
 		return err
 	}
 	return nil
+}
+
+// copyTransparentRuntimeResponse relays a same-protocol upstream body.
+// Grok Responses replies lose zero fractions in function_call arguments
+// so Codex can parse the integers it advertises as JSON numbers.
+func copyTransparentRuntimeResponse(dst io.Writer, resp *http.Response, model string, upstreamProtocol protocolbridge.Protocol) error {
+	if grokModel := llms.GrokResponsesModel(model, upstreamProtocol); grokModel != "" {
+		if llms.RuntimeResponseShouldFlush(resp.Header) {
+			return llms.CopyRuntimeResponseBodyForModel(dst, resp, grokModel)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<20))
+		if err != nil {
+			return err
+		}
+		_, err = dst.Write(llms.RewriteGrokIntegralToolArgs(grokModel, body))
+		return err
+	}
+	return llms.CopyRuntimeResponseBody(dst, resp)
 }
 
 func (h runtimeLLMHandler) httpClient() HTTPDoer {
