@@ -67,28 +67,33 @@ func (s *projectStore) ListLatestProjectRunsForSandboxes(ctx context.Context, sa
 	if len(ids) == 0 {
 		return map[string]ProjectRunRecord{}, nil
 	}
-	query := projects.SelectProjectRunSQL() + ` WHERE sandbox_id IN (` + placeholders(len(ids)) + `) ORDER BY updated_at DESC, created_at DESC, run_id DESC`
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	rows, err := s.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query latest project runs for sandboxes: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
 	result := make(map[string]ProjectRunRecord, len(ids))
-	for rows.Next() {
-		item, err := projects.ScanProjectRun(rows.Scan)
+	if err := forEachIDBatch(ids, func(batch []string) error {
+		query := projects.SelectProjectRunSQL() + ` WHERE sandbox_id IN (` + placeholders(len(batch)) + `) ORDER BY updated_at DESC, created_at DESC, run_id DESC`
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := s.db.QueryContext(ctx, query, args...)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("query latest project runs for sandboxes: %w", err)
 		}
-		if _, exists := result[item.SandboxID]; !exists {
-			result[item.SandboxID] = item
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			item, err := projects.ScanProjectRun(rows.Scan)
+			if err != nil {
+				return err
+			}
+			if _, exists := result[item.SandboxID]; !exists {
+				result[item.SandboxID] = item
+			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate latest project runs for sandboxes: %w", err)
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate latest project runs for sandboxes: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

@@ -247,28 +247,33 @@ func (s *projectStore) ListProjectAgentsByIDs(ctx context.Context, agentIDs []st
 	if len(ids) == 0 {
 		return map[string]ProjectAgentRecord{}, nil
 	}
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		args[i] = id
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, short_id, project_id, agent_name, revision, provider, model, image, driver, scheduler_enabled, spec_json, created_at, updated_at
-		FROM project_agent WHERE id IN (`+placeholders(len(ids))+`) ORDER BY updated_at DESC, project_id ASC, agent_name ASC`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query project agents by managed agent ids: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
 	result := make(map[string]ProjectAgentRecord, len(ids))
-	for rows.Next() {
-		item, err := projects.ScanProjectAgent(rows.Scan)
+	if err := forEachIDBatch(ids, func(batch []string) error {
+		args := make([]any, len(batch))
+		for i, id := range batch {
+			args[i] = id
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT id, name, short_id, project_id, agent_name, revision, provider, model, image, driver, scheduler_enabled, spec_json, created_at, updated_at
+			FROM project_agent WHERE id IN (`+placeholders(len(batch))+`) ORDER BY updated_at DESC, project_id ASC, agent_name ASC`, args...)
 		if err != nil {
-			return nil, err
+			return fmt.Errorf("query project agents by managed agent ids: %w", err)
 		}
-		if _, exists := result[item.ID]; !exists {
-			result[item.ID] = item
+		defer func() { _ = rows.Close() }()
+		for rows.Next() {
+			item, err := projects.ScanProjectAgent(rows.Scan)
+			if err != nil {
+				return err
+			}
+			if _, exists := result[item.ID]; !exists {
+				result[item.ID] = item
+			}
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate project agents by managed agent ids: %w", err)
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate project agents by managed agent ids: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
