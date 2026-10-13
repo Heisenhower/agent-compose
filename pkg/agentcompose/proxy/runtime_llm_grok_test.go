@@ -25,6 +25,16 @@ func TestRuntimeLLMFacadeRewritesGrokIntegralFloats(t *testing.T) {
 	if other.Code != http.StatusOK || !strings.Contains(other.Body.String(), "66121.0") {
 		t.Fatalf("non-grok response status=%d body=%s", other.Code, other.Body.String())
 	}
+
+	errorBody := `{"error":{"message":"upstream rejected timeout_ms 66121.0"}}`
+	failed := serveRuntimeLLM(t, "grok-4.7", &fakeRuntimeLLMHTTPClient{
+		status: http.StatusBadRequest,
+		header: http.Header{"Content-Type": []string{"application/json"}, "Content-Length": []string{"57"}},
+		body:   errorBody,
+	})
+	if failed.Code != http.StatusBadRequest || failed.Body.String() != errorBody {
+		t.Fatalf("grok error status=%d body=%s", failed.Code, failed.Body.String())
+	}
 }
 
 func serveRuntimeLLM(t *testing.T, model string, client *fakeRuntimeLLMHTTPClient) *httptest.ResponseRecorder {

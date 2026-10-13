@@ -347,6 +347,14 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 		_, err = c.Response().Writer.Write(clientBody)
 		return err
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		llms.CopyRuntimeResponseHeaders(c.Response().Header(), resp.Header)
+		c.Response().WriteHeader(resp.StatusCode)
+		if err := llms.CopyRuntimeResponseBody(c.Response().Writer, resp); err != nil && !errors.Is(err, http.ErrAbortHandler) {
+			return err
+		}
+		return nil
+	}
 	llms.CopyRuntimeResponseHeaders(c.Response().Header(), resp.Header)
 	c.Response().WriteHeader(resp.StatusCode)
 	if err := copyTransparentRuntimeResponse(c.Response().Writer, resp, req.RequestedModel, upstreamProtocol); err != nil && !errors.Is(err, http.ErrAbortHandler) {
@@ -355,9 +363,10 @@ func (h runtimeLLMHandler) proxyTransparent(c echo.Context, req proxyTransparent
 	return nil
 }
 
-// copyTransparentRuntimeResponse relays a same-protocol upstream body.
-// Grok Responses replies lose zero fractions in function_call arguments
-// so Codex can parse the integers it advertises as JSON numbers.
+// copyTransparentRuntimeResponse relays a successful same-protocol upstream
+// body. Grok Responses replies lose zero fractions in function_call
+// arguments so Codex can parse the integers it advertises as JSON numbers.
+// Error bodies stay on the plain copy path.
 func copyTransparentRuntimeResponse(dst io.Writer, resp *http.Response, model string, upstreamProtocol protocolbridge.Protocol) error {
 	if grokModel := llms.GrokResponsesModel(model, upstreamProtocol); grokModel != "" {
 		if llms.RuntimeResponseShouldFlush(resp.Header) {
