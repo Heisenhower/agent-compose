@@ -19,6 +19,15 @@ import (
 // enforcement descriptor, swapping in the forward-proxy descriptor exactly when
 // the engine will mediate — so an admission report cannot claim a mechanism the
 // seam would not install.
+//
+// One input is deliberately not shared: RequireSandboxNetworkEnforcement also
+// reads the deny domains of the driver-boundary policy, and
+// egress.NetworkDeclaration carries none, so this report states the gaps it can
+// see. No project can reach the difference today — the compose schema has no
+// field for deny domains and every production call builds the policy with none —
+// so the two entries agree on every declaration that can be written. Whoever
+// makes deny domains declarable must report them here in the same change, which
+// is what TestAdmissionReportCannotSeeUnappliedDenyDomains fails on.
 
 // AgentNetworkPolicyReport is the auditable account of one agent's declared
 // outbound network policy and the mechanism that will apply it.
@@ -92,7 +101,11 @@ func ReportAgentNetworkPolicy(agent, driver string, declaration *egress.NetworkD
 
 	// The engine never claims a limit it does not install: the parts this
 	// mechanism cannot apply are named, including the address constraint the
-	// creation path also refuses to present as applied.
+	// creation path also refuses to present as applied. A declared deny domain is
+	// not in this list because the declaration cannot carry one yet; the creation
+	// path reads them from the driver-boundary policy, so they have to reach this
+	// function through egress.NetworkDeclaration in the same change that makes
+	// them declarable (see the file comment).
 	addresses := egress.AddressConstrainedAllowances(declaration.Allow)
 	switch {
 	case !enforcement.AppliesAllowEntries:

@@ -216,7 +216,11 @@ func RequireSandboxNetworkEnforcement(driver, sandboxID string, policy *SandboxN
 		}
 		// A mediated sandbox can still have its deny domains applied by the
 		// driver's own in-guest filter, so the gap exists only when neither
-		// mechanism delivers them.
+		// mechanism delivers them. No declaration carries deny domains yet, so a
+		// project cannot reach this guard today; the admission report in
+		// network_policy_report.go reads only the declaration and therefore cannot
+		// see them, and has to be extended in the same change that makes them
+		// declarable.
 		if denied := len(policy.DenyDomains); denied > 0 && !enforcement.AppliesDenyDomains && !driverEnforcement.AppliesDenyDomains {
 			return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapPartial,
 				fmt.Sprintf("%d declared deny domain(s) are not applied by %s or by the %s driver mechanism (%s)", denied, enforcement.Mechanism, driverEnforcement.Driver, driverEnforcement.Mechanism))

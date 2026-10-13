@@ -1,6 +1,8 @@
 package driver
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -156,5 +158,84 @@ func TestReportAgentNetworkPolicyRefusesAnInvalidDeclaration(t *testing.T) {
 	}
 	if _, err := ReportAgentNetworkPolicy("worker", RuntimeDriverDocker, declaration, true, config.EgressUnenforceableWarn); err == nil {
 		t.Fatal("ReportAgentNetworkPolicy() error = nil, want a validation error")
+	}
+}
+
+// TestAdmissionReportAgreesWithTheCreationGate pins the invariant both entry
+// points are supposed to satisfy: in refuse mode, a report that answers Enforced
+// and a gate that lets the sandbox start must return the same answer for the
+// same declaration. The two share the declaration and the enforcement
+// descriptors, so a gap either one learns to see has to reach the other.
+func TestAdmissionReportAgreesWithTheCreationGate(t *testing.T) {
+	engineEndpoints := []egress.EngineEndpoint{
+		mustEngineEndpoint(t, egress.PurposeLLMFacade, "facade.internal", 7410, egress.ProtocolHTTPS),
+	}
+	declarations := map[string]egress.NetworkDeclaration{
+		"a name allowance": {
+			Default: egress.Deny,
+			Allow:   []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+		},
+		"an address-constrained allowance": {
+			Default: egress.Deny,
+			Allow: []egress.AllowEntry{{
+				Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS,
+				AllowedIPs: []string{"203.0.113.0/24"},
+			}},
+		},
+	}
+	drivers := []string{RuntimeDriverDocker, RuntimeDriverBoxlite, RuntimeDriverMicrosandbox, RuntimeDriverK8s, "mystery"}
+	for name, declaration := range declarations {
+		for _, driver := range drivers {
+			for _, mediated := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/mediated=%t", name, driver, mediated), func(t *testing.T) {
+					policy, err := SandboxNetworkPolicyFromDeclaration(&declaration, engineEndpoints, nil)
+					if err != nil {
+						t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
+					}
+					policy.MediatedByForwardProxy = mediated
+					gateErr := RequireSandboxNetworkEnforcement(driver, "sandbox-1", &policy, config.EgressUnenforceableRefuse)
+					report, err := ReportAgentNetworkPolicy("worker", driver, &declaration, mediated, config.EgressUnenforceableRefuse)
+					if err != nil {
+						t.Fatalf("ReportAgentNetworkPolicy() error = %v", err)
+					}
+					if report.Enforced == (gateErr != nil) {
+						t.Fatalf("report.Enforced = %v while the creation gate returned %v; the two entries disagree about whether this declaration is applied",
+							report.Enforced, gateErr)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestAdmissionReportCannotSeeUnappliedDenyDomains characterizes the one input
+// the two entries cannot share: the creation gate reads the driver-boundary
+// policy's deny domains and refuses a mediated sandbox whose driver does not
+// deliver them, while the report reads only the declaration, which has no field
+// for them. No project can reach this state — the compose schema declares no
+// deny domains and every production path builds the policy with none — so this
+// pins today's answer rather than a behavior an operator can hit. Making deny
+// domains declarable has to extend ReportAgentNetworkPolicy, and this test fails
+// when that happens so the two entries are changed together.
+func TestAdmissionReportCannotSeeUnappliedDenyDomains(t *testing.T) {
+	declaration := egress.NetworkDeclaration{
+		Default: egress.Deny,
+		Allow:   []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+	}
+	policy, err := SandboxNetworkPolicyFromDeclaration(&declaration, nil, []string{"metadata.example"})
+	if err != nil {
+		t.Fatalf("SandboxNetworkPolicyFromDeclaration() error = %v", err)
+	}
+	policy.MediatedByForwardProxy = true
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &policy, config.EgressUnenforceableRefuse); !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+		t.Fatalf("creation gate error = %v, want the unapplied deny domains refused", err)
+	}
+
+	report, err := ReportAgentNetworkPolicy("worker", RuntimeDriverDocker, &declaration, true, config.EgressUnenforceableRefuse)
+	if err != nil {
+		t.Fatalf("ReportAgentNetworkPolicy() error = %v", err)
+	}
+	if !report.Enforced || len(report.Unapplied) != 0 || report.Warning != "" {
+		t.Fatalf("report = %+v: the report now accounts for deny domains, so this characterization test must be replaced by an assertion that it agrees with the creation gate", report)
 	}
 }
