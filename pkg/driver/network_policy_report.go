@@ -111,6 +111,13 @@ func ReportAgentNetworkPolicy(agent, driver string, declaration *egress.NetworkD
 		)
 		return report, nil
 	}
+	if addresses > 0 && !enforcement.AppliesAllowedAddresses && mode == config.EgressUnenforceableRefuse {
+		// The creation path refuses exactly this gap, so a report that answered
+		// Enforced would describe a sandbox that will never start.
+		report.Warning = fmt.Sprintf("%s does not apply %s; %s",
+			enforcement.Mechanism, strings.Join(report.Unapplied, ", "), unenforceableOutcome(mode))
+		return report, nil
+	}
 	report.Enforced = true
 	if len(report.Unapplied) > 0 {
 		report.Warning = fmt.Sprintf("%s applies the declaration, but not %s; %s",

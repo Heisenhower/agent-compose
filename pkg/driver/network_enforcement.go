@@ -199,40 +199,61 @@ func RequireSandboxNetworkEnforcement(driver, sandboxID string, policy *SandboxN
 	if !policy.DenyByDefault() {
 		return nil
 	}
-	enforcement := SandboxNetworkEnforcementFor(driver)
+	driverEnforcement := SandboxNetworkEnforcementFor(driver)
+	enforcement := driverEnforcement
 	if policy.MediatedByForwardProxy {
 		// The engine is in the traffic path, so the declaration is enforced
 		// whatever the driver provides on its own.
 		enforcement = SandboxEgressForwardProxyEnforcement(driver)
 	}
 	if enforcement.Strength != SandboxEgressStrengthNone {
-		// The mechanism applies the declaration, but possibly not the part of it
-		// that constrains addresses. An allowance whose name may resolve only
-		// into a declared range is a restriction the mechanism either applies or
-		// does not; a sandbox running as if it applied is the failure this gate
-		// exists to prevent.
+		// The mechanism applies the declaration, but possibly not every part of
+		// it. A part it does not apply is a sandbox running as if the declaration
+		// said less than it did, which is the failure this gate exists to prevent.
 		if constrained := policy.AddressConstrainedAllowances(); constrained > 0 && !enforcement.AppliesAllowedAddresses {
-			return reportUndeclaredEnforcement(mode, sandboxID, enforcement,
+			return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapPartial,
 				fmt.Sprintf("%d declared allowance(s) constrain the addresses a name may resolve to, and %s applies the destinations without them", constrained, enforcement.Mechanism))
+		}
+		// A mediated sandbox can still have its deny domains applied by the
+		// driver's own in-guest filter, so the gap exists only when neither
+		// mechanism delivers them.
+		if denied := len(policy.DenyDomains); denied > 0 && !enforcement.AppliesDenyDomains && !driverEnforcement.AppliesDenyDomains {
+			return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapPartial,
+				fmt.Sprintf("%d declared deny domain(s) are not applied by %s or by the %s driver mechanism (%s)", denied, enforcement.Mechanism, driverEnforcement.Driver, driverEnforcement.Mechanism))
 		}
 		return nil
 	}
-	return reportUndeclaredEnforcement(mode, sandboxID, enforcement, enforcement.Notes)
+	return reportUndeclaredEnforcement(mode, sandboxID, enforcement, egressGapUnrestricted, enforcement.Notes)
 }
+
+// egressGap is how much of a declaration the effective mechanism fails to
+// apply, so a refusal and a warning state the opening that actually exists
+// instead of always claiming the widest one.
+type egressGap string
+
+const (
+	// egressGapUnrestricted means no part of the declaration is applied and the
+	// sandbox would leave with unrestricted egress.
+	egressGapUnrestricted egressGap = "unrestricted"
+	// egressGapPartial means the mechanism applies the declaration's
+	// destinations but not a declared restriction on them, so the resulting
+	// egress is narrower than unrestricted even though it is wider than asked.
+	egressGapPartial egressGap = "partly applied"
+)
 
 // reportUndeclaredEnforcement answers a declaration the effective mechanism does
 // not fully apply: refuse when the deployment asked for that, and otherwise
 // report the gap and let the sandbox run. Both answers name the same reason, so
 // the decision a deployment configured is the decision it can see.
-func reportUndeclaredEnforcement(mode config.EgressUnenforceablePolicy, sandboxID string, enforcement SandboxNetworkEnforcement, reason string) error {
+func reportUndeclaredEnforcement(mode config.EgressUnenforceablePolicy, sandboxID string, enforcement SandboxNetworkEnforcement, gap egressGap, reason string) error {
 	if mode == config.EgressUnenforceableRefuse {
-		return fmt.Errorf("%w: driver %q cannot enforce the declared default-deny network policy; refusing to start the sandbox with unrestricted egress (%s)", ErrSandboxNetworkEnforcementUnavailable, enforcement.Driver, reason)
+		return fmt.Errorf("%w: driver %q cannot enforce the declared default-deny network policy; refusing to start the sandbox with %s (%s)", ErrSandboxNetworkEnforcementUnavailable, enforcement.Driver, gap, reason)
 	}
 	slog.Warn("declared network policy is not enforced",
 		"sandbox_id", sandboxID,
 		"driver", enforcement.Driver,
 		"declared_default", "deny",
-		"egress", "unrestricted",
+		"egress", string(gap),
 		"reason", reason,
 	)
 	return nil

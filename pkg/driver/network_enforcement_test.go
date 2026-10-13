@@ -256,6 +256,9 @@ func TestRequireSandboxNetworkEnforcementReportsAnUnappliedAddressConstraint(t *
 	if err == nil || !strings.Contains(err.Error(), "constrain the addresses") {
 		t.Fatalf("refusal = %v, want it to name the unapplied address constraint", err)
 	}
+	if strings.Contains(err.Error(), "unrestricted egress") {
+		t.Fatalf("refusal = %v, want it to state the partial gap rather than claiming unrestricted egress", err)
+	}
 
 	// The engine's proxy resolves the destination itself, so it does apply them.
 	mediated := constrained
@@ -274,5 +277,38 @@ func TestRequireSandboxNetworkEnforcementReportsAnUnappliedAddressConstraint(t *
 	}
 	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &plain, config.EgressUnenforceableRefuse); err != nil {
 		t.Fatalf("an unconstrained allowance was refused: %v", err)
+	}
+}
+
+// TestRequireSandboxNetworkEnforcementReportsAnUnappliedDenyDomain covers the
+// deny-domain half of the same gap: a declared deny domain is a restriction the
+// declaration asked for, so a mechanism that cannot deliver it must not present
+// the sandbox as constrained.
+func TestRequireSandboxNetworkEnforcementReportsAnUnappliedDenyDomain(t *testing.T) {
+	declared := SandboxNetworkPolicy{
+		Default:     egress.Deny,
+		Allow:       []egress.AllowEntry{{Host: "api.example.com", Port: 443, Protocol: egress.ProtocolHTTPS}},
+		DenyDomains: []string{"metadata.example"},
+	}
+	mediated := declared
+	mediated.MediatedByForwardProxy = true
+
+	// Docker's own mechanism applies nothing and the forward proxy does not
+	// consult deny domains, so a mediated docker sandbox leaves them unapplied.
+	err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &mediated, config.EgressUnenforceableRefuse)
+	if !errors.Is(err, ErrSandboxNetworkEnforcementUnavailable) {
+		t.Fatalf("refuse mode error = %v, want the enforcement-unavailable sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "deny domain") {
+		t.Fatalf("refusal = %v, want it to name the unapplied deny domains", err)
+	}
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverDocker, "sandbox-1", &mediated, config.EgressUnenforceableWarn); err != nil {
+		t.Fatalf("warn mode refused instead of reporting: %v", err)
+	}
+
+	// Microsandbox applies deny domains through its own in-guest filter, so the
+	// same mediated declaration is delivered even though the proxy ignores them.
+	if err := RequireSandboxNetworkEnforcement(RuntimeDriverMicrosandbox, "sandbox-1", &mediated, config.EgressUnenforceableRefuse); err != nil {
+		t.Fatalf("a driver that applies deny domains was refused: %v", err)
 	}
 }

@@ -107,6 +107,17 @@ func TestReportAgentNetworkPolicyNamesWhatTheMechanismLeavesUnapplied(t *testing
 				"does not constrain which addresses",
 			},
 		},
+		{
+			// The creation path refuses exactly this gap in refuse mode, so the
+			// report must not answer Enforced for a sandbox that never starts.
+			name:         "refuse mode does not present a refused declaration as enforced",
+			driver:       RuntimeDriverMicrosandbox,
+			mode:         config.EgressUnenforceableRefuse,
+			wantEnforced: false,
+			wantWarning: []string{
+				"EGRESS_UNENFORCEABLE_POLICY=refuse",
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
