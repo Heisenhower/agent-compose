@@ -91,18 +91,64 @@ func TestProviderWriteReportsSuccessWhenTheModelListReadFails(t *testing.T) {
 	}
 }
 
+// A stored model the response cannot carry must not turn a committed write into a
+// failed one either: the connection is reported without its model list.
+func TestProviderWriteReportsSuccessWhenAModelCannotBeReported(t *testing.T) {
+	ctx := context.Background()
+	store := &failingBindingStore{
+		LLMProviderStore: newLLMTestStore(t),
+		bindings: []llms.ProviderModelBinding{
+			{ProviderID: "gateway", ModelID: "alpha", Config: llms.ProviderModelConfig{HeadersJSON: "{not-json"}},
+		},
+	}
+	handler := NewLLMHandler(nil, store)
+	spec := &agentcomposev2.LLMProviderSpec{Id: "gateway", BaseUrl: "https://example.com/v1", Protocol: "responses", ApiKey: proto.String("upstream-secret")}
+
+	response, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec}))
+	if err != nil {
+		t.Fatalf("CreateProvider error = %v, want the committed write reported", err)
+	}
+	written := response.Msg.GetProvider()
+	if written.GetId() != "gateway" || len(written.GetModels()) != 0 {
+		t.Fatalf("response = %#v, want the connection reported without a model list", written)
+	}
+}
+
+// A connection the write disabled serves nothing until it is enabled again, so
+// the write does not wait out a probe budget for it.
+func TestProviderWriteDoesNotProbeADisabledConnection(t *testing.T) {
+	ctx := context.Background()
+	handler, recorder := newProbedLLMHandler(t)
+	spec := &agentcomposev2.LLMProviderSpec{
+		Id: "gateway", BaseUrl: "https://example.com/v1", Protocol: "responses",
+		ApiKey: proto.String("upstream-secret"), Enabled: proto.Bool(false),
+	}
+	if _, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec})); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	if got := recorder.count(); got != 0 {
+		t.Fatalf("probe calls = %d, want none for a disabled connection", got)
+	}
+}
+
 // failingBindingStore fails the model list a write is described with, while the
-// write itself still reaches the store underneath.
+// write itself still reaches the store underneath. A test can also replace the
+// list the store returns to describe a stored model the response cannot carry.
 type failingBindingStore struct {
 	LLMProviderStore
-	fail bool
+	fail     bool
+	bindings []llms.ProviderModelBinding
 }
 
 func (s *failingBindingStore) ListLLMProviderModelConfigs(ctx context.Context) ([]llms.ProviderModelBinding, error) {
-	if s.fail {
+	switch {
+	case s.fail:
 		return nil, errors.New("model list unavailable")
+	case s.bindings != nil:
+		return s.bindings, nil
+	default:
+		return s.LLMProviderStore.ListLLMProviderModelConfigs(ctx)
 	}
-	return s.LLMProviderStore.ListLLMProviderModelConfigs(ctx)
 }
 
 // newLLMTestHandler builds a handler over an in-memory configuration store,
