@@ -53,7 +53,13 @@ COPY buf.yaml buf.gen.yaml ./
 RUN buf generate
 ARG VERSION=0
 ARG TARGETARCH
-RUN target_arch="${TARGETARCH:-$(dpkg --print-architecture)}" && \
+# Keep the Go build cache out of the layer diff and out of the exported GHA
+# cache. The stage defaults to GOPATH=/root/go, so the cache lives at
+# /root/.cache/go-build. BuildKit does not export cache mounts (moby/buildkit
+# #3011), so CI still compiles from a cold cache; this is what makes a repeated
+# local build of this Dockerfile reuse the dependency compilation.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    target_arch="${TARGETARCH:-$(dpkg --print-architecture)}" && \
     ./scripts/build-agent-compose-binary.sh \
       --profile linux-full \
       --goarch "${target_arch}" \

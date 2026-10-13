@@ -116,11 +116,28 @@ COPY ./assets/.gitconfig /root/
 COPY ./assets/.dsh/ /root/.dsh/
 
 COPY runtime/jupyter-javascript-kernel/kernel.json /usr/local/share/jupyter/kernels/javascript/kernel.json
+
+# Resolve the dependency trees before the runtime sources arrive. npm ci reads
+# only the manifests, so keeping it in its own layer means a source-only change
+# repackages the runtime without downloading the tree again. Each layer clears
+# the npm cache inside itself; a later `rm -rf` would only add a whiteout and
+# the cached tarballs would stay in that layer's diff.
+COPY runtime/javascript/package.json runtime/javascript/package-lock.json /tmp/agent-compose-runtime/
+RUN cd /tmp/agent-compose-runtime && \
+    npm ci && \
+    npm cache clean --force && \
+    rm -rf /root/.npm
+
+COPY runtime/agent-compose-runtime-sdk/package.json runtime/agent-compose-runtime-sdk/package-lock.json /tmp/agent-compose-runtime-sdk/
+RUN cd /tmp/agent-compose-runtime-sdk && \
+    npm ci && \
+    npm cache clean --force && \
+    rm -rf /root/.npm
+
 COPY runtime/javascript /tmp/agent-compose-runtime
 COPY runtime/agent-compose-runtime-sdk /tmp/agent-compose-runtime-sdk
 
 RUN cd /tmp/agent-compose-runtime && \
-    npm ci && \
     RUNTIME_TARBALL="$(npm pack --silent | tail -n 1)" && \
     npm install -g "./${RUNTIME_TARBALL}" && \
     npm cache clean --force && \
@@ -160,7 +177,6 @@ RUN cd /tmp/agent-compose-runtime && \
 
 RUN mkdir -p /opt/agent-compose/npm && \
     cd /tmp/agent-compose-runtime-sdk && \
-    npm ci && \
     npm run pack:runtime-bundle -- --pack-destination /opt/agent-compose/npm --filename agent-compose-runtime-sdk.tgz && \
     mkdir -p /tmp/agent-compose-runtime-sdk-empty-cache && \
     npm install --offline --cache /tmp/agent-compose-runtime-sdk-empty-cache /opt/agent-compose/npm/agent-compose-runtime-sdk.tgz --prefix /tmp/agent-compose-runtime-sdk-offline-check && \

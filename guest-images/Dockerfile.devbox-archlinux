@@ -68,12 +68,23 @@ COPY ./assets/.codex/ /root/.codex/
 COPY ./assets/.claude/ /root/.claude/
 COPY ./assets/.claude.json /root/
 COPY ./assets/.gitconfig /root/
+
+# Resolve the dependency tree before the runtime sources arrive. npm ci reads
+# only the manifests, so keeping it in its own layer means a source-only change
+# repackages the runtime without downloading the tree again. The layer clears the
+# npm cache inside itself; a later `rm -rf` would only add a whiteout and the
+# cached tarballs would stay in that layer's diff.
+COPY runtime/javascript/package.json runtime/javascript/package-lock.json /tmp/agent-compose-runtime/
+RUN cd /tmp/agent-compose-runtime && \
+    npm ci && \
+    npm cache clean --force && \
+    rm -rf /root/.npm
+
 COPY runtime/javascript /tmp/agent-compose-runtime
 
 RUN mkdir -p /usr/local/share/jupyter/kernels/javascript /root/.codex /root/.local/bin /root/.cargo/bin /usr/local/go /usr/local/go/bin /workspace /data/state /data/runtime /data/logs
 
 RUN cd /tmp/agent-compose-runtime && \
-    npm ci && \
     RUNTIME_TARBALL="$(npm pack --silent | tail -n 1)" && \
     npm install -g "./${RUNTIME_TARBALL}" && \
     cd /usr/local/bin && \
