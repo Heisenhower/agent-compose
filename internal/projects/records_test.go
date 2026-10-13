@@ -45,12 +45,12 @@ func TestNewAgentDefinitionFromSpecPreservesStoppedRuntimePolicy(t *testing.T) {
 		t.Fatalf("NewAgentDefinitionFromSpec returned error: %v", err)
 	}
 	var config struct {
-		Sandbox *compose.NormalizedSandboxSpec `json:"sandbox"`
+		Policy *compose.NormalizedSandboxSpec `json:"policy"`
 	}
 	if err := json.Unmarshal([]byte(definition.ConfigJSON), &config); err != nil {
 		t.Fatalf("unmarshal config json: %v", err)
 	}
-	if config.Sandbox == nil || config.Sandbox.StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
+	if config.Policy == nil || config.Policy.StoppedRuntimePolicy != domain.StoppedRuntimePolicyRemove {
 		t.Fatalf("config json = %s, want stopped runtime remove", definition.ConfigJSON)
 	}
 }

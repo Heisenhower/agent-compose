@@ -3375,6 +3375,7 @@
     "up": {
       "applied": "boolean",
       "changes": "array",
+      "network_policies": "array",
       "project": "object",
       "revision": "object",
       "unchanged": "boolean"

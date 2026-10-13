@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 
+	"github.com/chaitin/agent-compose/pkg/capmatrix"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
 	driverpkg "github.com/chaitin/agent-compose/pkg/driver"
 	domain "github.com/chaitin/agent-compose/pkg/model"
@@ -41,7 +42,12 @@ func TestSandboxDriverTracesImagePull(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSandbox returned error: %v", err)
 	}
-	driver := NewSandboxDriver(config, store, nil, fakeRuntimeProvider{runtime: fakeSessionRuntime{info: domain.SandboxVMInfo{BoxID: "container-1"}}}, WithSandboxDriverRecorder(recorder))
+	driver := NewSandboxDriver(SandboxDriverDeps{
+		Config:       config,
+		Store:        store,
+		Runtimes:     fakeRuntimeProvider{runtime: fakeSessionRuntime{info: domain.SandboxVMInfo{BoxID: "container-1"}}},
+		Capabilities: capmatrix.Snapshot{},
+	}, WithSandboxDriverRecorder(recorder))
 
 	if err := driver.StartSandboxVM(ctx, sandbox); err != nil {
 		t.Fatalf("StartSandboxVM returned error: %v", err)

@@ -85,8 +85,21 @@ func writeDeprecatedWarning(out io.Writer, oldUsage string, newUsage string) err
 	return err
 }
 
-func loadResolvedNormalizedCompose(ctx context.Context, cli cliOptions) (string, *compose.NormalizedProjectSpec, error) {
+func loadResolvedNormalizedCompose(ctx context.Context, cli cliOptions) (string, *compose.NormalizedProjectSpec, []compose.DeprecatedPolicyBlock, error) {
 	return loadNormalizedComposeWithOptions(ctx, cli, true)
+}
+
+// writeDeprecatedPolicyBlockWarnings reports every agent that still declares its
+// policy block under the deprecated `sandbox` key. The block keeps working, but
+// the project should move it under `policy`, where the runtime policies are
+// collected.
+func writeDeprecatedPolicyBlockWarnings(out io.Writer, blocks []compose.DeprecatedPolicyBlock) error {
+	for _, block := range blocks {
+		if err := writeDeprecatedWarning(out, block.Path, block.Current); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeComposeChangeTable(out io.Writer, changes []composeDisplayChangeOutput) error {

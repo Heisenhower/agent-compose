@@ -248,6 +248,51 @@
       "optional": true
     },
     {
+      "path": "agents.*.policy",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxNetworkSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow",
+      "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].host",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].port",
+      "go_type": "int",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.allow[].protocol",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.network.default",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.policy.stopped_runtime_policy",
+      "go_type": "string",
+      "optional": true
+    },
+    {
       "path": "agents.*.provider",
       "go_type": "string",
       "optional": true
@@ -255,6 +300,41 @@
     {
       "path": "agents.*.sandbox",
       "go_type": "optional\u003cmapping\u003ccompose.SandboxSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxNetworkSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow",
+      "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow[].host",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow[].port",
+      "go_type": "int",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.allow[].protocol",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "agents.*.sandbox.network.default",
+      "go_type": "string",
       "optional": true
     },
     {
@@ -589,6 +669,51 @@
     },
     {
       "path": "octobus_servers.*.url",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "policies",
+      "go_type": "mapping\u003cstring,mapping\u003ccompose.SandboxSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network",
+      "go_type": "optional\u003cmapping\u003ccompose.SandboxNetworkSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow",
+      "go_type": "sequence\u003cmapping\u003ccompose.SandboxNetworkAllowSpec\u003e\u003e",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow[].allowed_ips",
+      "go_type": "sequence\u003cstring\u003e",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow[].host",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow[].port",
+      "go_type": "int",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.allow[].protocol",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "policies.*.network.default",
+      "go_type": "string",
+      "optional": true
+    },
+    {
+      "path": "policies.*.stopped_runtime_policy",
       "go_type": "string",
       "optional": true
     },

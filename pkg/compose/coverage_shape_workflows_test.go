@@ -76,8 +76,35 @@ func TestIntegrationComposeParseNormalizeAndOutputWorkflows(t *testing.T) {
 	t.Run("k8s rejects local bind mount", TestNormalizeRejectsK8sLocalBindMount)
 	t.Run("k8s rejects stopped runtime retention", TestNormalizeAgentRejectsK8sStoppedRuntimeRetention)
 	t.Run("k8s allows stopped runtime removal", TestNormalizeAgentAllowsK8sStoppedRuntimeRemoval)
+	t.Run("normalize sandbox network", TestNormalizeSandboxNetwork)
+	t.Run("reject invalid sandbox network", TestSandboxNetworkRejectsInvalidDeclarations)
+	t.Run("sandbox network egress declaration", TestSandboxNetworkEgressDeclaration)
+	t.Run("sandbox network allow-all declaration", TestSandboxNetworkEgressDeclarationAllowAll)
+	t.Run("sandbox network default fails closed", TestEgressActionForSandboxNetworkDefaultFailsClosed)
+	t.Run("sandbox network deep clone", TestSandboxNetworkReturnsDeepClone)
+	t.Run("hash declared sandbox network", TestSpecHashIncludesDeclaredSandboxNetwork)
+	t.Run("undeclared sandbox network keeps hash", TestUndeclaredSandboxNetworkKeepsCanonicalHash)
+	t.Run("stopped runtime only keeps hash", TestStoppedRuntimeOnlySandboxKeepsCanonicalHash)
 }
 
 func TestE2EComposeParseNormalizeAndOutputWorkflows(t *testing.T) {
 	TestIntegrationComposeParseNormalizeAndOutputWorkflows(t)
+}
+
+// The declared sandbox network policy is part of the compose contract, its
+// canonical JSON, and the spec hash, so it must carry coverage in the broader
+// shapes and not only in the unit shape.
+func TestIntegrationComposeSandboxNetworkWorkflows(t *testing.T) {
+	t.Run("normalize sandbox network", TestNormalizeSandboxNetwork)
+	t.Run("egress declaration", TestSandboxNetworkEgressDeclaration)
+	t.Run("egress declaration rejects unknown default", TestSandboxNetworkEgressDeclarationRejectsUnknownDefault)
+	t.Run("rejects invalid declarations", TestSandboxNetworkRejectsInvalidDeclarations)
+	t.Run("returns a deep clone", TestSandboxNetworkReturnsDeepClone)
+	t.Run("hash includes declared network", TestSpecHashIncludesDeclaredSandboxNetwork)
+	t.Run("stopped runtime only keeps the golden hash", TestStoppedRuntimeOnlySandboxKeepsCanonicalHash)
+	t.Run("undeclared network keeps the golden hash", TestUndeclaredSandboxNetworkKeepsCanonicalHash)
+}
+
+func TestE2EComposeSandboxNetworkWorkflows(t *testing.T) {
+	TestIntegrationComposeSandboxNetworkWorkflows(t)
 }

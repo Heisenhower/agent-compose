@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	agentcomposeapp "github.com/chaitin/agent-compose/pkg/agentcompose/app"
+	"github.com/chaitin/agent-compose/pkg/agentcompose/proxy"
 	"github.com/chaitin/agent-compose/pkg/config"
 	"github.com/chaitin/agent-compose/pkg/fxgo/echofn"
 	"github.com/chaitin/agent-compose/pkg/fxgo/restful"
@@ -50,11 +51,15 @@ type DaemonOptions struct {
 }
 
 type DaemonApp struct {
-	DI              do.Injector
-	Echo            *echo.Echo
-	Logger          *slog.Logger
-	Config          *config.Config
-	Telemetry       *telemetry.Provider
+	DI        do.Injector
+	Echo      *echo.Echo
+	Logger    *slog.Logger
+	Config    *config.Config
+	Telemetry *telemetry.Provider
+	// EgressProxy decides a sandbox's outbound connections before the daemon
+	// opens them. It is served on the TCP listener a sandbox can reach; the unix
+	// socket stays daemon-only.
+	EgressProxy     *proxy.EgressProxy
 	startBackground func(do.Injector) error
 	stopBackground  func(context.Context, do.Injector) error
 	startOnce       sync.Once
@@ -157,6 +162,7 @@ func NewDaemonApp(ctx context.Context, opts DaemonOptions) (*DaemonApp, error) {
 		Logger:          logger,
 		Config:          conf,
 		Telemetry:       telemetryProvider,
+		EgressProxy:     do.MustInvoke[*proxy.EgressProxy](di),
 		startBackground: startBackground,
 		stopBackground:  stopBackground,
 		shutdownTimeout: 10 * time.Second,
@@ -272,7 +278,16 @@ func (a *DaemonApp) listen() (*daemonServers, error) {
 		if !isLoopbackListenAddress(a.Config.HttpListen) {
 			a.Logger.Warn("HTTP_LISTEN exposes unencrypted h2c traffic; use a TLS-terminating reverse proxy before exposing this listener", "address", a.Config.HttpListen)
 		}
-		servers.add("HTTP_LISTEN", a.Config.HttpListen, tcpListener, a.Echo, nil)
+		// The egress proxy shares this listener because it is the address a
+		// sandbox can already reach; only absolute-form requests and a CONNECT
+		// carrying a proxy credential are dispatched to it, so the daemon's own
+		// clients keep their paths (and their middleware, which the proxy
+		// deliberately bypasses: it authenticates the sandbox itself).
+		handler := http.Handler(a.Echo)
+		if a.EgressProxy != nil {
+			handler = proxy.EgressDispatchHandler(a.Echo, a.EgressProxy)
+		}
+		servers.add("HTTP_LISTEN", a.Config.HttpListen, tcpListener, handler, nil)
 	}
 
 	return servers, nil

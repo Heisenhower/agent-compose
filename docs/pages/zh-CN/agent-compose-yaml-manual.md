@@ -82,6 +82,16 @@ volumes:
       purpose: agent-cache
     options: {}
 
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
 agents:
   reviewer:
     enabled: true
@@ -121,7 +131,9 @@ agents:
       - engineering
       - internal/code-review
     skills:
-      - ./skills/review
+      - name: review
+        provider: file
+        path: ./skills/review
       - name: release-check
         provider: git
         url: https://github.com/example/agent-skills.git
@@ -135,6 +147,7 @@ agents:
         read_only: false
     workspace:
       name: source
+    policy: locked-down           # 引用 `policies` 中的条目；不会与其合并
     scheduler:
       enabled: true
       sandbox_policy: sticky
@@ -146,6 +159,13 @@ agents:
     jupyter:
       enabled: false
       guest_port: 8888
+
+  # 策略库是目录而不是默认值：这个 Agent 自行声明策略块，不会合并任何库条目。
+  spot-checker:
+    provider: codex
+    policy:
+      network:
+        default: allow-all
 
 ```
 
@@ -210,6 +230,7 @@ SECRET_VALUE:
 | `mcp_servers` | map | 否 | 可由 Agent 按名称引用的 MCP Server 定义。 |
 | `octobus_servers` | map | 否 | 由 qualified `capset_ids` 选择的具名项目级 OctoBus Server。 |
 | `volumes` | map | 否 | 项目管理或引用的持久 Volume。 |
+| `policies` | map | 否 | 具名策略块；Agent 按名称引用，无需重复声明。 |
 | `agents` | map | 否 | Agent 定义；map key 是 Agent 名。 |
 
 ### `name`
@@ -487,6 +508,44 @@ volumes:
 
 Volume map key 必须符合稳定标识符格式。Agent 通过 `agents.<name>.volumes` 挂载项目 Volume。
 
+## `policies`：项目级策略
+
+`policies` 是项目级的策略库。每个条目就是一个策略块，与 Agent 内联声明的块完全相同，Agent 通过写名称来引用：
+
+```yaml
+policies:
+  locked-down:
+    stopped_runtime_policy: retain
+    network:
+      default: deny
+      allow:
+        - host: api.github.com
+          port: 443
+          protocol: https
+
+agents:
+  reviewer:
+    provider: codex
+    policy: locked-down
+```
+
+名称在项目规范化时解析，与 Agent 的 `mcp_servers` 引用一致：每个 Agent 最终都携带自己的有效策略块。`policy: locked-down` 与把该块原样内联，会规范化成完全相同的配置和相同的 spec hash，因此把共享块搬进 `policies` 不会改变引擎实际执行的内容。
+
+策略库是目录，Agent 的声明是从中做一次选择，或写自己的块。二者不叠加：
+
+| Agent 声明 | 生效策略 |
+| --- | --- |
+| `policy: locked-down` | 就是 `locked-down` 这一条。 |
+| `policy: {…}` 内联 | 就是内联的这个块。 |
+| 不写 `policy` | 没有策略：出网不受限，停止时 `remove`。 |
+
+同一个 key 只有一种形状——名称是 scalar，块是 mapping——所以一个 Agent 不可能同时写两者，每个 Agent 恰好只有一个生效策略。库条目不会合并进自行声明块的 Agent，没有任何隐式继承，目前也不存在项目级默认策略。因此"大部分 Agent 用同一条策略、个别例外"不需要组合规则：例外自己写块，其余引用条目即可。合并两个块会产生一个文件里根本没写过的第三种块，读者也无法只读一处声明就知道 sandbox 到底执行什么。
+
+- 项目级策略定义的是块本身，不能再引用另一个策略，因此不存在需要解析的引用链。
+- 即使没有任何 Agent 引用，每个条目也会被校验，坏定义会直接让项目失败，而不是等到第一个引用它的 Agent。
+- 引用未定义的名称会报错，绝不会退化成"没有策略"——未声明的策略意味着出网不受限制。
+- 策略库只是编写便利，不属于规范化配置的一部分：`agent-compose config` 展示的是每个 Agent 的有效 `policy` 块，而不是它引用的名称。
+
 ## `agents.<name>`
 
 `agents` 是以 Agent 名为 key 的映射：
@@ -517,7 +576,8 @@ agents:
 | `skills` | list | 空 | 注入 Agent 的 Skill 来源。 |
 | `volumes` | list | 空 | Volume 或 bind mount 列表。 |
 | `workspace` | object | 无 | 显式引用一个顶层 `workspaces` 条目，或定义 Agent 内联 Workspace。 |
-| `sandbox` | object | 删除已停止 runtime | Sandbox 生命周期配置。 |
+| `policy` | object | 删除已停止 runtime | 运行时策略声明：已停止 runtime 的生命周期与出网策略。 |
+| `sandbox` | object | — | `policy` 的弃用拼写。仍然可用；同时声明两者会报错。 |
 | `scheduler` | object | 无 | 自动触发 Agent 的 Scheduler。 |
 | `jupyter` | object | disabled | Agent run 的 Jupyter 默认配置。 |
 
@@ -967,12 +1027,31 @@ workspace:
 
 内联 Workspace 支持与顶层定义相同的 `mode` 和 `read_only` 字段。继承项目条目时只写 `name`，交付模式和权限会一起继承。只有名称的引用不能覆盖 `mode` 或设置 `read_only: true`；需要不同设置时，另建项目 Workspace，或提供完整内联来源。若 `name` 与来源字段或 `target` 同时出现，该对象按内联 Workspace 处理，必须自行提供合法来源，不会与项目条目合并字段。
 
-### `sandbox`：已停止 runtime 生命周期
+### `policy`：运行时策略声明
+
+`policy` 集中声明该 Agent 的 sandbox 在运行时的行为：已停止 runtime 的生命周期，以及出网策略。后续新增的运行时策略应继续放进这个块，而不是新增顶层 agent 字段。
+
+Agent 可以内联声明这个块，也可以按名称引用项目级 `policies` 条目：
+
+```yaml
+policy: locked-down        # 引用 `policies` 中的项目级策略
+```
+
+```yaml
+policy:                    # 或直接内联策略块
+  stopped_runtime_policy: retain
+```
+
+下文描述的都是策略块本身的字段，两种写法通用。引用了项目级策略中不存在的名称会报错，绝不会被当成"没有策略"。
+
+> **`sandbox` 是 `policy` 的弃用拼写。** 为了兼容重命名之前编写的项目，`sandbox` 仍然可用，两个 key 接受完全相同的字段；但新建或修改项目请使用 `policy`。同一 agent 同时声明两者会直接报错，而不是在两个可能互相矛盾的块之间静默选择。
+
+#### `stopped_runtime_policy`：已停止 runtime 生命周期
 
 默认情况下，停止 sandbox 会在确认 stop 后删除 driver runtime 及其私有可写状态，同时保留 sandbox 元数据、日志、workspace 和声明的持久挂载；`resume` 会创建新的 runtime。若需要重新启动同一个容器、Box 或 microVM sandbox，请显式保留私有 runtime 状态：
 
 ```yaml
-sandbox:
+policy:
   stopped_runtime_policy: retain
 ```
 
@@ -983,13 +1062,91 @@ sandbox:
 
 Kubernetes driver 不接受 `retain`：Kubernetes Pod 没有“已停止但仍保留”的状态，停止 sandbox 会删除 Pod。请使用 `remove`，让 resume 根据镜像和持久挂载重新创建 Pod。若后续调度任务需要复用同一个运行中的 Pod，请使用 `sandbox_policy: sticky`；sticky 完成后会保持 Pod 运行，它与 stopped-runtime retention 是两种不同的生命周期策略。
 
-有效策略会在 sandbox 创建时生成快照；之后修改项目配置只影响新 sandbox。没有策略快照的历史 sandbox 会继续保留 runtime。`agent-compose inspect sandbox <sandbox> --json` 通过 `stopped_runtime_policy`、`stopped_runtime_state`、`stopped_runtime_last_error` 和 `stopped_runtime_released_at` 展示生命周期记录。状态含义如下：
+有效策略会在 sandbox 创建时生成快照；之后修改项目配置只影响新 sandbox。
+
+Daemon 还会记录每个 runtime 创建时所依据的出网策略。启动 sandbox 时只会*确保* runtime 存在；如果 driver 启动的是已存在的 runtime，而它的出网配置与当前生效的声明不一致，daemon 会报告这一情况：当运行中的 sandbox 并不由该声明裁决时给出 warning（其 runtime 未携带出网配置，或由 daemon 无法控制的机制执行），当它已经由该声明裁决时给出一条 information（正向代理会在每次请求时读取声明）。修改声明只能通过 `policy.network` 中列出的机制影响运行中的 sandbox，报告不会声称超出这一范围。没有策略快照的历史 sandbox 会继续保留 runtime。`agent-compose inspect sandbox <sandbox> --json` 通过 `stopped_runtime_policy`、`stopped_runtime_state`、`stopped_runtime_last_error` 和 `stopped_runtime_released_at` 展示生命周期记录。状态含义如下：
 
 - `retained`：当前没有主动释放 runtime；已停止 sandbox 应继续使用保留的 runtime 恢复。
 - `release_pending`：释放意图已经持久化，但 stop、runtime 删除或 ownership 更新尚未全部确认完成。Daemon 会在中断后重试该状态；resume 也会先完成待处理的释放，再创建新 runtime。
 - `released`：runtime 删除和 ownership 更新都已完成；resume 会创建新 runtime。
 
 对于 `remove`，daemon 会先持久化 `release_pending`。如果生命周期记录中存在晚于最近一次确认 stop 的启动或启动尝试，即使粗粒度 VM 状态是 `failed` 而不是 `running`，也会先确认 driver stop；之后才删除 runtime 并把记录标记为 `released`。这个顺序可避免部分启动的 runtime 被跳过 stop，或未经确认便被破坏性释放。磁盘上的 ownership record 格式属于内部恢复状态，不是稳定的运维接口。
+
+### `policy.network`：出网策略声明
+
+`network` 用于声明该 Agent 的 sandbox 可以访问什么。**它是可选的，且“未声明”不等于拒绝**：未声明 `policy.network` 时，引擎行为与今天完全一致，出网不受限制。`default: deny` 是因为声明了这个块才生效的策略，**不是引擎的新默认值**（D3）。
+
+| 字段 | 类型 | 默认值 | 作用 |
+| --- | --- | --- | --- |
+| `default` | string | `allow-all` | 没有任何 `allow` 命中时采用的动作：`allow-all` 或 `deny`。 |
+| `allow` | list | 空 | 显式放行项。 |
+
+每个 `allow` 项：
+
+| 字段 | 类型 | 默认值 | 作用 |
+| --- | --- | --- | --- |
+| `host` | string | 必填 | 主机或主机模式。各段以 `.` 分隔，`*` 只匹配一段：`*.example.com` 匹配 `api.example.com`，但不匹配 `example.com`，也不匹配 `a.b.example.com`。不支持 IPv6 字面量。 |
+| `port` | int | 必填 | 目标端口，取值 1–65535。 |
+| `protocol` | string | `any` | `http`、`https`、`tcp`、`udp` 或 `any`。只有 `http` 与 `https` 在模型中被标记为可在 L7 检查，`any`、`tcp`、`udp` 属于不透明放行，永远不会被呈现为“已检查”。当前没有实现 L7 中间层，因此引擎今天不会检查任何载荷：这个区分是建模与报告属性，不是过滤器。 |
+| `allowed_ips` | list | 空 | 该条目的 `host` 允许解析到的 IP 地址或 CIDR 范围（可选）。名字解析出的每个地址都必须落在其中，否则该放行项不适用。裸地址就是它自身的单地址范围（`10.0.0.5` 即 `10.0.0.5/32`）；条目会被规范化并排序。 |
+
+`allowed_ips` 的作用是把名字与地址绑定起来。没有它时，对 `api.example.com` 的放行会跟随该名字解析到的任何地方，因此被污染或被攻陷的解析结果可以把 sandbox 引到声明从未指定的地址。有了它，引擎只有在即将使用的地址落在声明范围内时才建立连接；如果一个名字同时解析出允许与不允许的地址，会被拒绝而不是被择优采用。引擎永不转发的地址——loopback、link-local（含元数据地址 `169.254.169.254`）、multicast，以及控制面端口 `2379`、`2380`、`6443`、`10250`、`10255`——无论 `allowed_ips` 怎么写都保持被拒绝。
+
+以地址命名的目标（`host: 10.0.0.5`）只由同一地址匹配，永远不会由模式匹配：通配符放行项无法到达声明未点名的地址。
+
+```yaml
+policy:
+  network:
+    default: deny
+    allow:
+      - host: api.github.com
+        port: 443
+        protocol: https
+        allowed_ips:
+          - 140.82.112.0/20
+      - host: "*.internal.example.com"
+        port: 8080
+        protocol: tcp
+      - host: 203.0.113.7
+        port: 443
+        protocol: https
+```
+
+主机名会被转为小写，重复项会被拒绝，放行项会被排序，因此规范化后的声明进入 canonical JSON 与 spec hash，且与声明顺序无关。声明 `network` 会改变 hash；不声明则与引入该字段之前的 spec 逐字节一致。
+
+`allow` 列表只有在配合 `default: deny` 时才能限制流量。在默认的 `allow-all` 下，这些条目仍会被校验、存储并参与 hash，但不会拒绝任何流量；因此只写 `allow` 列表而不写 `default: deny` 时，出网仍然不受限制。
+
+当 `default: deny` 生效时，引擎会自动放行自身的端点：runtime LLM facade 与 guest 上报使用的遥测端点。这些是**引擎侧**条目，不是用户声明：项目无法声明、删除或覆盖它们；放行范围就是引擎交给 guest 的那个精确端点；每一次放行都会记录在引擎规则（`engine.llm-facade`、`engine.telemetry`）名下，使这条例外可见而非隐藏。
+
+该声明会被校验、进入 hash、经 API 往返，并编译进引擎统一的出网判定模型。它是否会限制流量取决于 runtime driver；driver 的能力报告会如实说明它实际执行的强度，而不会把部分机制呈现为完整机制：
+
+- 在 Microsandbox 上，SDK 的网络配置会应用该声明：`allow` 项成为有序放行规则，在 `default: deny` 下，任何既不命中引擎规则也不命中 `allow` 项的流量都会被拒绝。其能力报告中带有 `strength=allowlist` 以及仍然存在的限制，并注明真实 KVM 验证的结果：拒绝默认值与放行规则成立（未放行的名称无法解析，地址放行只对该地址和端口生效），`allowed_ips` 约束不会被应用，被放行的 HTTPS 目标未能完成 TLS 握手，因此当沙箱能访问守护进程时由引擎的正向代理承载 HTTPS 放行。
+- 对于**任何 sandbox 能访问到 daemon 的 driver**（包括 Docker、Kubernetes 与 BoxLite），引擎会在**自己的正向代理中执行该声明**。sandbox 会拿到代理作为它的出网路径（`HTTP_PROXY`、`HTTPS_PROXY`、`NO_PROXY` 及其小写形式，项目无法覆盖），代理会认证该 sandbox，并对每个连接做判定：命中 `allow` 条目的连接被建立隧道，其余一律以 `403` 回复并附带拒绝它的规则。因此在 Docker 上，即使 driver 自身不安装任何过滤器，声明也具有真实强度。
+- **无论声明怎么写，代理都拒绝引擎永不转发的目标**：loopback、link-local（含 `169.254.169.254` 元数据地址）、unspecified、multicast 地址，以及集群暴露的控制面端口——`2379`/`2380`（etcd）、`6443`（API server）、`10250`/`10255`（kubelet）。每条拒绝都记录在各自的引擎规则名下（`engine.blocked-address`、`engine.blocked-port`），并写明它拒绝的角色。对 `default: deny` 的 sandbox 来说，这堵住了它本来能自己找到的一条路；对任何 sandbox 来说，这是防止代理变成通往 daemon 自身服务或承载它的平台的新通道。
+- 代理自行解析目标，并连接它做过判定的那个地址，因此名字无法在判定与建连之间被解析成别的东西。
+- **限制是明说的，而不是暗示的。** 忽略代理环境变量的进程仍会直连外网、不被判定，直到透明捕获把所有连接都纳入代理；`udp` 放行项无法由正向代理承载；IPv6 目标会被拒绝，因为规范化端点标识无法表达它。
+- 当 sandbox 没有任何可达的代理地址时（例如 daemon 在 sandbox 内部不可达的部署），声明无法被执行，此时会**报告该声明未被执行，sandbox 照常运行**——平台无法交付的限制不应该变成可用性故障。daemon 会记录一条 `declared network policy is not enforced` 日志，包含 sandbox、driver 与原因；能力报告也写明同样的限制，因此未执行的声明不会被呈现为一项控制。设置 `EGRESS_UNENFORCEABLE_POLICY=refuse` 可在这种情况下改为拒绝 sandbox；此时拒绝发生在创建 sandbox 时（一次运行中或一个 scheduler tick 中），因此要求约束必须为真的部署应把项目视为非法，而不是依赖这条报错。
+- 默认值为 `allow-all` 的声明（包括只写 `allow` 列表而不写 `default: deny`）不会限制流量，不会被注入代理环境变量，也不会导致 sandbox 启动失败。
+
+**准入阶段会报告这些信息，你不必自行推断。**`config` 会把声明的策略（各条 allow、是否可检视、以及声明的地址范围）打印到 stderr，同时保持 stdout 上的规范化 spec 不变。`up` 与 `apply` 则从 daemon 自身的视角回答准入阶段真正重要的问题——每条声明最终由哪种机制执行：
+
+```
+Network policy
+  worker (driver docker)
+    declared  default deny, 1 allowance(s)
+      - api.github.com:443/https (inspectable, addresses 203.0.113.0/24)
+    enforced  forward_proxy (allowlist), the engine's forward proxy
+```
+
+引擎不会执行的声明会打印为 `enforced  no:`，并给出原因以及本部署的处理方式（`EGRESS_UNENFORCEABLE_POLICY=warn` 或 `refuse`），同样的文本会作为 warning 写入 stderr。存在同一缺口的多个 agent 共用一条 warning。未声明策略的 agent 不会出现在报告中——未声明不等于拒绝，因此没有需要报告的内容。`agent-compose up --json` 会在 `network_policies` 下给出同样的信息。
+
+**声明何时生效。** 取决于由哪个机制执行它：
+
+- 引擎的正向代理**在每个请求上重新读取声明**，因此在被代理的 sandbox 上，一次修改立即生效，无需重建或重启任何东西。凭据在 sandbox 创建时签发一次；凭据背后的策略每次都会重读。
+- 由 driver 自身应用网络配置的运行时（Microsandbox）在创建 sandbox 时读取声明：修改之后新建的 sandbox 使用新声明，而仅被 resume 的既有 sandbox 保持它创建时的配置。默认的 `stopped_runtime_policy: remove` 会在停止时丢弃 runtime，因此下一次启动会重建并读到新声明；`retain` 的 runtime 不会。
+- 在没有可达代理、且当前声明为 `default: deny` 的 sandbox 上，未执行的报告（或 `EGRESS_UNENFORCEABLE_POLICY=refuse` 的拒绝）会在下一次启动时生效。
+
+`stopped_runtime_policy` 的时机不同：它在 sandbox 创建时被快照到 sandbox 上，因此修改它只影响新建的 sandbox。
 
 ### `scheduler`
 

@@ -152,8 +152,8 @@ func AgentYAMLMap(agents []*agentcomposev2.AgentSpec) (map[string]any, []*agentc
 		} else if len(workspace) > 0 {
 			raw["workspace"] = workspace
 		}
-		if sandbox := agent.GetSandbox(); sandbox != nil {
-			raw["sandbox"] = map[string]any{"stopped_runtime_policy": sandbox.GetStoppedRuntimePolicy()}
+		if policy := agent.GetSandbox(); policy != nil {
+			raw["policy"] = policyYAMLShape(policy)
 		}
 		if scheduler := SchedulerYAMLShape(agent.GetScheduler()); len(scheduler) > 0 {
 			raw["scheduler"] = scheduler
@@ -172,6 +172,39 @@ func AgentYAMLMap(agents []*agentcomposev2.AgentSpec) (map[string]any, []*agentc
 		values[name] = raw
 	}
 	return values, nil
+}
+
+// policyYAMLShape renders the agent policy declaration. The network block is
+// only added when it was declared, so a spec that does not use it renders
+// exactly as it did before the field existed.
+func policyYAMLShape(policy *agentcomposev2.SandboxSpec) map[string]any {
+	shape := map[string]any{"stopped_runtime_policy": policy.GetStoppedRuntimePolicy()}
+	network := policy.GetNetwork()
+	if network == nil {
+		return shape
+	}
+	networkShape := map[string]any{"default": network.GetDefault()}
+	if entries := network.GetAllow(); len(entries) > 0 {
+		allow := make([]map[string]any, 0, len(entries))
+		for _, entry := range entries {
+			rendered := map[string]any{
+				"host":     entry.GetHost(),
+				"port":     entry.GetPort(),
+				"protocol": entry.GetProtocol(),
+			}
+			// The allowed addresses are part of the declaration the client
+			// hashed, so they have to survive the round trip: dropping them
+			// would make the daemon normalize a different spec than the one it
+			// was asked to apply.
+			if allowed := entry.GetAllowedIps(); len(allowed) > 0 {
+				rendered["allowed_ips"] = append([]string(nil), allowed...)
+			}
+			allow = append(allow, rendered)
+		}
+		networkShape["allow"] = allow
+	}
+	shape["network"] = networkShape
+	return shape
 }
 
 func MCPServerYAMLMap(path string, mcps []*agentcomposev2.MCPServerSpec) (map[string]any, []*agentcomposev2.ProjectValidationIssue) {

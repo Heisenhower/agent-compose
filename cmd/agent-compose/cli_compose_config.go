@@ -14,22 +14,27 @@ type composeConfigOptions struct {
 	Quiet bool
 }
 
-func loadNormalizedCompose(cli cliOptions) (string, *compose.NormalizedProjectSpec, error) {
+// loadNormalizedCompose also returns the policy blocks a project still declares
+// under the deprecated `sandbox` key, so a caller can report them. The
+// deprecation is visible only in the project's own text, which normalization
+// resolves away, so it has to be collected here.
+func loadNormalizedCompose(cli cliOptions) (string, *compose.NormalizedProjectSpec, []compose.DeprecatedPolicyBlock, error) {
 	return loadNormalizedComposeWithOptions(context.Background(), cli, false)
 }
 
-func loadNormalizedComposeWithOptions(ctx context.Context, cli cliOptions, resolveScriptURLs bool) (string, *compose.NormalizedProjectSpec, error) {
+func loadNormalizedComposeWithOptions(ctx context.Context, cli cliOptions, resolveScriptURLs bool) (string, *compose.NormalizedProjectSpec, []compose.DeprecatedPolicyBlock, error) {
 	composePath, err := resolveComposePath(cli.ComposeFile)
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	spec, err := compose.ParseFile(composePath)
 	if err != nil {
-		return "", nil, commandExitError{Code: exitCodeUsage, Err: err}
+		return "", nil, nil, commandExitError{Code: exitCodeUsage, Err: err}
 	}
+	deprecatedPolicyBlocks := compose.DeprecatedPolicyBlocks(spec)
 	projectEnv, err := resolveCLIProjectEnv(spec, composePath)
 	if err != nil {
-		return "", nil, commandExitError{Code: exitCodeUsage, Err: err}
+		return "", nil, nil, commandExitError{Code: exitCodeUsage, Err: err}
 	}
 	normalized, err := compose.Normalize(spec, compose.NormalizeOptions{
 		ComposePath:       composePath,
@@ -38,9 +43,9 @@ func loadNormalizedComposeWithOptions(ctx context.Context, cli cliOptions, resol
 		Context:           ctx,
 	})
 	if err != nil {
-		return "", nil, commandExitError{Code: exitCodeUsage, Err: fmt.Errorf("%s: %w", composePath, err)}
+		return "", nil, nil, commandExitError{Code: exitCodeUsage, Err: fmt.Errorf("%s: %w", composePath, err)}
 	}
-	return composePath, normalized, nil
+	return composePath, normalized, deprecatedPolicyBlocks, nil
 }
 
 func resolveComposePath(pathFlag string) (string, error) {

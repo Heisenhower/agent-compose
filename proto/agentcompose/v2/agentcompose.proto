@@ -162,6 +162,17 @@ service ResourceService {
   rpc ResolveID(ResolveResourceIDRequest) returns (ResolveResourceIDResponse);
 }
 
+// EngineService reports what this engine can enforce, and by what mechanism.
+//
+// It answers a different question than CapabilityService, which is the
+// capability-gateway capset/catalog surface. EngineService reports the engine's
+// own isolation and runtime capability matrix. It is read-only: the RPC never
+// changes driver behavior and never probes a driver. Driver capabilities are
+// captured once at daemon startup and frozen into the response.
+service EngineService {
+  rpc GetCapabilities(GetEngineCapabilitiesRequest) returns (GetEngineCapabilitiesResponse);
+}
+
 enum ProjectValidationSeverity {
   PROJECT_VALIDATION_SEVERITY_UNSPECIFIED = 0;
   PROJECT_VALIDATION_SEVERITY_WARNING = 1;
@@ -407,6 +418,9 @@ message ValidateProjectResponse {
   bool valid = 1;
   repeated ProjectValidationIssue issues = 2;
   string spec_hash = 3;
+  // Same account as ApplyProjectResponse.network_policies, so `config`-style
+  // admission checks answer what will be enforced without applying anything.
+  repeated AgentNetworkPolicyReport network_policies = 4;
 }
 
 message ApplyProjectRequest {
@@ -433,6 +447,61 @@ message ApplyProjectResponse {
   repeated ProjectValidationIssue issues = 4;
   bool applied = 5;
   bool unchanged = 6;
+  // Per-agent account of the declared outbound network policy and the mechanism
+  // that will apply it, computed by the daemon because only it knows which
+  // drivers it compiled, whether its forward proxy can reach a sandbox, and the
+  // deployment's EGRESS_UNENFORCEABLE_POLICY. Agents that declared no policy are
+  // omitted: undeclared is not deny, so there is nothing to enforce or report.
+  repeated AgentNetworkPolicyReport network_policies = 7;
+}
+
+// AgentNetworkPolicyReport is one agent's declared outbound network policy and
+// what the engine will actually do about it. It is derived from the same
+// declaration the decision model is compiled from, so it cannot describe a
+// mechanism the creation path would not install.
+message AgentNetworkPolicyReport {
+  // The project-local agent name the declaration belongs to.
+  string agent = 1;
+  // The resolved runtime driver the report was computed for.
+  string driver = 2;
+  // False when the agent declared no policy. Such an agent is omitted from the
+  // response, so a consumer can rely on this being true.
+  bool declared = 3;
+  // False when the declaration cannot refuse anything, because an allow list
+  // only restricts under default: deny.
+  bool restricts = 4;
+  // The action applied to traffic no declared entry matches.
+  string default = 5;
+  // The declared allowances, in declaration order.
+  repeated DeclaredNetworkAllowance allow = 6;
+  // Whether the engine's own forward proxy will apply the declaration instead
+  // of the driver.
+  bool mediated = 7;
+  // Whether the effective mechanism applies the declaration.
+  bool enforced = 8;
+  // The mechanism's strength: "none" or "allowlist".
+  string strength = 9;
+  // The concrete mechanism, for example "forward_proxy".
+  string mechanism = 10;
+  // The parts of the declaration the mechanism does not apply. Empty when it
+  // applies all of it.
+  repeated string unapplied = 11;
+  // What the operator must know when the declaration will not be enforced as
+  // written, including what the deployment's EGRESS_UNENFORCEABLE_POLICY does
+  // about it. Empty when it will be enforced.
+  string warning = 12;
+}
+
+// DeclaredNetworkAllowance is one declared allowance as it appears in a report.
+message DeclaredNetworkAllowance {
+  // The canonical host:port/protocol pattern.
+  string endpoint = 1;
+  // False for an opaque allowance (protocol any/tcp/udp), which must not be
+  // presented as a checked one.
+  bool inspectable = 2;
+  // The canonical CIDR ranges the name may resolve to. Empty when the
+  // declaration left the addresses unconstrained.
+  repeated string allowed_ips = 3;
 }
 
 message PatchProjectRequest {
@@ -907,6 +976,39 @@ message AgentSpec {
 message SandboxSpec {
   // Runtime handling after a confirmed stop. Empty defaults to "remove".
   string stopped_runtime_policy = 1;
+  // Declared outbound network policy. Absent means undeclared, and undeclared
+  // keeps the engine's existing behavior: unrestricted outbound access.
+  // Default-deny is a policy that takes effect only because this message is
+  // present; it is not an engine default (D3).
+  SandboxNetworkSpec network = 2;
+}
+
+// SandboxNetworkSpec is the declared outbound network policy for one agent's
+// sandboxes. User-declarable only; the engine's own auto-allowed endpoints are
+// engine-side policy entries and never appear here.
+message SandboxNetworkSpec {
+  // "allow-all" (the value an omitted default normalizes to) or "deny".
+  string default = 1;
+  // Explicit allowances. Host patterns separate labels with "." and use "*"
+  // to match exactly one label.
+  repeated SandboxNetworkAllowSpec allow = 2;
+}
+
+// SandboxNetworkAllowSpec is one declared allowance.
+message SandboxNetworkAllowSpec {
+  // Required. A host, or a host pattern whose labels are separated by ".".
+  string host = 1;
+  // Required. The concrete destination port.
+  int32 port = 2;
+  // Optional. "any" (the value an omitted protocol normalizes to), "http",
+  // "https", "tcp", or "udp". Only "http" and "https" are L7-inspectable;
+  // "any", "tcp", and "udp" are opaque allowances, not checked ones.
+  string protocol = 3;
+  // Optional. The IP addresses or CIDR ranges this entry's host may resolve to,
+  // canonicalized as CIDRs. Empty leaves the addresses unconstrained. It is
+  // part of the normalized spec the client hashes, so it must travel with the
+  // declaration rather than being rederived from the host.
+  repeated string allowed_ips = 4;
 }
 
 message MCPServerSpec {
@@ -2375,3 +2477,116 @@ message UpdateProviderResponse { LLMProvider provider = 1; }
 // Deletes API-owned configuration and invalidates provider-bound facade tokens.
 message DeleteProviderRequest { string id = 1; }
 message DeleteProviderResponse {}
+
+message GetEngineCapabilitiesRequest {}
+
+// EngineCapability is one dimension of the engine's capability matrix.
+//
+// The invariant is: an enforced capability always names a non-empty mechanism,
+// and a capability that is not enforced always carries one of the closed
+// reasons "unsupported" or "not_configured". The engine validates this before
+// it builds the startup snapshot, so an invalid claim is never returned.
+message EngineCapability {
+  // Stable machine-readable dimension key, for example "resource_limits" or
+  // "security_context.capability_drop".
+  string dimension = 1;
+  bool enforced = 2;
+  // When enforced, the concrete mechanism that enforces the dimension. When
+  // not enforced, one of "unsupported" (the driver has no configuration
+  // surface) or "not_configured" (a surface exists but the engine does not set
+  // it). Never empty.
+  string mechanism = 3;
+  // Conditions that must hold for the mechanism to take effect, such as a
+  // minimum kernel version or a CNI that supports NetworkPolicy. Empty when
+  // the mechanism has no known precondition.
+  repeated string preconditions = 4;
+  // What the driver actually writes into its runtime configuration today. This
+  // is the evidence a consumer can compare against the claim.
+  string observed = 5;
+  // The engine's behavior when the declaration is absent or silent, for example
+  // "an undeclared resource limit is not applied".
+  string default_behavior = 6;
+  // The three-state enforcement answer: "enforced", "degraded", or
+  // "unsupported". It refines the backward-compatible enforced boolean:
+  // degraded is not enforced for a hard requirement and must never be read as
+  // enforcement. Empty means the reader derives the state from enforced.
+  string state = 7;
+  // Where the claim came from: "declared" (a static statement about the code,
+  // which every per-driver entry is), "measured" (the engine established it by
+  // probing or observing), or "simulated" (an emulation, which never shares the
+  // enforced state). Empty defaults to "declared".
+  string source = 8;
+}
+
+// EngineObservedCapability is one engine-measured capability: the system layer
+// (what this host and kernel actually provide) or the process layer (what the
+// engine observed the sandbox's lower layer enforce). These claims never come
+// from asking a driver whether it is ready.
+message EngineObservedCapability {
+  // Stable machine-readable key, for example "system.landlock" or
+  // "process.seccomp".
+  string dimension = 1;
+  // The three-state answer: "enforced", "degraded", or "unsupported".
+  string state = 2;
+  // True only for state "enforced", so a consumer that only understands the
+  // boolean still sees the honest answer.
+  bool enforced = 3;
+  // The probed mechanism when enforced or degraded, or a closed not-enforced
+  // reason ("unsupported", "not_configured", "lower_layer_unavailable").
+  string mechanism = 4;
+  // Conditions the mechanism depends on, reported when it is degraded.
+  repeated string preconditions = 5;
+  // The probe evidence: what the kernel or the lower layer actually answered.
+  string observed = 6;
+  // The unmet precondition when the dimension is not enforced.
+  string missing = 7;
+  // "measured" for a real probe or observation, "simulated" for an emulation.
+  string source = 8;
+}
+
+message EngineDriverCapabilities {
+  // Normalized runtime driver name: docker, k8s, boxlite, or microsandbox.
+  string driver = 1;
+  repeated EngineCapability capabilities = 2;
+}
+
+// EngineProviderCapabilities describes one guest coding-agent provider.
+message EngineProviderCapabilities {
+  // Normalized provider key: codex, claude, opencode, pi, or dsh.
+  string provider = 1;
+  // Upstream protocol families in preference order, most preferred first. This
+  // is the same order pkg/llms computes for the provider's dialect.
+  repeated string preferred_protocols = 2;
+  repeated EngineProviderFeature features = 3;
+}
+
+message EngineProviderFeature {
+  // stable key: structured_output, session_resume, streaming, or
+  // skill_injection.
+  string feature = 1;
+  bool supported = 2;
+}
+
+message GetEngineCapabilitiesResponse {
+  // Driver capabilities captured once when the daemon started. This RPC never
+  // re-probes a driver, so a driver that is currently unreachable still
+  // reports its startup declaration.
+  repeated EngineDriverCapabilities drivers = 1;
+  repeated EngineProviderCapabilities providers = 2;
+  // The drivers compiled into this binary. These values are identical to
+  // compiled_drivers in /api/version, and that field's semantics are unchanged.
+  repeated string compiled_drivers = 3;
+  // The difference between the two pieces of information, stated explicitly so
+  // a consumer does not have to infer it from the field names:
+  // compiled_drivers answers "what was compiled in" and does not check daemon
+  // reachability, KVM access, or whether a driver can start. The capability
+  // snapshot above answers "what can be enforced, and by what". They are
+  // complementary, not substitutes.
+  string compiled_drivers_note = 4;
+  // When the startup snapshot was captured.
+  google.protobuf.Timestamp captured_at = 5;
+  // The engine-measured layer captured with the same startup snapshot: the host
+  // system probe plus any measured process facts frozen with it. Source on each
+  // entry is "measured" or "simulated", never "declared".
+  repeated EngineObservedCapability observations = 6;
+}

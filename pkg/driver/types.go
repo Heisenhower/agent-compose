@@ -30,6 +30,20 @@ type Sandbox struct {
 	EnvItems        []SandboxEnvVar      `json:"env_items,omitempty"`
 	VolumeMounts    []SandboxVolumeMount `json:"volume_mounts,omitempty"`
 	RuntimeEnvItems []SandboxEnvVar      `json:"-"`
+	// NetworkPolicy is the driver-boundary egress policy the caller populated
+	// from the compose declaration. A nil policy means the sandbox declared no
+	// network policy, which keeps today's unrestricted behavior (D3).
+	NetworkPolicy *SandboxNetworkPolicy `json:"network_policy,omitempty"`
+	// ProxyEnv, when set, is invoked by a driver at the moment it builds the
+	// environment of a runtime it is creating, and never when it reuses one.
+	//
+	// A guest reads its proxy environment once, when its runtime is created; a
+	// later ensure of that same runtime cannot change it. Resolving the proxy
+	// credential here, rather than when the sandbox is handed to the driver, is
+	// what keeps issuance to one credential per runtime: eager resolution mints
+	// a live credential on every ensure, every scheduler tick and every
+	// guest-file operation, and no extra can ever be presented by a guest.
+	ProxyEnv func(context.Context) ([]SandboxEnvVar, error) `json:"-"`
 }
 
 // SandboxWorkspace carries the persisted delivery contract into the runtime boundary.
@@ -126,6 +140,10 @@ type ExecResult struct {
 	Stderr   string
 	Output   string
 	Success  bool
+	// SecurityFacts carries the isolation failures the lower layer reported on
+	// this exec's stderr. It is engine-measured evidence, not a driver
+	// declaration, and is zero when the lower layer reported nothing.
+	SecurityFacts ExecSecurityFacts
 }
 
 const (
@@ -162,6 +180,13 @@ type SandboxVMInfo struct {
 	BoxID      string
 	JupyterURL string
 	ProxyState *ProxyState
+	// RuntimeCreated reports that this call created the runtime rather than
+	// reusing one that already existed. The engine asks a start to *ensure* a
+	// runtime, so this is the only fact that distinguishes "built under the
+	// configuration resolved now" from "started again with the one it already
+	// had". A driver that does not report it leaves the engine unable to tell,
+	// and callers must treat false as unknown rather than as reuse.
+	RuntimeCreated bool
 }
 
 type SandboxRuntime interface {
@@ -172,24 +197,70 @@ type SandboxRuntime interface {
 	ExecStream(context.Context, *Sandbox, VMState, ExecSpec, ExecStreamWriter) (ExecResult, error)
 }
 
-func sandboxEnvMap(groups ...[]SandboxEnvVar) map[string]string {
-	if len(groups) == 0 {
-		return nil
-	}
+// sandboxEnvMap merges guest environment from two sources with different trust.
+//
+//   - declared is what the project or agent declared. It is filtered through
+//     LLMProviderEnvName, because the daemon absorbs a declared LLM provider and
+//     replaces it with facade values: a surviving declared key, endpoint, or
+//     protocol would contradict the connection the guest is actually given.
+//   - runtime is what the daemon computed for this sandbox (sandbox id,
+//     workspace roots, proxy state, facade tokens). It is deliberately not
+//     filtered by name: every value there was authored by the daemon, and the
+//     facade token the guest must present is addressed by a name the denylist
+//     would otherwise hide. The two groups are separate parameters rather than a
+//     variadic list so this asymmetry is stated at the call site instead of
+//     depending on argument order.
+//
+// Non-LLM credentials (git, MCP, registry) are recognized by CredentialEnvName
+// but are neither filtered here nor redacted from views: dropping the plaintext
+// value without a scoped endpoint to replace it would break the tool while
+// providing no isolation, and hiding it would describe an exposed value as
+// protected. The credential broker owns the migration out of plaintext.
+func sandboxEnvMap(declared, runtime []SandboxEnvVar) map[string]string {
 	env := make(map[string]string)
-	for groupIndex, items := range groups {
-		for _, item := range items {
-			name := strings.TrimSpace(item.Name)
-			if name == "" || (groupIndex == 0 && LLMProviderEnvName(name)) {
-				continue
-			}
-			env[name] = item.Value
+	for _, item := range declared {
+		name := strings.TrimSpace(item.Name)
+		if name == "" || LLMProviderEnvName(name) {
+			continue
 		}
+		env[name] = item.Value
+	}
+	for _, item := range runtime {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			continue
+		}
+		env[name] = item.Value
 	}
 	if len(env) == 0 {
 		return nil
 	}
 	return env
+}
+
+// sandboxEnvMapWithProxy builds a sandbox's environment and resolves its
+// create-time proxy environment, if the caller installed a provider.
+//
+// Only a driver's creation path calls this. A driver that finds an existing
+// runtime returns before reaching it, so an ensure that reuses a runtime never
+// invokes the provider and therefore never issues a credential the running guest
+// cannot present. The proxied items are runtime-authored, like the facade token
+// beside them, so they are merged into the runtime group and not name-filtered.
+func sandboxEnvMapWithProxy(ctx context.Context, sandbox *Sandbox) (map[string]string, error) {
+	if sandbox == nil {
+		return nil, nil
+	}
+	runtimeItems := sandbox.RuntimeEnvItems
+	if sandbox.ProxyEnv != nil {
+		proxyItems, err := sandbox.ProxyEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(proxyItems) > 0 {
+			runtimeItems = append(append([]SandboxEnvVar(nil), runtimeItems...), proxyItems...)
+		}
+	}
+	return sandboxEnvMap(sandbox.EnvItems, runtimeItems), nil
 }
 
 // LLMProviderEnvName reports whether name is long-lived LLM provider

@@ -69,13 +69,44 @@ type NormalizedAgentSpec struct {
 	Skills       []NormalizedSkillSpec              `yaml:"skills,omitempty" json:"skills,omitempty"`
 	Volumes      []NormalizedVolumeMountSpec        `yaml:"volumes,omitempty" json:"volumes,omitempty"`
 	Workspace    *WorkspaceSpec                     `yaml:"workspace,omitempty" json:"workspace,omitempty"`
-	Sandbox      *NormalizedSandboxSpec             `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
-	Scheduler    *NormalizedSchedulerSpec           `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
-	Jupyter      *JupyterSpec                       `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
+	// Policy is the normalized agent policy block. Normalization always writes
+	// this key.
+	Policy *NormalizedSandboxSpec `yaml:"policy,omitempty" json:"policy,omitempty"`
+	// Sandbox is the deprecated spelling, read only so specs persisted before
+	// the rename keep their declared policy. Normalization never sets it.
+	Sandbox   *NormalizedSandboxSpec   `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
+	Scheduler *NormalizedSchedulerSpec `yaml:"scheduler,omitempty" json:"scheduler,omitempty"`
+	Jupyter   *JupyterSpec             `yaml:"jupyter,omitempty" json:"jupyter,omitempty"`
 }
 
 type NormalizedSandboxSpec struct {
 	StoppedRuntimePolicy string `yaml:"stopped_runtime_policy" json:"stopped_runtime_policy"`
+	// Network is nil when the sandbox declared no network policy. The
+	// omitempty tag is what keeps an undeclared sandbox byte-identical in
+	// canonical JSON, and therefore in the spec hash.
+	Network *NormalizedSandboxNetworkSpec `yaml:"network,omitempty" json:"network,omitempty"`
+}
+
+// NormalizedSandboxNetworkSpec is the validated declaration. Default is always
+// present ("allow-all" or "deny"); Allow is sorted so the canonical JSON and
+// hash do not depend on declaration order, and a duplicate entry is rejected
+// during normalization rather than silently collapsed.
+type NormalizedSandboxNetworkSpec struct {
+	Default string                              `yaml:"default" json:"default"`
+	Allow   []NormalizedSandboxNetworkAllowSpec `yaml:"allow,omitempty" json:"allow,omitempty"`
+}
+
+// NormalizedSandboxNetworkAllowSpec is one validated allowance. Protocol is
+// always present after normalization, with "any" meaning "the engine does not
+// claim to inspect this traffic".
+type NormalizedSandboxNetworkAllowSpec struct {
+	Host     string `yaml:"host" json:"host"`
+	Port     int    `yaml:"port" json:"port"`
+	Protocol string `yaml:"protocol" json:"protocol"`
+	// AllowedIPs are the canonical CIDRs a name may resolve to for this
+	// allowance to apply. It is empty when the declaration left the addresses
+	// unconstrained, and it participates in the canonical JSON and spec hash.
+	AllowedIPs []string `yaml:"allowed_ips,omitempty" json:"allowed_ips,omitempty"`
 }
 
 type NormalizedMCPServerSpec struct {
@@ -234,6 +265,14 @@ func Normalize(spec *ProjectSpec, options NormalizeOptions) (*NormalizedProjectS
 		return nil, err
 	}
 	normalized.Volumes = volumes
+	// The policy library is resolved into each agent and is not carried further:
+	// what the engine enforces is the agent's effective policy block. Every entry
+	// is normalized here so a broken definition fails the project even when no
+	// agent selects it yet.
+	policies, err := normalizePolicyMap("policies", spec.Policies)
+	if err != nil {
+		return nil, err
+	}
 
 	agentNames := make([]string, 0, len(spec.Agents))
 	for name := range spec.Agents {
@@ -246,7 +285,7 @@ func Normalize(spec *ProjectSpec, options NormalizeOptions) (*NormalizedProjectS
 			return nil, err
 		}
 		agent := spec.Agents[agentName]
-		normalizedAgent, err := normalizeAgent(agentName, agent, options, normalized)
+		normalizedAgent, err := normalizeAgent(agentName, agent, options, normalized, policies)
 		if err != nil {
 			return nil, err
 		}
@@ -268,7 +307,7 @@ func NormalizeFile(path string) (*NormalizedProjectSpec, error) {
 	return normalized, nil
 }
 
-func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, project *NormalizedProjectSpec) (NormalizedAgentSpec, error) {
+func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, project *NormalizedProjectSpec, policies map[string]NormalizedSandboxSpec) (NormalizedAgentSpec, error) {
 	enabled := true
 	if agent.Enabled != nil {
 		enabled = *agent.Enabled
@@ -327,13 +366,17 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 	if workspace != nil && workspace.Mode == domain.WorkspaceModeMount && driver != nil && driver.Name != DriverDocker {
 		return NormalizedAgentSpec{}, &ValidationError{Path: joinPath("agents", name) + ".workspace.mode", Message: "workspace mount mode is only supported by the docker driver"}
 	}
-	sandbox, err := normalizeSandboxSpec(joinPath("agents", name)+".sandbox", agent.Sandbox)
+	policyKey, declaredPolicy, err := resolveDeclaredPolicyBlock(joinPath("agents", name), agent.Policy, agent.Sandbox)
 	if err != nil {
 		return NormalizedAgentSpec{}, err
 	}
-	if driver != nil && driver.Name == DriverK8s && sandbox != nil && sandbox.StoppedRuntimePolicy == domain.StoppedRuntimePolicyRetain {
+	policy, err := normalizeAgentPolicy(joinPath("agents", name)+"."+policyKey, declaredPolicy, policies)
+	if err != nil {
+		return NormalizedAgentSpec{}, err
+	}
+	if driver != nil && driver.Name == DriverK8s && policy != nil && policy.StoppedRuntimePolicy == domain.StoppedRuntimePolicyRetain {
 		return NormalizedAgentSpec{}, &ValidationError{
-			Path:    joinPath("agents", name) + ".sandbox.stopped_runtime_policy",
+			Path:    joinPath("agents", name) + "." + policyKey + ".stopped_runtime_policy",
 			Message: "k8s does not support retain because stopping a Pod deletes it; use remove and sandbox_policy=sticky when the Pod must stay running",
 		}
 	}
@@ -358,10 +401,88 @@ func normalizeAgent(name string, agent AgentSpec, options NormalizeOptions, proj
 		Skills:       skills,
 		Volumes:      volumes,
 		Workspace:    workspace,
-		Sandbox:      sandbox,
+		Policy:       policy,
 		Scheduler:    scheduler,
 		Jupyter:      jupyter,
 	}, nil
+}
+
+// normalizePolicyMap normalizes the project's policy library. An entry is a
+// definition, never a reference to another entry, so a scalar there is rejected
+// rather than silently resolved.
+func normalizePolicyMap(path string, policies map[string]SandboxSpec) (map[string]NormalizedSandboxSpec, error) {
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(policies))
+	for name := range policies {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	normalized := make(map[string]NormalizedSandboxSpec, len(policies))
+	for _, name := range names {
+		itemPath := joinPath(path, name)
+		definition := policies[name]
+		if ref := strings.TrimSpace(definition.Ref); ref != "" {
+			return nil, &ValidationError{
+				Path:    itemPath,
+				Message: fmt.Sprintf("a project policy defines a block; it cannot reference %q", ref),
+			}
+		}
+		block, err := normalizeSandboxSpec(itemPath, &definition)
+		if err != nil {
+			return nil, err
+		}
+		if block != nil {
+			normalized[name] = *block
+		}
+	}
+	return normalized, nil
+}
+
+// normalizeAgentPolicy produces the policy block an agent actually enforces:
+// either the project policy it named, or the block it declared inline.
+//
+// A name and an inline block cannot both be present, because a scalar decodes to
+// a reference and a mapping to a block. The two forms are exclusive by
+// construction rather than by validation, so there is no precedence rule to
+// document.
+func normalizeAgentPolicy(path string, declared *SandboxSpec, policies map[string]NormalizedSandboxSpec) (*NormalizedSandboxSpec, error) {
+	if declared == nil {
+		return nil, nil
+	}
+	if ref := strings.TrimSpace(declared.Ref); ref != "" {
+		policy, ok := policies[ref]
+		if !ok {
+			return nil, &ValidationError{Path: path, Message: fmt.Sprintf("policy %q is not defined in policies", ref)}
+		}
+		// Every agent that references one library policy gets its own copy: the
+		// map value shares its Network block with the library entry, so returning
+		// it directly would let an edit through one agent change every other
+		// agent that references the same policy.
+		return cloneNormalizedSandboxSpec(&policy), nil
+	}
+	return normalizeSandboxSpec(path, declared)
+}
+
+// resolveDeclaredPolicyBlock returns the policy block an agent declared and the
+// key it used. `sandbox` is the deprecated spelling of `policy`; declaring both
+// is rejected rather than silently resolved, because the two blocks could
+// disagree about a policy that the engine enforces.
+func resolveDeclaredPolicyBlock(path string, policy, legacy *SandboxSpec) (string, *SandboxSpec, error) {
+	switch {
+	case policy != nil && legacy != nil:
+		return "", nil, &ValidationError{
+			Path:    path + ".sandbox",
+			Message: "declare either policy or its deprecated spelling sandbox, not both",
+		}
+	case policy != nil:
+		return "policy", policy, nil
+	case legacy != nil:
+		return "sandbox", legacy, nil
+	default:
+		return "policy", nil, nil
+	}
 }
 
 func normalizeSandboxSpec(path string, sandbox *SandboxSpec) (*NormalizedSandboxSpec, error) {
@@ -372,7 +493,11 @@ func normalizeSandboxSpec(path string, sandbox *SandboxSpec) (*NormalizedSandbox
 	if err != nil {
 		return nil, &ValidationError{Path: path + ".stopped_runtime_policy", Message: err.Error()}
 	}
-	return &NormalizedSandboxSpec{StoppedRuntimePolicy: policy}, nil
+	network, err := NormalizeSandboxNetworkSpec(path+".network", sandbox.Network)
+	if err != nil {
+		return nil, err
+	}
+	return &NormalizedSandboxSpec{StoppedRuntimePolicy: policy, Network: network}, nil
 }
 
 func normalizeProjectWorkspaces(values map[string]WorkspaceSpec, options NormalizeOptions) (map[string]WorkspaceSpec, error) {

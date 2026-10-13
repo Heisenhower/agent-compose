@@ -93,7 +93,7 @@ func runComposePullCommand(cmd *cobra.Command, cli cliOptions, options composeIm
 	if len(args) == 1 {
 		return runComposeImagePullCommand(cmd, cli, options, args[0])
 	}
-	_, normalized, err := loadNormalizedCompose(cli)
+	_, normalized, _, err := loadNormalizedCompose(cli)
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func runComposeBuildCommand(cmd *cobra.Command, cli cliOptions, options composeI
 }
 
 func runComposeProjectBuildCommand(cmd *cobra.Command, cli cliOptions, options composeImageBuildOptions, agentNames []string) error {
-	sourcePath, normalized, err := loadNormalizedCompose(cli)
+	sourcePath, normalized, _, err := loadNormalizedCompose(cli)
 	if err != nil {
 		return err
 	}

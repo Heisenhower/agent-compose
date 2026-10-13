@@ -48,7 +48,8 @@ func normalizedProjectSpecFromOrdered(ordered orderedProjectSpec) *NormalizedPro
 			Skills:       cloneNormalizedSkillSpecs(agent.Skills),
 			Volumes:      cloneNormalizedVolumeMountSpecs(agent.Volumes),
 			Workspace:    cloneWorkspaceSpec(agent.Workspace),
-			Sandbox:      agent.Sandbox,
+			Policy:       cloneNormalizedSandboxSpec(agent.Policy),
+			Sandbox:      cloneNormalizedSandboxSpec(agent.Sandbox),
 			Scheduler:    cloneNormalizedSchedulerSpec(agent.Scheduler),
 			Jupyter:      cloneJupyterSpec(agent.Jupyter),
 		})

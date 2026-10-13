@@ -18,6 +18,7 @@ import (
 	"github.com/chaitin/agent-compose/pkg/agentcompose/proxy"
 	"github.com/chaitin/agent-compose/pkg/cache"
 	"github.com/chaitin/agent-compose/pkg/capabilities"
+	"github.com/chaitin/agent-compose/pkg/capmatrix"
 	"github.com/chaitin/agent-compose/pkg/capproxy"
 	"github.com/chaitin/agent-compose/pkg/cleanup"
 	appconfig "github.com/chaitin/agent-compose/pkg/config"
@@ -63,9 +64,12 @@ func RegisterDependencies(di do.Injector) {
 	do.Provide(di, NewTelemetryProvider)
 	do.Provide(di, NewTelemetryRecorder)
 	do.Provide(di, NewRuntimeProvider)
+	do.Provide(di, NewEgressProxy)
+	do.Provide(di, NewSandboxEgressMediation)
 	do.Provide(di, NewLLMClient)
 	do.Provide(di, NewProjectOctoBusTargetResolver)
 	do.Provide(di, NewCapabilityProvider)
+	do.Provide(di, NewEngineCapabilitySnapshot)
 	do.Provide(di, NewCapabilitySandboxResolver)
 	do.Provide(di, NewImageBackends)
 	do.Provide(di, NewCacheController)
@@ -102,7 +106,11 @@ func RegisterRoutes(di do.Injector) {
 	schedulerController := do.MustInvoke[*schedulers.Controller](di)
 
 	projectHandler := api.NewProjectHandlerWithAgentModels(api.ProjectHandlerDeps{
-		Delegate:         projectControllerDelegate{controller: do.MustInvoke[*projects.Controller](di)},
+		Delegate: projectControllerDelegate{
+			controller: do.MustInvoke[*projects.Controller](di),
+			mediation:  do.MustInvoke[*adapters.SandboxEgressProxy](di),
+			config:     do.MustInvoke[*appconfig.Config](di),
+		},
 		Store:            do.MustInvoke[*configstore.ConfigStore](di),
 		SchedulerRuntime: schedulerController,
 		SchedulerRuns:    schedulerController.SchedulerRuns(),
@@ -162,6 +170,8 @@ func RegisterRoutes(di do.Injector) {
 	path, handler = agentcomposev2connect.NewDashboardServiceHandler(api.NewDashboardV2Handler(do.MustInvoke[*dashboard.Hub](di)))
 	app.Any(path+"*", echo.WrapHandler(handler))
 	path, handler = agentcomposev2connect.NewCapabilityServiceHandler(api.NewCapabilityV2Handler(do.MustInvoke[capabilities.Provider](di), capabilityRuntimeConfig{config: do.MustInvoke[*appconfig.Config](di)}))
+	app.Any(path+"*", echo.WrapHandler(handler))
+	path, handler = agentcomposev2connect.NewEngineServiceHandler(api.NewEngineCapabilitiesV2Handler(do.MustInvoke[capmatrix.Snapshot](di)))
 	app.Any(path+"*", echo.WrapHandler(handler))
 	path, handler = agentcomposev2connect.NewLLMServiceHandler(api.NewLLMHandler(do.MustInvoke[*adapters.LLMClient](di), do.MustInvoke[*configstore.ConfigStore](di)))
 	app.Any(path+"*", echo.WrapHandler(handler))
@@ -398,11 +408,45 @@ func NewVolumeManager(di do.Injector) (*volumes.Manager, error) {
 }
 
 func NewRuntimeProvider(di do.Injector) (adapters.RuntimeProvider, error) {
+	config := do.MustInvoke[*appconfig.Config](di)
+	sandboxStore := do.MustInvoke[*sandboxstore.Store](di)
+	targets := do.MustInvoke[*runs.SandboxRunTargetResolver](di)
 	return adapters.NewRuntimeProvider(
-		do.MustInvoke[*appconfig.Config](di),
-		do.MustInvoke[*sandboxstore.Store](di),
+		config,
+		sandboxStore,
+		targets,
 		adapters.WithRuntimeRecorder(do.MustInvoke[*telemetry.Recorder](di)),
+		adapters.WithSandboxEgressProxy(*do.MustInvoke[*adapters.SandboxEgressProxy](di)),
 	)
+}
+
+// NewEgressProxy builds the daemon's forward proxy: the enforcement point that
+// makes a declared sandbox network policy real on a driver that has no
+// enforcement surface of its own. The mediation is both its authorizer (which
+// sandbox does this credential belong to) and its policy source (what does that
+// sandbox's project declare now).
+func NewEgressProxy(di do.Injector) (*proxy.EgressProxy, error) {
+	mediation := *do.MustInvoke[*adapters.SandboxEgressProxy](di)
+	return proxy.NewEgressProxy(proxy.EgressProxyOptions{
+		Authorizer: mediation,
+		Policies:   mediation,
+		Logger:     do.MustInvoke[*slog.Logger](di),
+	})
+}
+
+// NewSandboxEgressMediation builds the one mediation value the daemon shares:
+// the proxy uses it as its authorizer and policy source, the creation seam uses
+// it to decide whether a sandbox is given the proxy, and the admission report
+// uses it to name the mechanism that will apply a declaration. One value means
+// the three cannot disagree about whether the engine mediates.
+func NewSandboxEgressMediation(di do.Injector) (*adapters.SandboxEgressProxy, error) {
+	mediation := adapters.NewSandboxEgressProxy(
+		do.MustInvoke[*appconfig.Config](di),
+		do.MustInvoke[*configstore.ConfigStore](di),
+		do.MustInvoke[*sandboxstore.Store](di),
+		do.MustInvoke[*runs.SandboxRunTargetResolver](di),
+	)
+	return &mediation, nil
 }
 
 func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {
@@ -411,10 +455,13 @@ func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {
 
 func NewSandboxDriver(di do.Injector) (*adapters.SandboxDriver, error) {
 	return adapters.NewSandboxDriver(
-		do.MustInvoke[*appconfig.Config](di),
-		do.MustInvoke[*sandboxstore.Store](di),
-		do.MustInvoke[*configstore.ConfigStore](di),
-		do.MustInvoke[adapters.RuntimeProvider](di),
+		adapters.SandboxDriverDeps{
+			Config:       do.MustInvoke[*appconfig.Config](di),
+			Store:        do.MustInvoke[*sandboxstore.Store](di),
+			ConfigDB:     do.MustInvoke[*configstore.ConfigStore](di),
+			Runtimes:     do.MustInvoke[adapters.RuntimeProvider](di),
+			Capabilities: do.MustInvoke[capmatrix.Snapshot](di),
+		},
 		adapters.WithSandboxDriverRecorder(do.MustInvoke[*telemetry.Recorder](di)),
 	), nil
 }
@@ -542,6 +589,21 @@ func NewCapabilityProvider(di do.Injector) (capabilities.Provider, error) {
 		do.MustInvoke[*adapters.ProjectOctoBusTargetResolver](di),
 		conf.CapGRPCTarget,
 	), nil
+}
+
+// NewEngineCapabilitySnapshot freezes the engine capability matrix once, when
+// the daemon composes its routes. It reads static driver declarations and the
+// provider matrix, so it never probes a runtime.
+func NewEngineCapabilitySnapshot(do.Injector) (capmatrix.Snapshot, error) {
+	facts, err := driver.CompiledRuntimeCapabilities()
+	if err != nil {
+		return capmatrix.Snapshot{}, fmt.Errorf("collect runtime capability declarations: %w", err)
+	}
+	snapshot, err := capmatrix.BuildSnapshot(facts, time.Now())
+	if err != nil {
+		return capmatrix.Snapshot{}, fmt.Errorf("build engine capability snapshot: %w", err)
+	}
+	return snapshot, nil
 }
 
 func NewProjectOctoBusTargetResolver(di do.Injector) (*adapters.ProjectOctoBusTargetResolver, error) {

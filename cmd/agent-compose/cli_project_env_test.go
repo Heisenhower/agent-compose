@@ -108,7 +108,7 @@ func TestLoadNormalizedComposeUsesProjectEnv(t *testing.T) {
 	writeTestFile(t, composePath, "name: env-project\nagents:\n  reviewer:\n    provider: codex\n    model: ${PROJECT_MODEL}\n")
 	writeTestFile(t, filepath.Join(projectDir, ".env"), "PROJECT_MODEL=gpt-from-project\n")
 
-	_, normalized, err := loadNormalizedCompose(cliOptions{ComposeFile: composePath})
+	_, normalized, _, err := loadNormalizedCompose(cliOptions{ComposeFile: composePath})
 	if err != nil {
 		t.Fatalf("loadNormalizedCompose returned error: %v", err)
 	}
@@ -131,7 +131,7 @@ agents:
 `)
 	writeTestFile(t, filepath.Join(projectDir, ".env"), "SKILL_TOKEN=skill-from-project\n")
 
-	_, normalized, err := loadNormalizedCompose(cliOptions{ComposeFile: composePath})
+	_, normalized, _, err := loadNormalizedCompose(cliOptions{ComposeFile: composePath})
 	if err != nil {
 		t.Fatalf("loadNormalizedCompose returned error: %v", err)
 	}

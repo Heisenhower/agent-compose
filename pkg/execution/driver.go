@@ -116,7 +116,7 @@ func ToDriverExecSpec(spec domain.ExecSpec) driverpkg.ExecSpec {
 }
 
 func FromDriverSandboxVMInfo(info driverpkg.SandboxVMInfo) domain.SandboxVMInfo {
-	result := domain.SandboxVMInfo{BoxID: info.BoxID, JupyterURL: info.JupyterURL}
+	result := domain.SandboxVMInfo{BoxID: info.BoxID, JupyterURL: info.JupyterURL, RuntimeCreated: info.RuntimeCreated}
 	if info.ProxyState != nil {
 		proxyState := FromDriverProxyState(*info.ProxyState)
 		result.ProxyState = &proxyState

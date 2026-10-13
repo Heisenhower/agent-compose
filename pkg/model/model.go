@@ -216,8 +216,15 @@ type Sandbox struct {
 	// or in session-scoped LLM provider rows.
 	ProviderEnvOverrideNames []string             `json:"provider_env_override_names"`
 	VolumeMounts             []SandboxVolumeMount `json:"volume_mounts,omitempty"`
-	RuntimeEnvItems          []SandboxEnvVar      `json:"-"`
-	ProviderEnvItems         []SandboxEnvVar      `json:"-"`
+	// IsolationRequirements are the isolation dimensions this sandbox's
+	// declaration requires the engine to enforce. Entries are capability
+	// dimension keys ("egress_policy", "process.seccomp", ...) and may carry a
+	// "best_effort:" prefix. The list is empty for every sandbox the current
+	// compose schema can produce, so the SEC-3 start pre-flight is a no-op by
+	// default; a future declaration surface fills it without adding wiring.
+	IsolationRequirements []string        `json:"isolation_requirements,omitempty"`
+	RuntimeEnvItems       []SandboxEnvVar `json:"-"`
+	ProviderEnvItems      []SandboxEnvVar `json:"-"`
 }
 
 func SandboxWorkspaceReclaimed(sandbox *Sandbox) bool {
@@ -526,6 +533,32 @@ type VMState struct {
 	BootstrapRef     string    `json:"bootstrap_ref,omitempty"`
 	K8sContext       string    `json:"k8s_context,omitempty"`
 	K8sNamespace     string    `json:"k8s_namespace,omitempty"`
+	// EgressPolicy is what the engine knew about this sandbox's outbound network
+	// policy when it created the runtime that is running now. It is recorded at
+	// creation because the answer cannot be recovered afterwards: a runtime
+	// created before a declaration existed keeps the egress it started with, and
+	// only this record can say which policy that was.
+	//
+	// omitzero, not omitempty: omitempty has no effect on a struct, so the key
+	// was always written even when every field was zero. A record with nothing
+	// recorded is now genuinely absent, which readers already treat as "no fact
+	// recorded" because the zero value is what a missing key decodes to.
+	EgressPolicy SandboxEgressPolicy `json:"egress_policy,omitzero"`
+}
+
+// SandboxEgressPolicy is the persisted form of the egress fact recorded for a
+// sandbox runtime: the generation of the policy in force when it was created and
+// the mechanism that applied it (see the egress package's Application values).
+// An empty Applied means no record, which is what a runtime created before this
+// was recorded reports.
+type SandboxEgressPolicy struct {
+	Generation uint64 `json:"generation,omitempty"`
+	Applied    string `json:"applied,omitempty"`
+}
+
+// Recorded reports whether this runtime has an egress record at all.
+func (p SandboxEgressPolicy) Recorded() bool {
+	return p.Applied != ""
 }
 
 type ProxyState struct {
@@ -543,6 +576,14 @@ type SandboxVMInfo struct {
 	BoxID      string
 	JupyterURL string
 	ProxyState *ProxyState
+	// EgressPolicy is the egress fact the runtime was created with. The driver
+	// boundary resolves the policy, so it is the only layer that can report it,
+	// and the caller persists it beside the rest of the runtime state.
+	EgressPolicy SandboxEgressPolicy
+	// RuntimeCreated reports that the driver created this runtime rather than
+	// reusing one, which is what makes EgressPolicy the configuration the running
+	// runtime actually has.
+	RuntimeCreated bool
 }
 
 type ExecSpec struct {
