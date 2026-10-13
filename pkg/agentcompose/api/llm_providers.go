@@ -67,7 +67,8 @@ func (h *LLMHandler) ListProviders(ctx context.Context, req *connect.Request[age
 	}
 	result := make([]*agentcomposev2.LLMProvider, 0, len(page))
 	for _, provider := range page {
-		converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
+		target, _ := h.probeTarget(ctx, provider, bindings)
+		converted, err := providerToV2(provider, bindings, h.cachedCapabilities(target))
 		if err != nil {
 			return nil, ConnectErrorForDomain(err)
 		}
@@ -106,15 +107,15 @@ func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.
 		slog.Warn("llm connection model list is unavailable", "connection", provider.ID, "error", err)
 		bindings = nil
 	}
-	h.probeUpstream(ctx, provider, bindings)
-	converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
+	target, _ := h.probeUpstream(ctx, provider, bindings)
+	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(target))
 	if err == nil {
 		return converted
 	}
 	slog.Warn("llm connection model list could not be reported", "connection", provider.ID, "error", err)
 	// The model list is the only part of the conversion that carries an error, so
 	// describing the connection without it cannot fail.
-	summary, _ := providerToV2(provider, nil, h.providerCapabilities(provider, bindings))
+	summary, _ := providerToV2(provider, nil, h.cachedCapabilities(target))
 	return summary
 }
 
@@ -126,21 +127,39 @@ func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.
 // A disabled connection is not probed: it serves nothing until it is enabled
 // again, so the operator who just turned it off does not wait out a probe budget
 // for it, and the startup sweep skips it for the same reason.
-func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider, bindings []llms.ProviderModelBinding) {
+//
+// It returns the connection and model the probe was aimed at, which is also the
+// cache key the response reads its verdict under.
+func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider, bindings []llms.ProviderModelBinding) (llms.Provider, string) {
+	target, model := h.probeTarget(ctx, provider, bindings)
 	if h == nil || h.prober == nil || !provider.Enabled {
-		return
+		return target, model
 	}
-	model := declaredProbeModel(bindings, provider.ID)
-	h.prober.ProbeConnection(ctx, llms.ProviderForModel(provider, bindings, model), model)
+	h.prober.ProbeConnection(ctx, target, model)
+	return target, model
 }
 
-// providerCapabilities reads the verdict probeUpstream wrote, which is keyed by
-// the endpoint the probe actually reached. Reading the cache with the connection
-// instead reported no capabilities for exactly the connections whose declared
-// model overrides the base url, because the probe stored its verdict under the
-// model endpoint and the response looked for it under the connection.
-func (h *LLMHandler) providerCapabilities(provider llms.Provider, bindings []llms.ProviderModelBinding) *llms.UpstreamProbeResult {
-	return h.cachedCapabilities(llms.ProviderForModel(provider, bindings, declaredProbeModel(bindings, provider.ID)))
+// probeTarget resolves the connection and model a probe of provider uses. The model
+// is the one the startup sweep picks (llms.ProbeModelFor), so the write and the
+// sweep cache their verdict under one endpoint and a capability read finds it.
+//
+// A catalog read that fails falls back to the model the connection declares: probing
+// is advisory, so neither a committed write nor a response fails on it, and the
+// fallback keeps the read and the write on the same endpoint.
+func (h *LLMHandler) probeTarget(ctx context.Context, provider llms.Provider, bindings []llms.ProviderModelBinding) (llms.Provider, string) {
+	model := ""
+	if h != nil && h.providers != nil {
+		defaultProvider, defaultModel, hasDefault, err := h.providers.DefaultLLMModelReference(ctx)
+		if err != nil {
+			slog.Warn("llm probe could not read the default model", "connection", provider.ID, "error", err)
+		} else {
+			model = llms.ProbeModelFor(provider.ID, bindings, defaultProvider, defaultModel, hasDefault)
+		}
+	}
+	if model == "" {
+		model = declaredProbeModel(bindings, provider.ID)
+	}
+	return llms.ProviderForModel(provider, bindings, model), model
 }
 
 // declaredProbeModel returns the first declared model id in stable order, or ""

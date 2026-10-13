@@ -189,3 +189,53 @@ func TestProbeConfiguredUpstreamsProbesTheDeclaredModelEndpoint(t *testing.T) {
 		t.Fatalf("verdict = %#v, want the model endpoint's chat_completions support", verdict.Protocols)
 	}
 }
+
+// A verdict is cached under the endpoint the probe reached, so the sweep has to name
+// the same model a capability read resolves. Here the catalog default is not the
+// lexicographically first declared model, which is where the two disagreed.
+func TestProbeConfiguredUpstreamsProbesTheDefaultModelEndpoint(t *testing.T) {
+	var firstHits, defaultHits atomic.Int64
+	counting := func(counter *atomic.Int64) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			counter.Add(1)
+			if r.URL.Path == "/v1/models" {
+				writeProbeJSON(w, `{"object":"list","data":[{"id":"served-model"}]}`)
+				return
+			}
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		}))
+	}
+	first, defaultEndpoint := counting(&firstHits), counting(&defaultHits)
+	defer first.Close()
+	defer defaultEndpoint.Close()
+
+	connection := catalogOpenAIConnection("a", "http://127.0.0.1:1/v1")
+	bindings := []ProviderModelBinding{
+		{ProviderID: connection.ID, ModelID: "alpha", Config: ProviderModelConfig{BaseURL: first.URL + "/v1"}},
+		{ProviderID: connection.ID, ModelID: "gamma", Config: ProviderModelConfig{BaseURL: defaultEndpoint.URL + "/v1"}},
+	}
+	store := fakeCatalogStore{
+		providers: []Provider{connection}, bindings: bindings,
+		defProvider: connection.ID, defModel: "gamma", hasDefault: true,
+	}
+	prober := NewUpstreamProber(defaultEndpoint.Client())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := ProbeConfiguredUpstreams(context.Background(), logger, prober, store); err != nil {
+		t.Fatalf("ProbeConfiguredUpstreams: %v", err)
+	}
+	if got := defaultHits.Load(); got == 0 {
+		t.Fatal("the sweep never reached the catalog default model's endpoint")
+	}
+	if got := firstHits.Load(); got != 0 {
+		t.Fatalf("the sweep probed the first declared model's endpoint %d times, want the catalog default", got)
+	}
+
+	// A reader resolves the model through the same selector, so it finds the verdict.
+	model := ProbeModelFor(connection.ID, bindings, connection.ID, "gamma", true)
+	if model != "gamma" {
+		t.Fatalf("ProbeModelFor = %q, want the catalog default gamma", model)
+	}
+	if _, ok := prober.LookupUpstreamProbe(ProviderForModel(connection, bindings, model)); !ok {
+		t.Fatal("no verdict is cached under the model a capability read resolves")
+	}
+}

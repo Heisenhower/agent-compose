@@ -115,7 +115,8 @@ func (h *LLMHandler) providerResponse(ctx context.Context, provider llms.Provide
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}
-	converted, err := providerToV2(provider, bindings, h.providerCapabilities(provider, bindings))
+	target, _ := h.probeTarget(ctx, provider, bindings)
+	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(target))
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}

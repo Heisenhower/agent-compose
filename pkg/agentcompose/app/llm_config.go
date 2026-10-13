@@ -27,6 +27,9 @@ type llmConfigStore interface {
 	modelCatalogStore
 	llms.DefaultConfigStore
 	llms.CatalogStore
+	// HasLLMProviders separates "nothing is configured" from "everything that is
+	// configured is disabled", which is what the startup warning reports.
+	HasLLMProviders(context.Context) (bool, error)
 }
 
 // loadLLMConfig materializes every configured LLM connection into the store
@@ -68,6 +71,14 @@ func loadLLMConfig(ctx context.Context, config *appconfig.Config, store llmConfi
 	}
 	if missing {
 		slog.Warn("no default llm model is configured; agents that declare no model keep their own authentication. Configure a model in models.json or through the LLM RPC/UI")
+		return nil
+	}
+	disabled, err := everyConnectionDisabled(ctx, store)
+	if err != nil {
+		return err
+	}
+	if disabled {
+		slog.Warn("no llm connection is enabled, so runs that declare no model have nothing to route to; a models.json Provider without an apiKey is persisted disabled, so declare a credential or \"enabled\": true for a connection that needs none")
 	}
 	return nil
 }
@@ -94,6 +105,29 @@ func defaultModelMissing(ctx context.Context, store llms.CatalogStore) (bool, er
 		return false, fmt.Errorf("list llm connections after projection: %w", err)
 	}
 	return len(connections) > 0, nil
+}
+
+// everyConnectionDisabled reports a deployment that configured at least one llm
+// connection while every one of them is persisted disabled. A row alone routes
+// nothing, so this is the state where a run that declares no model silently has no
+// upstream, and the file or environment that produced it is the only clue.
+//
+// A deployment with no connection at all is not this state: it never asked for a
+// daemon-managed model, and reporting it would warn on every start of a daemon that
+// only runs agents declaring their own upstreams.
+func everyConnectionDisabled(ctx context.Context, store llmConfigStore) (bool, error) {
+	configured, err := store.HasLLMProviders(ctx)
+	if err != nil {
+		return false, fmt.Errorf("read whether llm connections are configured: %w", err)
+	}
+	if !configured {
+		return false, nil
+	}
+	enabled, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list llm connections after projection: %w", err)
+	}
+	return len(enabled) == 0, nil
 }
 
 func loadModelCatalog(ctx context.Context, config *appconfig.Config, store modelCatalogStore) (*llms.ModelReference, error) {

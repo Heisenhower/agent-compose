@@ -34,6 +34,39 @@ func TestLoadLLMConfigReturnsNonConflictProjectionError(t *testing.T) {
 	}
 }
 
+// A connection list that is configured but entirely disabled routes nothing, and the
+// operator sees only a daemon that cannot resolve a model. Warning about it must not
+// fire for a deployment that configured no connection at all.
+func TestEveryConnectionDisabled(t *testing.T) {
+	cases := []struct {
+		name    string
+		store   *llmConfigStoreFake
+		wantHit bool
+	}{
+		{name: "nothing configured", store: &llmConfigStoreFake{}},
+		{
+			name:    "a connection the file persisted disabled",
+			store:   &llmConfigStoreFake{rows: 1},
+			wantHit: true,
+		},
+		{
+			name:  "a connection is enabled",
+			store: &llmConfigStoreFake{rows: 1, providers: []llms.Provider{{ID: "gateway", Enabled: true}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hit, err := everyConnectionDisabled(context.Background(), tc.store)
+			if err != nil {
+				t.Fatalf("everyConnectionDisabled: %v", err)
+			}
+			if hit != tc.wantHit {
+				t.Fatalf("disabled = %v, want %v", hit, tc.wantHit)
+			}
+		})
+	}
+}
+
 func TestDefaultModelMissing(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -143,6 +176,9 @@ type llmConfigStoreFake struct {
 	defaultModel    string
 	upsertErr       error
 	upserts         int
+	// rows counts configured connections the projection persisted disabled, which
+	// ListEnabledLLMProviders does not report.
+	rows int
 	// catalogDefault is what the fake's models.json projection writes, so a test
 	// can observe what projecting the file did to the stored default.
 	catalogDefault *llms.ModelReference
@@ -162,6 +198,12 @@ func (s *llmConfigStoreFake) UpsertDefaultLLMConfig(context.Context, llms.Provid
 
 func (s *llmConfigStoreFake) ListEnabledLLMProviders(context.Context) ([]llms.Provider, error) {
 	return s.providers, nil
+}
+
+// rows is what the store holds, enabled or not: a test can configure a connection
+// that the projection persisted disabled.
+func (s *llmConfigStoreFake) HasLLMProviders(context.Context) (bool, error) {
+	return s.rows > 0 || len(s.providers) > 0, nil
 }
 
 func (s *llmConfigStoreFake) ListEnabledLLMModels(context.Context) ([]llms.Model, error) {

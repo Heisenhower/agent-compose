@@ -21,22 +21,22 @@ import (
 // to add, and creating it anyway would only make the two endpoints peers in
 // connection selection, where one is picked at random.
 //
-// A declared id is owned for as long as its row carries the declaring scope, even
-// though a provider declaration without an apiKey is persisted disabled. The file
-// projection rewrites a provider row only while the row still carries the catalog
-// scope, so taking that id over made the next startup's file projection match no
-// row and fail with a non-catalog conflict; loadLLMConfig failed with it, and the
-// daemon started without its cleanup, scheduler, and deletion recovery managers on
-// every start.
-//
-// A model identity is only an owner while an enabled connection actually binds
-// it. An identity alone answers no request, so a models.json that declares a
-// connection without a credential — persisted disabled — must not suppress the
-// environment bootstrap: yielding to it left a deployment with no enabled
+// A source owns an id only while it can serve it: a connection row that source
+// persisted disabled, and a model identity no enabled connection that source owns
+// binds, answer no request. Yielding to one left a deployment with no enabled
 // connection at all, and runs silently lost the daemon-managed credential even
-// though the environment was the only source that could serve the model. Taking
-// the identity over stays symmetric, because the file projection reclaims an
-// identity the bootstrap materialized (CatalogProjectionOwnsScope).
+// though the environment was the only source that could serve the model. models.json
+// states that a declaration needs no credential with `"enabled": true`, so a file
+// that means to own a credentialless connection says so.
+//
+// Taking an id over stays symmetric in both directions. The file projection
+// reclaims what the bootstrap materialized — CatalogProjectionOwnsScope accepts the
+// bootstrap's scopes, and its upsert matches the scope it read — so a declaration
+// the file keeps is rewritten on the next startup rather than failing: nothing here
+// can leave models.json unable to rewrite its own declaration. The bootstrap in
+// turn maintains the rows it materialized, so an id it took over comes back under
+// the file as soon as the file can serve it, and the bootstrap then yields with the
+// usual warning.
 //
 // A row the file stops declaring loses that scope: the projection releases it, and
 // the environment bootstrap maintains an unset scope. So a stale row cannot keep
@@ -47,7 +47,7 @@ import (
 // environment materialized, including one it took over after a release, comes back
 // under the file the moment the file declares it again.
 func envProjectionConflict(ctx context.Context, tx *sql.Tx, providerID, modelID string) (*llms.DefaultConfigConflict, error) {
-	provider, err := foreignIDOwner(ctx, tx, "provider", `SELECT scope FROM llm_provider WHERE id = ?`, providerID)
+	provider, err := servingProviderOwner(ctx, tx, providerID)
 	if err != nil {
 		return nil, err
 	}
@@ -76,27 +76,34 @@ func (o *llmIDOwner) conflict() *llms.DefaultConfigConflict {
 	return &llms.DefaultConfigConflict{Kind: o.kind, ID: o.id, Scope: o.scope}
 }
 
-// foreignIDOwner reads the row carrying id under a scope the environment
-// bootstrap does not own. An id no row carries, and one the bootstrap's own
-// projection owns, report no owner.
-func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*llmIDOwner, error) {
+// servingProviderOwner reads the connection carrying id under a scope the
+// environment bootstrap does not own, and only while that connection is enabled.
+//
+// An enabled connection is what makes an id worth keeping: models.json persists a
+// declaration without an apiKey disabled, and an id that serves nothing must not
+// suppress the bootstrap. The file projection accepts the bootstrap's scopes, so
+// claiming the id cannot strand the file's own declaration: the next startup
+// rewrites the row from the file, and once the file can serve it the bootstrap
+// yields.
+func servingProviderOwner(ctx context.Context, tx *sql.Tx, id string) (*llmIDOwner, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, nil
 	}
 	var scope string
-	err := tx.QueryRowContext(ctx, query, id).Scan(&scope)
+	var enabled int
+	err := tx.QueryRowContext(ctx, `SELECT scope, enabled FROM llm_provider WHERE id = ?`, id).Scan(&scope, &enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s %q ownership: %w", kind, id, err)
+		return nil, fmt.Errorf("read provider %q ownership: %w", id, err)
 	}
 	scope = strings.TrimSpace(scope)
-	if llms.EnvProjectionOwnsScope(scope) {
+	if llms.EnvProjectionOwnsScope(scope) || enabled == 0 {
 		return nil, nil
 	}
-	return &llmIDOwner{kind: kind, id: id, scope: scope}, nil
+	return &llmIDOwner{kind: "provider", id: id, scope: scope}, nil
 }
 
 // servingModelOwner reads the model identity carrying id under a scope the

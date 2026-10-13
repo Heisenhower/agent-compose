@@ -183,17 +183,50 @@ func TestIntegrationEnvProjectionReleasesItsConnectionWhenItYields(t *testing.T)
 // matched no row, failed with a non-catalog conflict, and loadLLMConfig failed
 // with it, so the daemon started without its cleanup, scheduler, and deletion
 // recovery managers — on every startup, with no way to recover.
-func TestIntegrationEnvProjectionKeepsDisabledDeclaredCatalogProvider(t *testing.T) {
+// A provider id the file declares without a credential is persisted disabled, so it
+// serves nothing and must not keep the bootstrap from serving that id: yielding let
+// a deployment end up with every connection disabled, which is the same outcome the
+// model axis already prevents. The file keeps the declaration either way — its
+// projection accepts the scope the bootstrap writes — so it takes the id back on the
+// next startup and keeps it as soon as it can serve.
+func TestIntegrationEnvProjectionTakesOverADisabledDeclaredProvider(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := newProjectionTestStore(t)
 
 	catalog := credentiallessCatalog(llms.ProviderIDDefaultOpenAI, "shared-model")
+	envProvider, envModel := envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")
 	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
 		t.Fatalf("first file projection: %v", err)
 	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProvider, envModel); err != nil {
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the bootstrap to serve the id the file cannot", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, envProvider.BaseURL)
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	if _, err := loaded.Resolve("", "env-model", nil); err != nil {
+		t.Fatalf("Resolve(env-model) error = %v, want the bootstrap's connection to serve", err)
+	}
 
-	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model"))
+	// The file still rewrites the row it declares, so the next startup projects it
+	// from the file and the bootstrap serves the id again.
+	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
+		t.Fatalf("second file projection: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+	if err := store.UpsertDefaultLLMConfig(ctx, envProvider, envModel); err != nil {
+		t.Fatalf("UpsertDefaultLLMConfig after the file rewrote its row error = %v, want the bootstrap to serve again", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeEnvDefault, envProvider.BaseURL)
+
+	// Once the file can serve, the id is the file's and the bootstrap yields.
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential(llms.ProviderIDDefaultOpenAI, "shared-model")); err != nil {
+		t.Fatalf("file projection with a credential: %v", err)
+	}
+	err = store.UpsertDefaultLLMConfig(ctx, envProvider, envModel)
 	conflict, ok := llms.AsDefaultConfigConflict(err)
 	if !ok {
 		t.Fatalf("UpsertDefaultLLMConfig error = %v, want a default config conflict", err)
@@ -203,17 +236,11 @@ func TestIntegrationEnvProjectionKeepsDisabledDeclaredCatalogProvider(t *testing
 	}
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
 	var enabled int
-	var apiKey string
-	if err := store.DB().QueryRowContext(ctx, `SELECT enabled, api_key FROM llm_provider WHERE id = ?`, llms.ProviderIDDefaultOpenAI).Scan(&enabled, &apiKey); err != nil {
+	if err := store.DB().QueryRowContext(ctx, `SELECT enabled FROM llm_provider WHERE id = ?`, llms.ProviderIDDefaultOpenAI).Scan(&enabled); err != nil {
 		t.Fatal(err)
 	}
-	if enabled != 0 || apiKey != "" {
-		t.Fatalf("catalog provider enabled = %d api_key = %q, want the file's disabled declaration untouched", enabled, apiKey)
-	}
-
-	// The file must still be able to rewrite the row it declares.
-	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
-		t.Fatalf("second file projection after the environment projection: %v", err)
+	if enabled == 0 {
+		t.Fatal("the connection the file now serves was disabled by the bootstrap yielding")
 	}
 }
 

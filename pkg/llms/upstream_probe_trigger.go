@@ -78,27 +78,62 @@ func ProbeConfiguredUpstreams(ctx context.Context, logger *slog.Logger, prober *
 	return nil
 }
 
-// probeModelIndex picks one representative model per connection: the catalog
-// default model when it belongs to that connection, otherwise the
-// lexicographically first bound model. One model is enough to prove an endpoint
-// serves a protocol.
-func probeModelIndex(bindings []ProviderModelBinding, defaultProvider, defaultModel string, hasDefault bool) map[string]string {
-	models := map[string]string{}
+// ProbeModelFor picks the model a probe of providerID names: the catalog default
+// model when that connection serves it, otherwise the lexicographically first model
+// the connection declares. One model is enough to prove an endpoint serves a
+// protocol, and its endpoint decides the cache key, so every trigger and every
+// capability read has to resolve this the same way or a verdict is written under an
+// endpoint the reader never looks up.
+func ProbeModelFor(providerID string, bindings []ProviderModelBinding, defaultProvider, defaultModel string, hasDefault bool) string {
+	providerID = strings.TrimSpace(providerID)
+	if hasDefault && strings.TrimSpace(defaultProvider) == providerID {
+		if declared := strings.TrimSpace(defaultModel); declared != "" {
+			return declared
+		}
+	}
+	return firstBoundModel(providerID, bindings)
+}
+
+// firstBoundModel returns the lexicographically first model providerID declares, or
+// "" when it declares none.
+func firstBoundModel(providerID string, bindings []ProviderModelBinding) string {
+	model := ""
 	for _, binding := range bindings {
-		providerID := strings.TrimSpace(binding.ProviderID)
-		modelID := strings.TrimSpace(binding.ModelID)
-		if providerID == "" || modelID == "" {
+		if strings.TrimSpace(binding.ProviderID) != providerID {
 			continue
 		}
-		if current, ok := models[providerID]; !ok || modelID < current {
-			models[providerID] = modelID
+		modelID := strings.TrimSpace(binding.ModelID)
+		if modelID == "" {
+			continue
+		}
+		if model == "" || modelID < model {
+			model = modelID
 		}
 	}
-	if !hasDefault {
-		return models
+	return model
+}
+
+// probeModelIndex resolves ProbeModelFor for every connection the sweep probes: the
+// connections the bindings name, plus the default connection even when it declares
+// no model.
+func probeModelIndex(bindings []ProviderModelBinding, defaultProvider, defaultModel string, hasDefault bool) map[string]string {
+	providers := make([]string, 0, len(bindings)+1)
+	for _, binding := range bindings {
+		if providerID := strings.TrimSpace(binding.ProviderID); providerID != "" {
+			providers = append(providers, providerID)
+		}
 	}
-	if providerID := strings.TrimSpace(defaultProvider); providerID != "" {
-		models[providerID] = strings.TrimSpace(defaultModel)
+	if hasDefault {
+		if providerID := strings.TrimSpace(defaultProvider); providerID != "" {
+			providers = append(providers, providerID)
+		}
+	}
+	models := make(map[string]string, len(providers))
+	for _, providerID := range providers {
+		if _, ok := models[providerID]; ok {
+			continue
+		}
+		models[providerID] = ProbeModelFor(providerID, bindings, defaultProvider, defaultModel, hasDefault)
 	}
 	return models
 }

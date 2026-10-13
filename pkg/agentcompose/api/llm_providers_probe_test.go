@@ -157,13 +157,13 @@ func TestProviderResponsesReportCapabilitiesFromTheProbedModelEndpoint(t *testin
 	if err != nil {
 		t.Fatalf("CreateProvider: %v", err)
 	}
-	assertProbedModelCapabilities(t, "the write response", created.Msg.GetProvider())
+	assertProbedModelCapabilities(t, "the write response", created.Msg.GetProvider(), "deployed")
 
 	read, err := handler.GetProvider(ctx, connect.NewRequest(&agentcomposev2.GetProviderRequest{Id: "gateway"}))
 	if err != nil {
 		t.Fatalf("GetProvider: %v", err)
 	}
-	assertProbedModelCapabilities(t, "the read response", read.Msg.GetProvider())
+	assertProbedModelCapabilities(t, "the read response", read.Msg.GetProvider(), "deployed")
 
 	listed, err := handler.ListProviders(ctx, connect.NewRequest(&agentcomposev2.ListProvidersRequest{}))
 	if err != nil {
@@ -172,7 +172,7 @@ func TestProviderResponsesReportCapabilitiesFromTheProbedModelEndpoint(t *testin
 	if providers := listed.Msg.GetProviders(); len(providers) != 1 {
 		t.Fatalf("listed providers = %#v, want one", providers)
 	} else {
-		assertProbedModelCapabilities(t, "the list response", providers[0])
+		assertProbedModelCapabilities(t, "the list response", providers[0], "deployed")
 	}
 
 	if got := recorder.last().BaseURL; got != modelEndpoint {
@@ -185,15 +185,52 @@ func TestProviderResponsesReportCapabilitiesFromTheProbedModelEndpoint(t *testin
 	}
 }
 
-func assertProbedModelCapabilities(t *testing.T, source string, provider *agentcomposev2.LLMProvider) {
+func assertProbedModelCapabilities(t *testing.T, source string, provider *agentcomposev2.LLMProvider, wantModel string) {
 	t.Helper()
 	capabilities := provider.GetCapabilities()
 	if capabilities == nil {
 		t.Fatalf("%s reports no capabilities, want the probed model endpoint's verdict", source)
 	}
-	if capabilities.GetProbedModel() != "deployed" {
-		t.Fatalf("%s capabilities = %#v, want the verdict for the probed model", source, capabilities)
+	if capabilities.GetProbedModel() != wantModel {
+		t.Fatalf("%s capabilities = %#v, want the verdict for the probed model %q", source, capabilities, wantModel)
 	}
+}
+
+// The startup sweep caches its verdict for the catalog default model, so a read has
+// to resolve that same model even when the connection also declares a
+// lexicographically smaller one with its own endpoint. Resolving the smaller model
+// found nothing here, which is how these connections reported no capabilities until
+// a write happened to probe them.
+func TestProviderResponseReadsTheSweepVerdictForTheDefaultModel(t *testing.T) {
+	ctx := context.Background()
+	store := newLLMTestStore(t)
+	firstEndpoint, defaultEndpoint := "https://alpha.example/v1", "https://gamma.example/v1"
+	recorder := &recordingUpstreamProber{cachedByBaseURL: map[string]llms.UpstreamProbeResult{
+		defaultEndpoint: {
+			Endpoint: defaultEndpoint, Model: "gamma",
+			Protocols: []llms.ProtocolProbe{{Protocol: llms.APIProtocolResponses, Outcome: llms.ProbeSupported}},
+		},
+	}}
+	handler := NewLLMHandler(nil, store).WithUpstreamProbe(recorder)
+	spec := &agentcomposev2.LLMProviderSpec{
+		Id: "gateway", BaseUrl: "https://connection.example/v1", Protocol: "responses", ApiKey: proto.String("upstream-secret"),
+		Models: &agentcomposev2.LLMProviderModels{Models: []*agentcomposev2.LLMModelSpec{
+			{Id: "alpha", BaseUrl: firstEndpoint},
+			{Id: "gamma", BaseUrl: defaultEndpoint},
+		}},
+	}
+	if _, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec})); err != nil {
+		t.Fatalf("CreateProvider: %v", err)
+	}
+	if _, err := store.SetDefaultLLMModel(ctx, llms.ModelReference{ProviderID: "gateway", ModelID: "gamma"}); err != nil {
+		t.Fatalf("SetDefaultLLMModel: %v", err)
+	}
+
+	read, err := handler.GetProvider(ctx, connect.NewRequest(&agentcomposev2.GetProviderRequest{Id: "gateway"}))
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	assertProbedModelCapabilities(t, "the read response", read.Msg.GetProvider(), "gamma")
 }
 
 // failingBindingStore fails the model list a write is described with, while the
