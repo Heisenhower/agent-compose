@@ -79,15 +79,39 @@ func CompileNetworkPolicy(declaration NetworkDeclaration, engine []EngineEndpoin
 		rules = append(rules, engineRules...)
 	}
 	for _, entry := range declaration.Allow {
+		allowed, err := canonicalAllowedIPs(entry.AllowedIPs)
+		if err != nil {
+			return Policy{}, fmt.Errorf("allow entry %q port %d: %w", entry.Host, entry.Port, err)
+		}
 		rules = append(rules, Rule{
 			ID:         "network.allow",
 			Match:      MatchEndpoint,
 			Names:      []string{FormatEndpointPattern(entry.Host, entry.Port, entry.Protocol)},
 			Action:     Allow,
-			AllowedIPs: entry.AllowedIPs,
+			AllowedIPs: allowed,
 		})
 	}
 	return NewPolicy(declaration.Default, rules...), nil
+}
+
+// canonicalAllowedIPs returns address constraints in the canonical CIDR form
+// the rule matches with. Validate accepts the shorthand a declaration may use
+// (a bare address, an unmasked prefix), so compiling the raw strings would
+// store an entry whose decision-time parse never matches and would enforce a
+// narrower allowance than the declaration asked for.
+func canonicalAllowedIPs(values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	canonical := make([]string, 0, len(values))
+	for _, value := range values {
+		prefix, err := ParseAllowedIP(value)
+		if err != nil {
+			return nil, err
+		}
+		canonical = append(canonical, prefix)
+	}
+	return canonical, nil
 }
 
 // EffectiveNetworkPolicy returns the policy that governs one sandbox. A nil

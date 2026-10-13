@@ -304,3 +304,42 @@ func TestEndpointRuleDoesNotMatchMalformedRequest(t *testing.T) {
 		t.Fatalf("valid endpoint request = %+v, want an allow by network.allow", valid)
 	}
 }
+
+// TestCompileNetworkPolicyCanonicalizesDeclaredAddresses pins that the compiled
+// rule carries the canonical form of a declared address constraint. Validation
+// accepts a bare address or an unmasked prefix, so compiling the raw string
+// would store a rule the decision layer can never match and would deny a
+// destination the declaration allowed.
+func TestCompileNetworkPolicyCanonicalizesDeclaredAddresses(t *testing.T) {
+	declaration := NetworkDeclaration{
+		Default: Deny,
+		Allow: []AllowEntry{{
+			Host: "api.example.com", Port: 443, Protocol: ProtocolHTTPS,
+			AllowedIPs: []string{"203.0.113.7", "198.51.100.0/24"},
+		}},
+	}
+	if err := declaration.Validate(); err != nil {
+		t.Fatalf("the declaration layer rejected the shorthand form: %v", err)
+	}
+	policy, err := CompileNetworkPolicy(declaration, nil)
+	if err != nil {
+		t.Fatalf("CompileNetworkPolicy returned error: %v", err)
+	}
+	endpoint, err := NewEndpoint("api.example.com", 443, ProtocolHTTPS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := NetworkRequest("sandbox-1", endpoint)
+	request.ResolvedIPs = []string{"203.0.113.7"}
+	if got := Decide(policy, request); !got.Allowed() {
+		t.Fatalf("decision = %+v, want the declared bare address to allow its destination", got)
+	}
+	request.ResolvedIPs = []string{"198.51.100.9"}
+	if got := Decide(policy, request); !got.Allowed() {
+		t.Fatalf("decision = %+v, want an address inside the declared range to allow its destination", got)
+	}
+	request.ResolvedIPs = []string{"203.0.113.8"}
+	if got := Decide(policy, request); got.Allowed() {
+		t.Fatalf("decision = %+v, want an address in neither declared range to be denied", got)
+	}
+}

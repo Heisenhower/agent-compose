@@ -38,8 +38,9 @@ func decideCallCapset(ctx context.Context, binding SandboxBinding) (egress.Recor
 	record := egress.NewRecord(request, egress.Decide(policy, request))
 	// Re-validate the policy generation before use: a decision made against an
 	// older policy must not be honored. The binding is request-scoped today, so
-	// the generations match; this guard is the landing point for the phase-3
-	// policy store (SEC-5).
+	// record was built from this exact policy and the staleness clause is false
+	// by construction; it is kept as the landing point for the phase-3 policy
+	// store (SEC-5), where the record and the current policy can diverge.
 	if record.IsStale(policy) || !record.Allowed() {
 		return record, status.Errorf(codes.PermissionDenied, "capset %q is not allowed for this sandbox", requested)
 	}
