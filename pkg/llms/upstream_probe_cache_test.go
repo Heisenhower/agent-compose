@@ -146,6 +146,31 @@ func TestUpstreamProbeKeyFollowsEndpointAndCredential(t *testing.T) {
 	if UpstreamProbeKey(republished) != base {
 		t.Fatal("a renamed connection changed the probe identity")
 	}
+
+	// The scheme is how the credential reaches the upstream, so a connection that
+	// switches presentation must not reuse the verdict of the other one.
+	reschemed := provider
+	reschemed.AuthScheme = ""
+	if UpstreamProbeKey(reschemed) == base {
+		t.Fatal("a changed auth scheme reused the cache entry")
+	}
+
+	// The scope decides how the stored base URL becomes an endpoint, so the
+	// environment bootstrap — which stores a bare base URL — must not share a
+	// verdict with a connection whose base URL is already the endpoint.
+	bootstrapped := provider
+	bootstrapped.Scope = ProviderScopeEnvDefault
+	if UpstreamProbeKey(bootstrapped) == base {
+		t.Fatal("a scope that derives another endpoint reused the cache entry")
+	}
+	// Every other scope derives the endpoint the same way, so they share a verdict.
+	for _, scope := range []string{"", ProviderScopeSystem, ProviderScopeAPI, ProviderScopeCatalog, ProviderScopeDeclared} {
+		equivalent := provider
+		equivalent.Scope = scope
+		if UpstreamProbeKey(equivalent) != base {
+			t.Fatalf("scope %q derives the same endpoint but changed the probe identity", scope)
+		}
+	}
 }
 
 // The cache key covers the deployment, so a verdict taken with one model used to

@@ -3,6 +3,7 @@ package llms
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -92,19 +93,29 @@ func (c *UpstreamProbeCache) Store(key string, result UpstreamProbeResult) {
 // UpstreamProbeKey identifies a probe target.
 //
 // It covers the endpoint, the protocol family, and the credential material, so
-// a changed base URL, family, header set, or key invalidates the entry on its
-// own. The credential is hashed rather than stored, so a cache dump cannot leak
-// it. The model is deliberately not part of the key: protocol support does not
-// depend on which model a request names. It is enforced when an entry is reused
-// instead — see UpstreamProber.probeReuseMatches — because the verdict records
-// the model it was taken with.
+// a changed base URL, family, header set, scheme, or key invalidates the entry on
+// its own. The credential is hashed rather than stored, so a cache dump cannot
+// leak it. The model is deliberately not part of the key: protocol support does
+// not depend on which model a request names. It is enforced when an entry is
+// reused instead — see UpstreamProber.probeReuseMatches — because the verdict
+// records the model it was taken with.
 func UpstreamProbeKey(provider Provider) string {
 	material := strings.Join([]string{
 		NormalizeProviderType(provider.ProviderType),
 		strings.TrimRight(strings.TrimSpace(provider.BaseURL), "/"),
 		strings.TrimSpace(provider.AuthHeader),
+		// The scheme is how the credential is presented — `Bearer <key>` versus
+		// the bare key — so switching it changes the request the verdict was
+		// taken with.
+		strings.TrimSpace(provider.AuthScheme),
 		strings.TrimSpace(provider.APIKey),
 		strings.TrimSpace(provider.HeadersJSON),
+		// The scope decides whether the stored base URL is already the endpoint
+		// or a bare base that gets the protocol path appended (EndpointForProvider),
+		// so two connections whose scopes derive different endpoints must not share
+		// a verdict. Only the derived class belongs in the key: every scope except
+		// the environment bootstrap's derives the same endpoint.
+		strconv.FormatBool(ProviderScopeIsConfigured(provider.Scope)),
 	}, "\x00")
 	sum := sha256.Sum256([]byte(material))
 	return hex.EncodeToString(sum[:])
