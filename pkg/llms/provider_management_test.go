@@ -124,6 +124,7 @@ func TestNormalizeProviderModels(t *testing.T) {
 		{name: "relative base url", model: ModelSpec{ID: "gpt-4o", BaseURL: "/v1"}},
 		{name: "base url credentials", model: ModelSpec{ID: "gpt-4o", BaseURL: "https://secret@example.com"}},
 		{name: "negative cap", model: ModelSpec{ID: "gpt-4o", MaxOutputTokens: -1}},
+		{name: "cap above the reportable range", model: ModelSpec{ID: "gpt-4o", MaxOutputTokens: MaxModelOutputTokens + 1}},
 		{name: "blank header", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{" ": "value"}}},
 		{name: "header newline", model: ModelSpec{ID: "gpt-4o", Headers: map[string]string{"x-tier": "batch\r\nx-key: injected"}}},
 	} {
@@ -141,6 +142,14 @@ func TestNormalizeProviderModels(t *testing.T) {
 		ID: "gateway-1", BaseURL: "https://example.com/v1", Protocol: APIProtocolResponses, APIKey: &key, Models: &duplicate,
 	}); !errors.Is(err, domain.ErrInvalidArgument) {
 		t.Fatalf("duplicate model ids error = %v, want invalid argument", err)
+	}
+
+	// The largest reportable cap is still accepted, so the bound is inclusive.
+	largest := []ModelSpec{{ID: "gpt-4o", MaxOutputTokens: MaxModelOutputTokens}}
+	if _, err := NormalizeProviderReplacement(ProviderReplacement{
+		ID: "gateway-1", BaseURL: "https://example.com/v1", Protocol: APIProtocolResponses, APIKey: &key, Models: &largest,
+	}); err != nil {
+		t.Fatalf("the largest reportable cap was rejected: %v", err)
 	}
 }
 

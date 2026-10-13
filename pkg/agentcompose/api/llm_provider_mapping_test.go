@@ -55,3 +55,14 @@ func TestProviderToV2RejectsMalformedStoredHeaders(t *testing.T) {
 		t.Fatal("malformed stored headers were accepted")
 	}
 }
+
+// A stored cap the wire cannot carry must be reported, not truncated into a
+// different number than the one the operator declared.
+func TestProviderToV2RejectsAnUnreportableOutputCap(t *testing.T) {
+	bindings := []llms.ProviderModelBinding{
+		{ProviderID: "gateway", ModelID: "alpha", Config: llms.ProviderModelConfig{MaxOutputTokens: llms.MaxModelOutputTokens + 1}},
+	}
+	if _, err := providerToV2(llms.Provider{ID: "gateway"}, bindings, nil); err == nil {
+		t.Fatal("an output cap outside the reportable range was truncated")
+	}
+}

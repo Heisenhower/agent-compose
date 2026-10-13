@@ -2,6 +2,7 @@ package llms
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
@@ -51,6 +52,11 @@ type ModelSpec struct {
 	// MaxOutputTokens caps the model's output. Zero inherits.
 	MaxOutputTokens int
 }
+
+// MaxModelOutputTokens is the largest output cap a model may declare. The public
+// contract carries the cap as a 32-bit integer, so a larger declared value could
+// only be truncated into a different number than the one an operator typed.
+const MaxModelOutputTokens = math.MaxInt32
 
 // ModelReference names one model on one connection.
 type ModelReference struct {
@@ -248,6 +254,9 @@ func normalizeModelSpec(model ModelSpec) (ModelSpec, error) {
 	}
 	if model.MaxOutputTokens < 0 {
 		return ModelSpec{}, fmt.Errorf("%w: model %q max_output_tokens must not be negative", domain.ErrInvalidArgument, model.ID)
+	}
+	if model.MaxOutputTokens > MaxModelOutputTokens {
+		return ModelSpec{}, fmt.Errorf("%w: model %q max_output_tokens must not exceed %d", domain.ErrInvalidArgument, model.ID, MaxModelOutputTokens)
 	}
 	for key, value := range model.Headers {
 		if strings.TrimSpace(key) == "" || strings.ContainsAny(key+value, "\r\n") {

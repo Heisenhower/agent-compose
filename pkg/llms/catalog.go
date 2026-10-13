@@ -211,6 +211,12 @@ func validateCatalogProvider(id string, provider CatalogProvider) error {
 		if model.MaxOutputTokens != nil && *model.MaxOutputTokens <= 0 {
 			return fmt.Errorf("provider %q model %q maxOutputTokens must be positive", id, modelID)
 		}
+		// The catalog declares the cap as a JSON number while the public contract
+		// reports it as a 32-bit integer, so a larger cap would reach a client as a
+		// different number than the catalog declares.
+		if model.MaxOutputTokens != nil && *model.MaxOutputTokens > MaxModelOutputTokens {
+			return fmt.Errorf("provider %q model %q maxOutputTokens must not exceed %d", id, modelID, MaxModelOutputTokens)
+		}
 	}
 	return nil
 }

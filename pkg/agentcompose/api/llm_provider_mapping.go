@@ -154,6 +154,9 @@ func modelSpecsToV2(providerID string, bindings []llms.ProviderModelBinding) ([]
 		// Zero means the model inherits the facade default, which is absence on
 		// the wire rather than an explicit zero.
 		if binding.Config.MaxOutputTokens > 0 {
+			if binding.Config.MaxOutputTokens > llms.MaxModelOutputTokens {
+				return nil, fmt.Errorf("provider %q model %q: max output tokens %d exceed %d", providerID, binding.ModelID, binding.Config.MaxOutputTokens, llms.MaxModelOutputTokens)
+			}
 			maxOutputTokens := int32(binding.Config.MaxOutputTokens)
 			spec.MaxOutputTokens = &maxOutputTokens
 		}

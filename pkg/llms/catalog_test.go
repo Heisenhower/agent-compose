@@ -90,6 +90,8 @@ func TestLoadModelCatalogRejectsIncompleteProvidersAndInvalidModels(t *testing.T
 		{name: "duplicate model", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"same"},{"id":"same"}]}}}`, want: "more than once"},
 		{name: "anthropic model protocol on openai provider", data: `{"providers":{"gateway":{"baseUrl":"https://example.test/v1","protocol":"responses","models":[{"id":"model","protocol":"anthropic_messages"}]}}}`, want: `protocol "anthropic_messages" is incompatible with provider family "openai"`},
 		{name: "openai model protocol on anthropic provider", data: `{"providers":{"gateway":{"baseUrl":"https://example.test/v1","protocol":"anthropic_messages","models":[{"id":"model","protocol":"chat_completions"}]}}}`, want: `protocol "chat_completions" is incompatible with provider family "anthropic"`},
+		{name: "non-positive max output tokens", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"model","maxOutputTokens":0}]}}}`, want: "must be positive"},
+		{name: "max output tokens above the reportable range", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"model","maxOutputTokens":2147483648}]}}}`, want: "must not exceed 2147483647"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), ModelsCatalogFilename)
