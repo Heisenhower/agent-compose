@@ -895,10 +895,14 @@ func (r *dockerRuntime) getOrCreateContainer(ctx context.Context, dockerClient *
 		exposedPorts, portBindings = dockerJupyterPortConfig(proxyState.GuestPort)
 		cmdText = jupyterLaunchCommand(r.config, proxyState, false)
 	}
+	env, err := r.containerEnv(ctx, sandbox, proxyState)
+	if err != nil {
+		return containerapi.InspectResponse{}, false, err
+	}
 	containerConfig := &containerapi.Config{
 		Image:        resolveSandboxGuestImage(vmState.Image, sandbox.Summary.GuestImage, defaultGuestImageForDriver(r.config, RuntimeDriverDocker)),
 		WorkingDir:   r.config.GuestWorkspacePath,
-		Env:          r.containerEnv(sandbox, proxyState),
+		Env:          env,
 		Entrypoint:   []string{"sh", "-lc"},
 		Cmd:          []string{cmdText},
 		ExposedPorts: exposedPorts,
@@ -1248,9 +1252,12 @@ func (r *dockerRuntime) containerName(sandbox *Sandbox, vmState VMState) string 
 	return firstNonEmpty(strings.TrimSpace(vmState.BoxName), strings.TrimSpace(sandbox.Summary.RuntimeRef), "agent-compose-"+sanitizeDockerContainerName(sandbox.Summary.ID))
 }
 
-func (r *dockerRuntime) containerEnv(sandbox *Sandbox, proxyState ProxyState) []string {
+func (r *dockerRuntime) containerEnv(ctx context.Context, sandbox *Sandbox, proxyState ProxyState) ([]string, error) {
 	appconfig.ApplyDefaultGuestPaths(r.config)
-	env := sandboxEnvMap(sandbox.EnvItems, sandbox.RuntimeEnvItems)
+	env, err := sandboxEnvMapWithProxy(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	if env == nil {
 		env = map[string]string{}
 	}
@@ -1261,7 +1268,7 @@ func (r *dockerRuntime) containerEnv(sandbox *Sandbox, proxyState ProxyState) []
 	env["STATE_ROOT"] = r.config.GuestStateRoot
 	env["RUNTIME_ROOT"] = r.config.GuestRuntimeRoot
 	env["JUPYTER_TOKEN"] = proxyState.Token
-	return dockerEnvList(env)
+	return dockerEnvList(env), nil
 }
 
 func (r *dockerRuntime) waitForExecExit(ctx context.Context, dockerClient *client.Client, execID string) (containerapi.ExecInspect, error) {

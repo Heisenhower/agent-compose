@@ -1,6 +1,10 @@
 package driver
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"testing"
+)
 
 func TestParseEnvEntry(t *testing.T) {
 	tests := []struct {
@@ -166,5 +170,65 @@ func TestSandboxEnvMapPassesThroughUnabsorbedCredentials(t *testing.T) {
 	}
 	if surface, ok := CredentialEnvName("GITHUB_TOKEN"); !ok || surface.Absorbable {
 		t.Fatalf("GITHUB_TOKEN surface = %#v/%v, want a recognized, not-yet-absorbable credential", surface, ok)
+	}
+}
+
+// TestSandboxEnvMapWithProxyResolvesTheProviderOnce pins the seam a driver's
+// creation path uses to obtain the proxy environment: the provider is consulted
+// exactly once and its items are merged as runtime-authored values, not filtered
+// by name. A driver that reuses a runtime never reaches this call, which is what
+// keeps credential issuance to one per runtime creation.
+func TestSandboxEnvMapWithProxyResolvesTheProviderOnce(t *testing.T) {
+	calls := 0
+	sandbox := &Sandbox{
+		EnvItems:        []SandboxEnvVar{{Name: "PROJECT_VAR", Value: "declared"}},
+		RuntimeEnvItems: []SandboxEnvVar{{Name: "SANDBOX_ID", Value: "sandbox-1"}},
+		ProxyEnv: func(context.Context) ([]SandboxEnvVar, error) {
+			calls++
+			return []SandboxEnvVar{{Name: "HTTPS_PROXY", Value: "http://sandbox-1:credential@host:7410", Secret: true}}, nil
+		},
+	}
+	env, err := sandboxEnvMapWithProxy(context.Background(), sandbox)
+	if err != nil {
+		t.Fatalf("sandboxEnvMapWithProxy() error = %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provider calls = %d, want exactly 1", calls)
+	}
+	if env["HTTPS_PROXY"] == "" {
+		t.Fatalf("environment = %#v, want the resolved proxy", env)
+	}
+	if env["SANDBOX_ID"] != "sandbox-1" || env["PROJECT_VAR"] != "declared" {
+		t.Fatalf("environment = %#v, want the runtime and declared values preserved", env)
+	}
+}
+
+// TestSandboxEnvMapWithProxyPropagatesAProviderFailure keeps a failed credential
+// issuance from producing a sandbox: a caller that cannot resolve the proxy
+// environment must see the error rather than a runtime created without it.
+func TestSandboxEnvMapWithProxyPropagatesAProviderFailure(t *testing.T) {
+	wantErr := errors.New("credential store unavailable")
+	sandbox := &Sandbox{
+		ProxyEnv: func(context.Context) ([]SandboxEnvVar, error) {
+			return nil, wantErr
+		},
+	}
+	_, err := sandboxEnvMapWithProxy(context.Background(), sandbox)
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("sandboxEnvMapWithProxy() error = %v, want %v", err, wantErr)
+	}
+}
+
+// TestSandboxEnvMapWithProxyWithoutAProvider pins the undeclared case: a sandbox
+// that carries no provider builds exactly the environment it did before the
+// create-time seam existed.
+func TestSandboxEnvMapWithProxyWithoutAProvider(t *testing.T) {
+	sandbox := &Sandbox{EnvItems: []SandboxEnvVar{{Name: "PROJECT_VAR", Value: "declared"}}}
+	env, err := sandboxEnvMapWithProxy(context.Background(), sandbox)
+	if err != nil {
+		t.Fatalf("sandboxEnvMapWithProxy() error = %v", err)
+	}
+	if len(env) != 1 || env["PROJECT_VAR"] != "declared" {
+		t.Fatalf("environment = %#v, want only the declared value", env)
 	}
 }

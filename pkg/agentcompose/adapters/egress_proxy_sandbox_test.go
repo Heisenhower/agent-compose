@@ -85,14 +85,14 @@ func egressProxyTestMediation(store *egressProxyTestStore, sandboxes egressProxy
 	)
 }
 
-func TestSandboxEgressProxyEnableIssuesAReachableCredential(t *testing.T) {
+func TestSandboxEgressProxyProviderIssuesAReachableCredential(t *testing.T) {
 	store := newEgressProxyTestStore()
 	session := networkPolicyTestSession()
 	mediation := egressProxyTestMediation(store, egressProxyTestSandboxes{session: session}, denyDeclaration())
 
-	env, err := mediation.Enable(context.Background(), session)
+	env, err := mediation.proxyEnvProvider(session)(context.Background())
 	if err != nil {
-		t.Fatalf("Enable() error = %v", err)
+		t.Fatalf("proxy environment error = %v", err)
 	}
 	values := envValues(env)
 	proxy := values["HTTPS_PROXY"]
@@ -128,11 +128,11 @@ func TestSandboxEgressProxyEnableIssuesAReachableCredential(t *testing.T) {
 	}
 }
 
-// TestSandboxEgressProxyEnableIsInertWithoutAReachableAddress pins the condition
-// the whole mediation rests on: if the sandbox has no address for the proxy, the
-// engine must not hand it one, and no credential is issued for a proxy the guest
-// cannot reach.
-func TestSandboxEgressProxyEnableIsInertWithoutAReachableAddress(t *testing.T) {
+// TestSandboxEgressProxyProviderIsInertWithoutAReachableAddress pins the
+// condition the whole mediation rests on: if the sandbox has no address for the
+// proxy, the engine must not hand it one, and no credential is issued for a proxy
+// the guest cannot reach.
+func TestSandboxEgressProxyProviderIsInertWithoutAReachableAddress(t *testing.T) {
 	store := newEgressProxyTestStore()
 	session := networkPolicyTestSession()
 	mediation := NewSandboxEgressProxy(
@@ -142,12 +142,12 @@ func TestSandboxEgressProxyEnableIsInertWithoutAReachableAddress(t *testing.T) {
 		stubNetworkDeclarationResolver{declaration: denyDeclaration()},
 	)
 
-	env, err := mediation.Enable(context.Background(), session)
+	env, err := mediation.proxyEnvProvider(session)(context.Background())
 	if err != nil {
-		t.Fatalf("Enable() error = %v", err)
+		t.Fatalf("proxy environment error = %v", err)
 	}
 	if len(env) != 0 {
-		t.Fatalf("Enable() = %v, want no environment when no proxy is reachable", env)
+		t.Fatalf("proxy environment = %v, want none when no proxy is reachable", env)
 	}
 	if len(store.tokens) != 0 {
 		t.Fatalf("credentials issued = %d, want 0", len(store.tokens))
@@ -261,6 +261,42 @@ func TestSandboxEgressProxyPolicyReportsAnUnloadableSandbox(t *testing.T) {
 	}
 }
 
+// TestDriverSandboxDefersProxyCredentialIssuance pins the create-time contract
+// that keeps issuance to one credential per runtime: handing a sandbox to a
+// driver must not itself issue a credential, because a guest reads its
+// environment once, when its runtime is created. Only the driver's creation path
+// resolves the provider, so an ensure that reuses a runtime — every run, every
+// scheduler tick, and every guest-file operation — cannot accumulate live
+// credentials no guest could ever present.
+func TestDriverSandboxDefersProxyCredentialIssuance(t *testing.T) {
+	store := newEgressProxyTestStore()
+	session := networkPolicyTestSession()
+	adapter := driverRuntimeAdapter{
+		networkPolicies: driverSandboxNetworkPolicy{config: networkPolicyTestConfig(), declarations: stubNetworkDeclarationResolver{declaration: denyDeclaration()}},
+		egressProxy:     egressProxyTestMediation(store, egressProxyTestSandboxes{session: session}, denyDeclaration()),
+	}
+	driverSandbox, _, err := adapter.driverSandbox(context.Background(), session)
+	if err != nil {
+		t.Fatalf("driverSandbox() error = %v", err)
+	}
+	if len(store.tokens) != 0 {
+		t.Fatalf("credentials issued by handing the sandbox to the driver = %d, want 0 until a runtime is created", len(store.tokens))
+	}
+	if driverSandbox.ProxyEnv == nil {
+		t.Fatal("a mediated sandbox carries no create-time proxy environment provider")
+	}
+	env, err := driverSandbox.ProxyEnv(context.Background())
+	if err != nil {
+		t.Fatalf("resolving the create-time proxy environment: %v", err)
+	}
+	if envValues(env)["HTTPS_PROXY"] == "" {
+		t.Fatalf("environment = %v, want the proxy", envValues(env))
+	}
+	if len(store.tokens) != 1 {
+		t.Fatalf("credentials issued for a runtime creation = %d, want exactly 1", len(store.tokens))
+	}
+}
+
 // TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable is the wiring pin: the
 // driver-boundary policy records mediation exactly when the environment that
 // routes the guest through the proxy was attached, so a driver can never report
@@ -281,8 +317,15 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		if driverSandbox.NetworkPolicy == nil || !driverSandbox.NetworkPolicy.MediatedByForwardProxy {
 			t.Fatalf("policy = %+v, want a mediated policy", driverSandbox.NetworkPolicy)
 		}
-		if envValues(driverSandbox.EnvItems)["HTTPS_PROXY"] == "" {
-			t.Fatalf("environment = %v, want the proxy", envValues(driverSandbox.EnvItems))
+		if driverSandbox.ProxyEnv == nil {
+			t.Fatal("the sandbox carries no create-time proxy environment provider")
+		}
+		env, err := driverSandbox.ProxyEnv(context.Background())
+		if err != nil {
+			t.Fatalf("proxy environment error = %v", err)
+		}
+		if envValues(env)["HTTPS_PROXY"] == "" {
+			t.Fatalf("environment = %v, want the proxy", envValues(env))
 		}
 		if record.Applied != string(egress.ApplicationMediated) {
 			t.Fatalf("record = %+v, want the runtime recorded as mediated so a later start knows its traffic is decided per request", record)
@@ -309,6 +352,9 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		}
 		if driverSandbox.NetworkPolicy == nil || driverSandbox.NetworkPolicy.MediatedByForwardProxy {
 			t.Fatalf("policy = %+v, want an unmediated policy", driverSandbox.NetworkPolicy)
+		}
+		if driverSandbox.ProxyEnv != nil {
+			t.Fatal("an unreachable proxy must not install a create-time proxy environment")
 		}
 		if len(driverSandbox.EnvItems) != 0 {
 			t.Fatalf("environment = %v, want none", envValues(driverSandbox.EnvItems))
@@ -348,6 +394,9 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 			if driverSandbox.NetworkPolicy == nil || driverSandbox.NetworkPolicy.MediatedByForwardProxy {
 				t.Fatalf("address %q: policy = %+v, want an unmediated policy", address, driverSandbox.NetworkPolicy)
 			}
+			if driverSandbox.ProxyEnv != nil {
+				t.Fatalf("address %q: a guest-local proxy must not install a create-time proxy environment", address)
+			}
 			if len(driverSandbox.EnvItems) != 0 {
 				t.Fatalf("address %q: environment = %v, want none", address, envValues(driverSandbox.EnvItems))
 			}
@@ -372,6 +421,9 @@ func TestDriverSandboxMediatesOnlyWhenTheProxyIsAvailable(t *testing.T) {
 		}
 		if driverSandbox.NetworkPolicy == nil || driverSandbox.NetworkPolicy.MediatedByForwardProxy {
 			t.Fatalf("policy = %+v, want an unmediated policy", driverSandbox.NetworkPolicy)
+		}
+		if driverSandbox.ProxyEnv != nil {
+			t.Fatal("an unreachable proxy must not install a create-time proxy environment")
 		}
 		if len(driverSandbox.EnvItems) != 0 {
 			t.Fatalf("environment = %v, want none", envValues(driverSandbox.EnvItems))

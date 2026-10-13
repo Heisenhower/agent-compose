@@ -1191,7 +1191,10 @@ func (r *cgoSandboxRuntime) buildBoxOptions(ctx context.Context, sandbox *Sandbo
 	defer freeCommand()
 	C.boxlite_options_set_cmd(options, command, C.int(commandLen))
 
-	baseEnv := sandboxEnvMap(sandbox.EnvItems, sandbox.RuntimeEnvItems)
+	baseEnv, err := sandboxEnvMapWithProxy(ctx, sandbox)
+	if err != nil {
+		return nil, err
+	}
 	if baseEnv == nil {
 		baseEnv = map[string]string{}
 	}

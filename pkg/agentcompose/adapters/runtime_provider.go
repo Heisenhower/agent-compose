@@ -239,16 +239,17 @@ func (r driverRuntimeAdapter) driverSandbox(ctx context.Context, session *domain
 		// engine is in the traffic path. Routing the guest through the forward
 		// proxy is what puts it there, and the same step records the mediation
 		// on the policy so no driver can believe in one the engine did not wire.
-		if policy != nil && policy.DenyByDefault() {
-			env, err := r.egressProxy.Enable(ctx, session)
-			if err != nil {
-				return nil, domain.SandboxEgressPolicy{}, err
-			}
-			if len(env) > 0 {
-				policy.MediatedByForwardProxy = true
-				driverSandbox.EnvItems = append(driverSandbox.EnvItems, env...)
-				mediated = true
-			}
+		//
+		// The credential and the environment that carries it are resolved by the
+		// driver, and only when it creates a runtime: a guest reads its
+		// environment once, so issuing here on every ensure would mint live
+		// credentials no guest could ever present. Whether the engine can mediate
+		// at all is a pure fact about the deployment and this sandbox, so the
+		// report below still knows it before the driver runs.
+		if policy != nil && policy.DenyByDefault() && r.egressProxy.available(session) {
+			driverSandbox.ProxyEnv = r.egressProxy.proxyEnvProvider(session)
+			policy.MediatedByForwardProxy = true
+			mediated = true
 		}
 	}
 	// Record what this creation is about to install. The record is the only way

@@ -92,8 +92,13 @@ The first slice is implemented and verified on the Docker driver:
 - `pkg/agentcompose/proxy` serves the proxy and decides every request;
   `SandboxEgressProxy` (`pkg/agentcompose/adapters`) issues the credential, builds
   the environment, answers the proxy's authentication, and reads the policy;
-  `driverRuntimeAdapter.driverSandbox` is the single seam that attaches both the
-  environment and the `MediatedByForwardProxy` fact; `HTTP_LISTEN` serves it.
+  `driverRuntimeAdapter.driverSandbox` is the single seam that attaches the
+  `MediatedByForwardProxy` fact and installs the create-time provider, which the
+  driver resolves when it builds a newly created runtime's environment. Resolving
+  there rather than when the sandbox is handed to the driver keeps issuance to one
+  credential per runtime creation, since a guest reads its environment once; a
+  driver that reuses a runtime never calls the provider. `HTTP_LISTEN` serves the
+  proxy.
 - The engine's own refusals were extended past the address set: the control-plane
   ports `2379`, `2380`, `6443`, `10250`, `10255` are refused under their own rule
   with the role named, and an IPv6-only destination is refused because the

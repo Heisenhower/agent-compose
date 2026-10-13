@@ -292,7 +292,10 @@ func TestDockerRuntimeContainerEnvUsesRuntimeWorkspaceVariable(t *testing.T) {
 		GuestRuntimeRoot:   "/data/runtime",
 	}}
 	session := &Sandbox{Summary: SandboxSummary{ID: "session-1"}}
-	env := runtime.containerEnv(session, ProxyState{Token: "token-1"})
+	env, err := runtime.containerEnv(context.Background(), session, ProxyState{Token: "token-1"})
+	if err != nil {
+		t.Fatalf("containerEnv() error = %v", err)
+	}
 	envMap := map[string]string{}
 	for _, item := range env {
 		name, value, ok := strings.Cut(item, "=")

@@ -34,6 +34,16 @@ type Sandbox struct {
 	// from the compose declaration. A nil policy means the sandbox declared no
 	// network policy, which keeps today's unrestricted behavior (D3).
 	NetworkPolicy *SandboxNetworkPolicy `json:"network_policy,omitempty"`
+	// ProxyEnv, when set, is invoked by a driver at the moment it builds the
+	// environment of a runtime it is creating, and never when it reuses one.
+	//
+	// A guest reads its proxy environment once, when its runtime is created; a
+	// later ensure of that same runtime cannot change it. Resolving the proxy
+	// credential here, rather than when the sandbox is handed to the driver, is
+	// what keeps issuance to one credential per runtime: eager resolution mints
+	// a live credential on every ensure, every scheduler tick and every
+	// guest-file operation, and no extra can ever be presented by a guest.
+	ProxyEnv func(context.Context) ([]SandboxEnvVar, error) `json:"-"`
 }
 
 // SandboxWorkspace carries the persisted delivery contract into the runtime boundary.
@@ -226,6 +236,31 @@ func sandboxEnvMap(declared, runtime []SandboxEnvVar) map[string]string {
 		return nil
 	}
 	return env
+}
+
+// sandboxEnvMapWithProxy builds a sandbox's environment and resolves its
+// create-time proxy environment, if the caller installed a provider.
+//
+// Only a driver's creation path calls this. A driver that finds an existing
+// runtime returns before reaching it, so an ensure that reuses a runtime never
+// invokes the provider and therefore never issues a credential the running guest
+// cannot present. The proxied items are runtime-authored, like the facade token
+// beside them, so they are merged into the runtime group and not name-filtered.
+func sandboxEnvMapWithProxy(ctx context.Context, sandbox *Sandbox) (map[string]string, error) {
+	if sandbox == nil {
+		return nil, nil
+	}
+	runtimeItems := sandbox.RuntimeEnvItems
+	if sandbox.ProxyEnv != nil {
+		proxyItems, err := sandbox.ProxyEnv(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if len(proxyItems) > 0 {
+			runtimeItems = append(append([]SandboxEnvVar(nil), runtimeItems...), proxyItems...)
+		}
+	}
+	return sandboxEnvMap(sandbox.EnvItems, runtimeItems), nil
 }
 
 // LLMProviderEnvName reports whether name is long-lived LLM provider

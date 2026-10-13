@@ -99,11 +99,16 @@ func (p SandboxEgressProxy) MediatesDriver(driver string) bool {
 	return egressProxyAddress(p.config, session) != ""
 }
 
-// Enable issues the sandbox's proxy credential and returns the environment that
+// enable issues the sandbox's proxy credential and returns the environment that
 // routes its HTTP traffic through the engine's forward proxy. It returns no
 // environment and no error when this deployment cannot offer a reachable proxy,
 // because a sandbox that cannot use the proxy must keep running rather than be
 // given a proxy address it cannot reach.
+//
+// It is not called when a sandbox is handed to a driver, because a guest reads
+// its environment once, when its runtime is created. It is wrapped by
+// proxyEnvProvider and invoked from the driver's creation path, so exactly one
+// credential is issued per runtime creation instead of one per ensure.
 //
 // A credential is minted per call rather than reused. The store keeps only the
 // credential's hash, which is what makes a leaked store entry useless, so an
@@ -111,9 +116,8 @@ func (p SandboxEgressProxy) MediatesDriver(driver string) bool {
 // reuses a runtime keeps the environment it was created with, so revoking this
 // sandbox's older credentials here could cut off the one that runtime is
 // actually presenting. Each credential is scoped to this sandbox and revoked
-// with it, so what accumulates is one entry per start, not access to anything
-// another sandbox can use.
-func (p SandboxEgressProxy) Enable(ctx context.Context, session *domain.Sandbox) ([]driverpkg.SandboxEnvVar, error) {
+// with it.
+func (p SandboxEgressProxy) enable(ctx context.Context, session *domain.Sandbox) ([]driverpkg.SandboxEnvVar, error) {
 	if !p.available(session) {
 		return nil, nil
 	}
@@ -133,6 +137,16 @@ func (p SandboxEgressProxy) Enable(ctx context.Context, session *domain.Sandbox)
 		User:   url.UserPassword(session.Summary.ID, rawCredential),
 	}).String()
 	return egressProxyEnvItems(proxyURL, egressProxyBypass(p.config, session)), nil
+}
+
+// proxyEnvProvider returns the driver-boundary hook that issues one sandbox's
+// proxy credential at the moment a driver builds the environment of a runtime
+// it is creating. A driver that reuses a runtime never calls it, so a start
+// that reuses a runtime neither mints nor drops a credential.
+func (p SandboxEgressProxy) proxyEnvProvider(session *domain.Sandbox) func(context.Context) ([]driverpkg.SandboxEnvVar, error) {
+	return func(ctx context.Context) ([]driverpkg.SandboxEnvVar, error) {
+		return p.enable(ctx, session)
+	}
 }
 
 // AuthorizeEgressProxy answers the proxy's authentication: which sandbox does

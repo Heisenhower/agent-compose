@@ -1106,7 +1106,10 @@ func (r *microsandboxRuntime) createSandbox(ctx context.Context, session *Sandbo
 	}()
 
 	imageEnv := baseDisk.Env
-	env := sandboxEnvMap(session.EnvItems, session.RuntimeEnvItems)
+	env, err := sandboxEnvMapWithProxy(ctx, session)
+	if err != nil {
+		return nil, err
+	}
 	if env == nil {
 		env = map[string]string{}
 	}
