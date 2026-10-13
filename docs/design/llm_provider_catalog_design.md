@@ -92,7 +92,7 @@ Provider 支持以下字段：
 - `baseUrl`：可选的模型级 endpoint 覆盖。
 - `protocol`：可选的模型级 Protocol 覆盖。
 - `headers`：可选的模型级上游 Header。
-- `maxOutputTokens`：可选的正整数输出 Token 上限。
+- `maxOutputTokens`：可选的正整数输出 Token 上限，最大 2147483647（公开契约以 32 位整数上报）。
 
 模型级 `protocol` 必须与 Provider 的协议族兼容：OpenAI Provider（`responses` 或 `chat_completions`）只允许模型覆盖为 `responses` 或 `chat_completions`，Anthropic Provider（`anthropic_messages`）只允许 `anthropic_messages`。
 
