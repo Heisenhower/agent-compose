@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -137,7 +138,9 @@ func TestLLMUpstreamProberStartProbeConfiguredDoesNotBlockTheCaller(t *testing.T
 	}
 
 	releaseSweep()
-	prober.WaitProbeConfigured()
+	if err := prober.WaitProbeConfigured(context.Background()); err != nil {
+		t.Fatalf("WaitProbeConfigured error = %v", err)
+	}
 }
 
 // Waiting for a sweep that was never started, and starting one on a disabled
@@ -145,20 +148,98 @@ func TestLLMUpstreamProberStartProbeConfiguredDoesNotBlockTheCaller(t *testing.T
 func TestLLMUpstreamProberWaitIsSafeWithoutASweep(t *testing.T) {
 	prober := NewLLMUpstreamProber(&appconfig.Config{LLMUpstreamProbe: false}, discardProbeLogger())
 	prober.StartProbeConfigured(context.Background(), &probeCatalogStub{})
-	prober.WaitProbeConfigured()
+	if err := prober.WaitProbeConfigured(context.Background()); err != nil {
+		t.Fatalf("WaitProbeConfigured error = %v", err)
+	}
 	var missing *LLMUpstreamProber
 	missing.StartProbeConfigured(context.Background(), &probeCatalogStub{})
-	missing.WaitProbeConfigured()
+	if err := missing.WaitProbeConfigured(context.Background()); err != nil {
+		t.Fatalf("WaitProbeConfigured on a missing prober error = %v", err)
+	}
+}
+
+// The wait ends the sweep it is waiting for instead of waiting out the sweep's
+// own budget. Only the signal shutdown path has already cancelled the startup
+// context, so a server error or a failed StartBackground would otherwise hold
+// shutdown open for the whole LLM_PROBE_TIMEOUT.
+func TestLLMUpstreamProberWaitCancelsTheSweepItWaitsFor(t *testing.T) {
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	var cancelled atomic.Bool
+	store := &probeCatalogStub{listGate: func(ctx context.Context) {
+		enteredOnce.Do(func() { close(entered) })
+		<-ctx.Done()
+		cancelled.Store(true)
+	}}
+
+	prober := NewLLMUpstreamProber(&appconfig.Config{LLMUpstreamProbe: true, LLMProbeTimeout: time.Hour}, discardProbeLogger())
+	prober.StartProbeConfigured(context.Background(), store)
+
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background sweep never read the catalog")
+	}
+
+	waited := make(chan error, 1)
+	go func() { waited <- prober.WaitProbeConfigured(context.Background()) }()
+	select {
+	case err := <-waited:
+		if err != nil {
+			t.Fatalf("WaitProbeConfigured error = %v, want the cancelled sweep waited out", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("WaitProbeConfigured did not cancel the sweep it was waiting for")
+	}
+	if !cancelled.Load() {
+		t.Fatal("the sweep did not observe the cancellation")
+	}
+}
+
+// A sweep that does not react to cancellation must not hold shutdown open past
+// its deadline, and the caller has to learn that the wait ended early because it
+// is about to release the store the sweep reads.
+func TestLLMUpstreamProberWaitReportsAnExpiredDeadline(t *testing.T) {
+	entered := make(chan struct{})
+	var enteredOnce sync.Once
+	release := make(chan struct{})
+	defer close(release)
+	store := &probeCatalogStub{listGate: func(context.Context) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+	}}
+
+	prober := NewLLMUpstreamProber(&appconfig.Config{LLMUpstreamProbe: true, LLMProbeTimeout: time.Hour}, discardProbeLogger())
+	prober.StartProbeConfigured(context.Background(), store)
+
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the background sweep never read the catalog")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	err := prober.WaitProbeConfigured(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitProbeConfigured error = %v, want the expired deadline", err)
+	}
 }
 
 type probeCatalogStub struct {
 	providers []llms.Provider
 	bindings  []llms.ProviderModelBinding
 	listCalls int
+	// listGate runs inside ListEnabledLLMProviders, before the providers are
+	// returned: a test uses it to hold the sweep inside the store.
+	listGate func(context.Context)
 }
 
-func (s *probeCatalogStub) ListEnabledLLMProviders(context.Context) ([]llms.Provider, error) {
+func (s *probeCatalogStub) ListEnabledLLMProviders(ctx context.Context) ([]llms.Provider, error) {
 	s.listCalls++
+	if s.listGate != nil {
+		s.listGate(ctx)
+	}
 	return s.providers, nil
 }
 

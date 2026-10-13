@@ -313,14 +313,17 @@ func StopBackground(ctx context.Context, di do.Injector) error {
 		components = append(components, backgroundComponent{name: "cleanup runner", shutdown: runner.Shutdown})
 	}
 	// The startup probe sweep reads the catalog store, so it must finish before
-	// shutdown proceeds past the stores. Its context is already cancelled by the
-	// time this runs, and its own budget bounds how long the wait can take.
+	// shutdown proceeds past the stores. Cancelling the sweep is not something the
+	// callback can rely on the caller for: only the signal shutdown path has
+	// already cancelled the startup context, while a server error or a failed
+	// StartBackground leaves it live and the sweep would probe until its own
+	// budget ran out. The wait therefore ends the sweep itself and honors the
+	// shutdown deadline.
 	if prober, proberErr := do.Invoke[*adapters.LLMUpstreamProber](di); proberErr != nil {
 		setupErrors = append(setupErrors, fmt.Errorf("resolve llm upstream prober: %w", proberErr))
 	} else {
-		components = append(components, backgroundComponent{name: "llm upstream probe", shutdown: func(context.Context) error {
-			prober.WaitProbeConfigured()
-			return nil
+		components = append(components, backgroundComponent{name: "llm upstream probe", shutdown: func(ctx context.Context) error {
+			return prober.WaitProbeConfigured(ctx)
 		}})
 	}
 	return stopBackgroundComponents(ctx, components, setupErrors...)

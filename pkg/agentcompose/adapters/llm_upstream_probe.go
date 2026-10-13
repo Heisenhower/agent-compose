@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -25,6 +26,11 @@ type LLMUpstreamProber struct {
 	prober  *llms.UpstreamProber
 	// sweep tracks the background startup sweep so shutdown can wait for it.
 	sweep sync.WaitGroup
+	// sweepCancel ends the context the running sweep probes under. A sweep only
+	// exists between StartProbeConfigured and the wait that observes its end, so
+	// the field is set there and consumed by WaitProbeConfigured.
+	sweepMu     sync.Mutex
+	sweepCancel context.CancelFunc
 }
 
 // NewLLMUpstreamProber builds the prober from daemon configuration.
@@ -56,26 +62,70 @@ func NewLLMUpstreamProber(config *appconfig.Config, logger *slog.Logger) *LLMUps
 // with several such endpoints paid that delay before it served anything. The
 // sweep still shares one deadline, so it stops on its own and reports how many
 // connections it could not reach; callers that must not outlive it — shutdown —
-// wait with WaitProbeConfigured.
+// stop and wait for it with WaitProbeConfigured.
+//
+// The returned sweep runs under a context derived from ctx, so the wait can end
+// it: the caller's own cancellation is not the only path that must stop it.
 func (p *LLMUpstreamProber) StartProbeConfigured(ctx context.Context, store llms.CatalogStore) {
 	if p == nil || !p.enabled || store == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sweepCtx, cancel := context.WithCancel(ctx)
+	p.sweepMu.Lock()
+	p.sweepCancel = cancel
+	p.sweepMu.Unlock()
 	p.sweep.Add(1)
 	go func() {
 		defer p.sweep.Done()
-		p.ProbeConfigured(ctx, store)
+		p.ProbeConfigured(sweepCtx, store)
 	}()
 }
 
-// WaitProbeConfigured blocks until a started sweep finished. It is what makes
-// the background sweep safe to interrupt: shutdown cancels the context it was
-// given and then waits here, so the goroutine cannot outlive the store it reads.
-func (p *LLMUpstreamProber) WaitProbeConfigured() {
+// WaitProbeConfigured stops a running sweep and waits for it to finish, honoring
+// ctx as its deadline. It is what makes the background sweep safe to interrupt:
+// shutdown cancels the sweep and then waits here, so the goroutine cannot outlive
+// the store it reads.
+//
+// Cancelling is what keeps the wait short — every request the sweep issues is
+// bound to its context — and the deadline is what keeps a sweep that ignores it
+// from holding shutdown open. An expired deadline is reported, because the caller
+// is about to release the store the sweep is reading.
+func (p *LLMUpstreamProber) WaitProbeConfigured(ctx context.Context) error {
 	if p == nil {
-		return
+		return nil
 	}
-	p.sweep.Wait()
+	p.cancelSweep()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.sweep.Wait()
+	}()
+	if ctx == nil {
+		<-done
+		return nil
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for the llm upstream probe sweep: %w", ctx.Err())
+	}
+}
+
+// cancelSweep ends the context of a sweep that is still running. It is safe to
+// call when no sweep exists, and it clears the cancel func so a second wait does
+// not cancel a sweep that started after the first one finished.
+func (p *LLMUpstreamProber) cancelSweep() {
+	p.sweepMu.Lock()
+	cancel := p.sweepCancel
+	p.sweepCancel = nil
+	p.sweepMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // ProbeConfigured probes every enabled connection once and returns when the
