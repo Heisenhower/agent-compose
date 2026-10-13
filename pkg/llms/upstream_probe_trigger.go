@@ -58,12 +58,20 @@ func ProbeConfiguredUpstreams(ctx context.Context, logger *slog.Logger, prober *
 		return fmt.Errorf("read the llm default model for probe: %w", err)
 	}
 	models := probeModelIndex(bindings, defaultProvider, defaultModel, hasDefault)
-	for index, provider := range providers {
+	probed := 0
+	for _, provider := range providers {
 		if err := ctx.Err(); err != nil {
 			logger.Warn("llm upstream probe stopped before every connection was probed",
-				"probed", index, "skipped", len(providers)-index, "error", err)
+				"probed", probed, "skipped", len(providers)-probed, "error", err)
 			return nil
 		}
+		if strings.TrimSpace(provider.Scope) == ProviderScopeDeclared {
+			// A run-scoped declared connection carries the sandbox's own credential
+			// and exists for that run alone. Probing it would spend a credential the
+			// daemon does not own, so the sweep leaves it out.
+			continue
+		}
+		probed++
 		ProbeUpstreamAndLog(ctx, logger, prober, provider, models[provider.ID])
 	}
 	return nil

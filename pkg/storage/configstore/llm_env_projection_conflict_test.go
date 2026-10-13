@@ -35,14 +35,14 @@ func TestIntegrationEnvProjectionKeepsCatalogOwnedProvider(t *testing.T) {
 }
 
 // A same-id model is also an ownership boundary: an environment run must not
-// flip the default flag or the scope of a model models.json declared.
+// flip the default flag or the scope of a model another source serves.
 func TestIntegrationEnvProjectionKeepsCatalogOwnedModel(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := newProjectionTestStore(t)
 
 	insertEnvScopedProvider(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI)
-	insertCatalogOwnedModel(t, ctx, store.DB(), "shared-model")
+	insertServingCatalogConnection(t, ctx, store.DB(), "catalog-connection", "shared-model")
 
 	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
 	conflict, ok := llms.AsDefaultConfigConflict(err)
@@ -350,5 +350,78 @@ func TestDefaultConfigConflictIsClassifiable(t *testing.T) {
 	}
 	if _, ok := llms.AsDefaultConfigConflict(wrapped); !ok {
 		t.Fatal("AsDefaultConfigConflict did not extract the conflict")
+	}
+}
+
+// A models.json declaration that cannot serve must not suppress the environment
+// bootstrap. A connection without a credential is persisted disabled, so its
+// model identity answers no request at all; before this guard the environment
+// yielded to that identity, released its own connection, and left the deployment
+// with no enabled connection and no daemon-managed credential.
+func TestIntegrationEnvProjectionKeepsAModelNoEnabledConnectionServes(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol := "https://catalog.example/v1", llms.APIProtocolResponses
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Providers: map[string]llms.CatalogProvider{
+		"local": {BaseURL: &baseURL, Protocol: &protocol, Models: []llms.CatalogModel{{ID: "gpt-4o"}}},
+	}}); err != nil {
+		t.Fatalf("ApplyModelCatalog: %v", err)
+	}
+
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("gpt-4o")); err != nil {
+		t.Fatalf("UpsertDefaultLLMConfig error = %v, want the bootstrap to materialize its connection", err)
+	}
+	providers, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledLLMProviders: %v", err)
+	}
+	serving := false
+	for _, provider := range providers {
+		if provider.ID == llms.ProviderIDDefaultOpenAI {
+			serving = true
+		}
+	}
+	if !serving {
+		t.Fatalf("enabled connections = %#v, want the environment connection", providers)
+	}
+
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	selected, err := loaded.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	if selected != "gpt-4o" {
+		t.Fatalf("SelectModel = %q, want gpt-4o", selected)
+	}
+	target, err := loaded.Resolve("", selected, nil)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", selected, err)
+	}
+	if target.Provider.ID != llms.ProviderIDDefaultOpenAI {
+		t.Fatalf("resolved by %q, want the environment connection %q", target.Provider.ID, llms.ProviderIDDefaultOpenAI)
+	}
+}
+
+// insertServingCatalogConnection declares a catalog identity that an enabled
+// connection actually binds, which is what makes it an owner the environment
+// bootstrap must not take an id from.
+func insertServingCatalogConnection(t *testing.T, ctx context.Context, db *sql.DB, providerID, modelID string) {
+	t.Helper()
+	if _, err := db.ExecContext(ctx, `INSERT INTO llm_provider(
+		id, name, provider_type, default_wire_api, base_url, api_key, auth_header, auth_scheme, headers_json, weight, enabled, scope, created_at, updated_at)
+		VALUES(?, ?, 'openai', 'chat_completions', 'https://catalog.example/v1', 'catalog-key', 'Authorization', 'Bearer', '{}', 10, 1, 'catalog', 0, 0)`,
+		providerID, providerID); err != nil {
+		t.Fatalf("insert catalog provider: %v", err)
+	}
+	insertCatalogOwnedModel(t, ctx, db, modelID)
+	if _, err := db.ExecContext(ctx, `INSERT INTO llm_provider_model(
+		provider_id, model_id, wire_api, weight, base_url, headers_json, max_output_tokens, display_name)
+		VALUES(?, ?, 'chat_completions', 10, '', '{}', 0, '')`, providerID, modelID); err != nil {
+		t.Fatalf("insert catalog binding: %v", err)
 	}
 }

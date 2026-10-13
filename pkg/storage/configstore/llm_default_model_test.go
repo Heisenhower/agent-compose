@@ -361,7 +361,7 @@ func TestIntegrationModelCatalogRejectsAnUnusableDefault(t *testing.T) {
 	}{
 		{name: "declared and enabled", reference: "gateway/gpt-4o", apiKey: "gateway-key"},
 		{name: "connection the file does not declare", reference: "ghost/gpt-4o", apiKey: "gateway-key", wantErr: "does not declare"},
-		{name: "connection without a credential", reference: "gateway/gpt-4o", wantErr: "no apiKey"},
+		{name: "connection without a credential and without an explicit enabled", reference: "gateway/gpt-4o", wantErr: `is disabled: declare an apiKey, or "enabled": true`},
 		{name: "not a provider/model reference", reference: "gateway", apiKey: "gateway-key", wantErr: "not a <provider>/<model> reference"},
 	}
 	for _, tc := range cases {

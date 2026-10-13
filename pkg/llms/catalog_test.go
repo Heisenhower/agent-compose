@@ -126,3 +126,43 @@ func pointerStringForTest(value *string) string {
 	}
 	return *value
 }
+
+// A connection that needs no credential must be able to say so, otherwise
+// models.json cannot declare a local endpoint at all: a declaration without an
+// apiKey used to be persisted disabled, so the file could neither serve a model
+// from it nor name it as the default.
+func TestLoadModelCatalogReadsTheDeclaredEnabledFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ModelsCatalogFilename)
+	data := `{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "protocol": "chat_completions",
+      "enabled": true,
+      "models": [{"id":"local-model"}]
+    },
+    "batch": {
+      "baseUrl": "https://gateway.example/v1",
+      "protocol": "responses",
+      "apiKey": "secret",
+      "enabled": false,
+      "models": [{"id":"batch-model"}]
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	catalog, err := LoadModelCatalog(path, nil)
+	if err != nil {
+		t.Fatalf("LoadModelCatalog: %v", err)
+	}
+	local := catalog.Providers["local"]
+	if local.Enabled == nil || !*local.Enabled {
+		t.Fatalf("local enabled = %v, want an explicit true", local.Enabled)
+	}
+	batch := catalog.Providers["batch"]
+	if batch.Enabled == nil || *batch.Enabled {
+		t.Fatalf("batch enabled = %v, want an explicit false", batch.Enabled)
+	}
+}

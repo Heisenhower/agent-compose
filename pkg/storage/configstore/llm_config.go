@@ -146,6 +146,15 @@ func (s *llmStore) UpsertDeclaredConnection(ctx context.Context, provider llms.P
 // daemon started without its cleanup, scheduler, and deletion recovery managers on
 // every start.
 //
+// A model identity is only an owner while an enabled connection actually binds
+// it. An identity alone answers no request, so a models.json that declares a
+// connection without a credential — persisted disabled — must not suppress the
+// environment bootstrap: yielding to it left a deployment with no enabled
+// connection at all, and runs silently lost the daemon-managed credential even
+// though the environment was the only source that could serve the model. Taking
+// the identity over stays symmetric, because the file projection reclaims an
+// identity the bootstrap materialized (CatalogProjectionOwnsScope).
+//
 // A row the file stops declaring loses that scope: the projection releases it, and
 // the environment bootstrap maintains an unset scope. So a stale row cannot keep
 // owning an id the file has moved on from, and the bootstrap recovers by itself
@@ -162,7 +171,7 @@ func envProjectionConflict(ctx context.Context, tx *sql.Tx, providerID, modelID 
 	if provider != nil {
 		return provider.conflict(), nil
 	}
-	model, err := foreignIDOwner(ctx, tx, "model", `SELECT scope FROM llm_model WHERE id = ?`, modelID)
+	model, err := servingModelOwner(ctx, tx, modelID)
 	if err != nil {
 		return nil, err
 	}
@@ -205,6 +214,36 @@ func foreignIDOwner(ctx context.Context, tx *sql.Tx, kind, query, id string) (*l
 		return nil, nil
 	}
 	return &llmIDOwner{kind: kind, id: id, scope: scope}, nil
+}
+
+// servingModelOwner reads the model identity carrying id under a scope the
+// environment bootstrap does not own, and only while an enabled connection binds
+// it. An identity another source cannot serve is not an owner: the environment is
+// then the only source that can answer for the model, and yielding to an
+// unservable declaration would leave the deployment with no enabled connection.
+func servingModelOwner(ctx context.Context, tx *sql.Tx, id string) (*llmIDOwner, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, nil
+	}
+	var scope string
+	err := tx.QueryRowContext(ctx, `SELECT identity.scope FROM llm_model identity
+		WHERE identity.id = ? AND identity.enabled != 0
+		AND EXISTS (
+			SELECT 1 FROM llm_provider_model binding
+			JOIN llm_provider connection ON connection.id = binding.provider_id
+			WHERE binding.model_id = identity.id AND connection.enabled != 0)`, id).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read model %q ownership: %w", id, err)
+	}
+	scope = strings.TrimSpace(scope)
+	if llms.EnvProjectionOwnsScope(scope) {
+		return nil, nil
+	}
+	return &llmIDOwner{kind: "model", id: id, scope: scope}, nil
 }
 
 // releaseEnvProjectionConnection disables a connection the environment bootstrap

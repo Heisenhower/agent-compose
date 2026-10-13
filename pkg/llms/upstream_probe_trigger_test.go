@@ -106,3 +106,38 @@ func TestProbeConfiguredUpstreamsStopsWhenTheBudgetEnded(t *testing.T) {
 		t.Fatalf("an ended sweep did not report that it stopped: %s", logged.String())
 	}
 }
+
+// A run-scoped declared connection carries the sandbox's own credential, so the
+// startup sweep must not spend it on a diagnostic.
+func TestProbeConfiguredUpstreamsSkipsDeclaredConnections(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/v1/models":
+			writeProbeJSON(w, `{"object":"list","data":[{"id":"served-model"}]}`)
+		case "/v1/chat/completions":
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	declared := catalogOpenAIConnection("run-connection", server.URL+"/v1")
+	declared.Scope = ProviderScopeDeclared
+	store := fakeCatalogStore{
+		providers: []Provider{catalogOpenAIConnection("a", server.URL+"/v1"), declared},
+		bindings: []ProviderModelBinding{
+			{ProviderID: "a", ModelID: "served-model"},
+			{ProviderID: declared.ID, ModelID: "served-model"},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := ProbeConfiguredUpstreams(context.Background(), logger, NewUpstreamProber(server.Client()), store); err != nil {
+		t.Fatalf("ProbeConfiguredUpstreams: %v", err)
+	}
+	if got, want := requests.Load(), int64(1+2); got != want {
+		t.Fatalf("probe requests = %d, want %d: the declared connection must not be probed", got, want)
+	}
+}

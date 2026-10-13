@@ -114,6 +114,12 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		return fmt.Errorf("encode provider %q headers: %w", providerID, err)
 	}
 	enabled := apiKey != ""
+	if definition.Enabled != nil {
+		// A connection that needs no credential — a local endpoint, for example —
+		// says so explicitly; the file is otherwise the source of truth for
+		// whether the connection can serve a default.
+		enabled = *definition.Enabled
+	}
 	// The row may be the file's own, one a previous projection released, or one the
 	// environment bootstrap materialized. An id an explicit source owns (an
 	// LLM-service connection or a run-scoped declared one) is not the file's to
@@ -280,7 +286,7 @@ func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now 
 		return fmt.Errorf("%w: models.json default %q names connection %q, which scope %q owns", domain.ErrInvalidArgument, reference, providerID, owner)
 	}
 	if enabled == 0 {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which declares no apiKey and is therefore disabled", domain.ErrInvalidArgument, reference, providerID)
+		return fmt.Errorf("%w: models.json default %q names connection %q, which is disabled: declare an apiKey, or \"enabled\": true for a connection that needs no credential", domain.ErrInvalidArgument, reference, providerID)
 	}
 	if err := ensureCatalogModelIdentity(ctx, tx, modelID, now); err != nil {
 		return fmt.Errorf("upsert model catalog default model: %w", err)

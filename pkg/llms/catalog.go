@@ -24,12 +24,18 @@ type ModelCatalog struct {
 // CatalogProvider defines one upstream provider. Pointer fields distinguish
 // omission from an explicitly empty value during decoding and validation.
 type CatalogProvider struct {
-	Name     *string           `json:"name,omitempty"`
-	BaseURL  *string           `json:"baseUrl,omitempty"`
-	Protocol *string           `json:"protocol,omitempty"`
-	APIKey   *string           `json:"apiKey,omitempty"`
-	Headers  map[string]string `json:"headers,omitempty"`
-	Models   []CatalogModel    `json:"models,omitempty"`
+	Name     *string `json:"name,omitempty"`
+	BaseURL  *string `json:"baseUrl,omitempty"`
+	Protocol *string `json:"protocol,omitempty"`
+	APIKey   *string `json:"apiKey,omitempty"`
+	// Enabled overrides the credential-derived default. Absent keeps the rule
+	// that a declaration without an apiKey is persisted disabled; true declares a
+	// connection that needs no credential, such as a local endpoint, so the file
+	// can serve models and a default from it; false disables a connection whose
+	// apiKey is present.
+	Enabled *bool             `json:"enabled,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Models  []CatalogModel    `json:"models,omitempty"`
 }
 
 // CatalogModel contains optional per-model connection and output behavior.
@@ -142,6 +148,10 @@ func mergeCatalogProvider(base, overlay CatalogProvider) CatalogProvider {
 	}
 	if overlay.APIKey != nil {
 		base.APIKey = stringPointer(*overlay.APIKey)
+	}
+	if overlay.Enabled != nil {
+		value := *overlay.Enabled
+		base.Enabled = &value
 	}
 	if overlay.Headers != nil {
 		base.Headers = cloneStringMap(overlay.Headers)
@@ -327,6 +337,10 @@ func cloneModelCatalog(catalog ModelCatalog) ModelCatalog {
 		}
 		if provider.APIKey != nil {
 			copyProvider.APIKey = stringPointer(*provider.APIKey)
+		}
+		if provider.Enabled != nil {
+			value := *provider.Enabled
+			copyProvider.Enabled = &value
 		}
 		copyProvider.Headers = cloneStringMap(provider.Headers)
 		copyProvider.Models = make([]CatalogModel, len(provider.Models))

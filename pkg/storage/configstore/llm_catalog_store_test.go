@@ -530,3 +530,51 @@ func clearLLMTestEnvironment(t *testing.T) {
 		t.Setenv(key, "")
 	}
 }
+
+// A local endpoint needs no credential. Declaring "enabled": true must make the
+// file's connection usable and its default resolvable instead of failing the
+// daemon start because the row was persisted disabled.
+func TestIntegrationCatalogProviderServesWithoutACredential(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol := "http://127.0.0.1:11434/v1", llms.APIProtocolChatCompletions
+	enabled := true
+	catalog := llms.ModelCatalog{
+		Default: "local/local-model",
+		Providers: map[string]llms.CatalogProvider{
+			"local": {BaseURL: &baseURL, Protocol: &protocol, Enabled: &enabled, Models: []llms.CatalogModel{{ID: "local-model"}}},
+		},
+	}
+	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
+		t.Fatalf("ApplyModelCatalog: %v", err)
+	}
+
+	providers, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledLLMProviders: %v", err)
+	}
+	if len(providers) != 1 || providers[0].ID != "local" {
+		t.Fatalf("enabled connections = %#v, want the credential-less local connection", providers)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "local" || modelID != "local-model" {
+		t.Fatalf("default reference = %q/%q ok=%v err=%v, want local/local-model", providerID, modelID, ok, err)
+	}
+
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	selected, err := loaded.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	target, err := loaded.Resolve("", selected, nil)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", selected, err)
+	}
+	if target.Provider.ID != "local" || target.Model.ID != "local-model" {
+		t.Fatalf("resolved %s/%s, want local/local-model", target.Provider.ID, target.Model.ID)
+	}
+}
