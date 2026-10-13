@@ -78,10 +78,10 @@ func (s *projectStore) ListLatestProjectRunsForSandboxes(ctx context.Context, sa
 		if err != nil {
 			return fmt.Errorf("query latest project runs for sandboxes: %w", err)
 		}
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			item, err := projects.ScanProjectRun(rows.Scan)
 			if err != nil {
-				_ = rows.Close()
 				return err
 			}
 			if _, exists := result[item.SandboxID]; !exists {
@@ -89,11 +89,7 @@ func (s *projectStore) ListLatestProjectRunsForSandboxes(ctx context.Context, sa
 			}
 		}
 		if err := rows.Err(); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("iterate latest project runs for sandboxes: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("close latest project runs for sandboxes: %w", err)
 		}
 		return nil
 	}); err != nil {

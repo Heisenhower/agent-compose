@@ -258,10 +258,10 @@ func (s *projectStore) ListProjectAgentsByIDs(ctx context.Context, agentIDs []st
 		if err != nil {
 			return fmt.Errorf("query project agents by managed agent ids: %w", err)
 		}
+		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			item, err := projects.ScanProjectAgent(rows.Scan)
 			if err != nil {
-				_ = rows.Close()
 				return err
 			}
 			if _, exists := result[item.ID]; !exists {
@@ -269,11 +269,7 @@ func (s *projectStore) ListProjectAgentsByIDs(ctx context.Context, agentIDs []st
 			}
 		}
 		if err := rows.Err(); err != nil {
-			_ = rows.Close()
 			return fmt.Errorf("iterate project agents by managed agent ids: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("close project agents by managed agent ids: %w", err)
 		}
 		return nil
 	}); err != nil {
