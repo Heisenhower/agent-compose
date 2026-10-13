@@ -32,6 +32,15 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	// the provider row with ON DELETE CASCADE, so an operator's stored default must
 	// survive a declaration that no longer serves it, and a later file must be able
 	// to restore the id.
+	//
+	// The released connections give up their model bindings with the id. A binding
+	// is what makes a connection serve a model, and it carries the file's own
+	// endpoint and header overrides, so a connection that later takes the released
+	// id over — the environment bootstrap reclaims the openai/anthropic ids, and
+	// that path is supported — must not inherit models it never declared.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_provider_model WHERE provider_id IN (SELECT id FROM llm_provider WHERE scope = ?)`, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog bindings: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
 		return fmt.Errorf("release stale model catalog providers: %w", err)
 	}

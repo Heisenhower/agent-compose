@@ -342,6 +342,52 @@ func TestIntegrationModelCatalogTakesItsReleasedIDBackFromTheEnvironment(t *test
 	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
 }
 
+// A released connection gives its model bindings up with its id. A binding is what
+// makes a connection serve a model and it carries the file's own endpoint and
+// header overrides, so a binding left behind on a released row is inherited by
+// whoever takes the id over — the environment bootstrap reclaims the
+// openai/anthropic ids — and that connection then serves models the file declared
+// under endpoints and headers neither source declared for it.
+func TestIntegrationModelCatalogReleaseDropsTheReleasedBindings(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")
+	provider := declared.Providers[llms.ProviderIDDefaultOpenAI]
+	provider.Models = append(provider.Models, llms.CatalogModel{ID: "second-file-model"})
+	declared.Providers[llms.ProviderIDDefaultOpenAI] = provider
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 2 {
+		t.Fatalf("bindings after declaring = %d, want both declared models", count)
+	}
+
+	// The operator removes the connection from models.json.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 0 {
+		t.Fatalf("bindings after the release = %d, want the released connection to give them up", count)
+	}
+
+	// The environment bootstrap reclaims the released id and declares its own model.
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err != nil {
+		t.Fatalf("the environment takes the released id over: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 1 {
+		t.Fatalf("bindings after the environment reclaimed the id = %d, want only the model the environment declares", count)
+	}
+	var boundModel string
+	if err := store.DB().QueryRowContext(ctx, `SELECT model_id FROM llm_provider_model WHERE provider_id = ?`, llms.ProviderIDDefaultOpenAI).Scan(&boundModel); err != nil {
+		t.Fatal(err)
+	}
+	if boundModel != "env-model" {
+		t.Fatalf("reclaimed connection serves %q, want the environment model only", boundModel)
+	}
+}
+
 func TestIntegrationApplyModelCatalogRejectsConnectionsAnotherSourceOwns(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	for _, scope := range []string{llms.ProviderScopeAPI, llms.ProviderScopeDeclared} {
