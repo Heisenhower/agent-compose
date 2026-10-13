@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -55,6 +56,53 @@ func TestProviderWriteWithoutProberSucceeds(t *testing.T) {
 	if _, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec})); err != nil {
 		t.Fatalf("CreateProvider without prober: %v", err)
 	}
+}
+
+// A write is committed before its response is described, so a failed model-list
+// read must not be reported as a failed mutation: a client that retried the
+// Create would hit ErrAlreadyExists for configuration that was applied.
+func TestProviderWriteReportsSuccessWhenTheModelListReadFails(t *testing.T) {
+	ctx := context.Background()
+	store := &failingBindingStore{LLMProviderStore: newLLMTestStore(t)}
+	handler := NewLLMHandler(nil, store)
+	spec := &agentcomposev2.LLMProviderSpec{
+		Id: "gateway", BaseUrl: "https://example.com/v1", Protocol: "responses", ApiKey: proto.String("upstream-secret"),
+		Models: &agentcomposev2.LLMProviderModels{Models: []*agentcomposev2.LLMModelSpec{{Id: "declared-model"}}},
+	}
+
+	store.fail = true
+	response, err := handler.CreateProvider(ctx, connect.NewRequest(&agentcomposev2.CreateProviderRequest{Provider: spec}))
+	if err != nil {
+		t.Fatalf("CreateProvider error = %v, want the committed write reported", err)
+	}
+	written := response.Msg.GetProvider()
+	if written.GetId() != "gateway" || len(written.GetModels()) != 0 {
+		t.Fatalf("response = %#v, want the connection reported without a model list", written)
+	}
+
+	// The write itself succeeded, so a read that works reports the declared model.
+	store.fail = false
+	read, err := handler.GetProvider(ctx, connect.NewRequest(&agentcomposev2.GetProviderRequest{Id: "gateway"}))
+	if err != nil {
+		t.Fatalf("GetProvider: %v", err)
+	}
+	if models := read.Msg.GetProvider().GetModels(); len(models) != 1 || models[0].GetId() != "declared-model" {
+		t.Fatalf("stored models = %#v, want the declared model", models)
+	}
+}
+
+// failingBindingStore fails the model list a write is described with, while the
+// write itself still reaches the store underneath.
+type failingBindingStore struct {
+	LLMProviderStore
+	fail bool
+}
+
+func (s *failingBindingStore) ListLLMProviderModelConfigs(ctx context.Context) ([]llms.ProviderModelBinding, error) {
+	if s.fail {
+		return nil, errors.New("model list unavailable")
+	}
+	return s.LLMProviderStore.ListLLMProviderModelConfigs(ctx)
 }
 
 // newLLMTestHandler builds a handler over an in-memory configuration store,

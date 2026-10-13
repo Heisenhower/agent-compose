@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"log/slog"
 
 	"connectrpc.com/connect"
 
@@ -33,8 +34,7 @@ func (h *LLMHandler) CreateProvider(ctx context.Context, req *connect.Request[ag
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}
-	h.probeUpstream(ctx, provider)
-	response, err := h.providerResponse(ctx, provider)
+	response, err := h.writtenProviderResponse(ctx, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -89,32 +89,54 @@ func (h *LLMHandler) UpdateProvider(ctx context.Context, req *connect.Request[ag
 	if err != nil {
 		return nil, ConnectErrorForDomain(err)
 	}
-	h.probeUpstream(ctx, provider)
-	response, err := h.providerResponse(ctx, provider)
+	response, err := h.writtenProviderResponse(ctx, provider)
 	if err != nil {
 		return nil, err
 	}
 	return connect.NewResponse(&agentcomposev2.UpdateProviderResponse{Provider: response}), nil
 }
 
+// writtenProviderResponse converts a connection this handler just wrote, reading
+// the declared models once for both the response and the post-write probe.
+//
+// The write is committed before this runs, so an enrichment failure must not be
+// reported as a failed mutation: a client that retried a Create would hit
+// ErrAlreadyExists for configuration that was applied, and a connection that
+// exists would read like one that does not. The connection is reported without a
+// model list instead, which is how a connection that declares no models looks on
+// the wire, and a later read answers the same question exactly.
+func (h *LLMHandler) writtenProviderResponse(ctx context.Context, provider llms.Provider) (*agentcomposev2.LLMProvider, error) {
+	bindings, err := h.providers.ListLLMProviderModelConfigs(ctx)
+	if err != nil {
+		slog.Warn("reporting a written llm connection without its model list", "connection", provider.ID, "error", err)
+		bindings = nil
+	}
+	h.probeUpstream(ctx, provider, bindings)
+	converted, err := providerToV2(provider, bindings, h.cachedCapabilities(provider))
+	if err == nil {
+		return converted, nil
+	}
+	// A binding this write just stored does not decode: report the connection
+	// rather than the failure of the description that follows it.
+	slog.Warn("llm connection model list could not be reported", "connection", provider.ID, "error", err)
+	return providerToV2(provider, nil, h.cachedCapabilities(provider))
+}
+
 // probeUpstream runs the synchronous post-write protocol check, bounded by the
 // configured probe timeout. A connection that declares models is probed with one
-// of them; otherwise the probe names one the endpoint advertises.
-func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider) {
+// of them; otherwise the probe names one the endpoint advertises. The bindings
+// are the ones the response is built from, so a write reads the catalog once.
+func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider, bindings []llms.ProviderModelBinding) {
 	if h == nil || h.prober == nil {
 		return
 	}
-	h.prober.ProbeConnection(ctx, provider, h.declaredProbeModel(ctx, provider.ID))
+	h.prober.ProbeConnection(ctx, provider, declaredProbeModel(bindings, provider.ID))
 }
 
 // declaredProbeModel returns the first declared model id in stable order, or ""
-// when the connection declares none. A failed read is deliberately ignored: the
-// probe is advisory, and an unnamed model only costs the /v1/models lookup.
-func (h *LLMHandler) declaredProbeModel(ctx context.Context, providerID string) string {
-	bindings, err := h.providers.ListLLMProviderModelConfigs(ctx)
-	if err != nil {
-		return ""
-	}
+// when the connection declares none. An unnamed model only costs the probe the
+// endpoint's own model lookup, so a missing list still produces a usable probe.
+func declaredProbeModel(bindings []llms.ProviderModelBinding, providerID string) string {
 	model := ""
 	for _, binding := range bindings {
 		if binding.ProviderID != providerID {
