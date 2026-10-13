@@ -493,7 +493,11 @@ func upstreamModelsEndpoint(provider Provider) string {
 	if NormalizeProviderType(provider.ProviderType) == ProviderFamilyAnthropic {
 		protocol = ProtocolMessages
 	}
+	// A trailing slash is removed before the protocol segment is, because a base
+	// URL whose query string follows the slash keeps it past the raw trim and
+	// would otherwise leave "/responses" unrecognized.
 	stripProtocolPath := func(endpointPath string) string {
+		endpointPath = strings.TrimRight(endpointPath, "/")
 		for _, suffix := range []string{"/responses", "/chat/completions", "/messages"} {
 			if strings.HasSuffix(endpointPath, suffix) {
 				return strings.TrimSuffix(endpointPath, suffix)
@@ -509,7 +513,7 @@ func upstreamModelsEndpoint(provider Provider) string {
 		// the models path under whatever the operator typed.
 		return stripProtocolPath(endpoint) + "/models"
 	}
-	cleanPath := strings.TrimRight(stripProtocolPath(parsed.Path), "/")
+	cleanPath := stripProtocolPath(parsed.Path)
 	if cleanPath == "" {
 		cleanPath = "/"
 	}

@@ -416,6 +416,18 @@ func TestUpstreamModelsEndpointKeepsAQueryString(t *testing.T) {
 	if got := upstreamModelsEndpoint(bootstrap); got != "https://gateway.example/openai/deployments/deployment/models?api-version=2024-01-01" {
 		t.Fatalf("bootstrap models endpoint = %q", got)
 	}
+	// A trailing slash before the query must not hide the protocol path: the raw
+	// trim cannot remove a slash that is not at the end of the string, so the
+	// segment is removed after the slash is.
+	trailing := probeTestProvider("https://gateway.example/v1/responses/?api-version=2024-01-01")
+	if got := upstreamModelsEndpoint(trailing); got != "https://gateway.example/v1/models?api-version=2024-01-01" {
+		t.Fatalf("already complete endpoint models endpoint = %q", got)
+	}
+	chat := probeTestProvider("https://gateway.example/v1/chat/completions/?api-version=2024-01-01")
+	chat.DefaultWireAPI = APIProtocolChatCompletions
+	if got := upstreamModelsEndpoint(chat); got != "https://gateway.example/v1/models?api-version=2024-01-01" {
+		t.Fatalf("chat completions endpoint models endpoint = %q", got)
+	}
 }
 
 func probeTestProvider(baseURL string) Provider {
