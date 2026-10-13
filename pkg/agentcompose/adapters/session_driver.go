@@ -145,6 +145,12 @@ func (d *SandboxDriver) StartSandboxVM(ctx context.Context, session *domain.Sand
 		_ = d.Store.SaveVMState(session.Summary.ID, vmState)
 		return err
 	}
+	// prepareSandboxStart replaces vmState with the driver-boundary projection,
+	// which does not carry the egress record. Put it back before the save below:
+	// that start-attempt fence and the EnsureSandbox failure path both persist
+	// this value, and a start that never reaches recordEgressRuntimePolicy must
+	// not erase the fact about the runtime that is still running.
+	vmState.EgressPolicy = previousEgressPolicy
 	// Persist a start-attempt fence before asking the runtime to start. Runtime
 	// creation can partially succeed before returning an error; retaining the
 	// stop timestamp preserves resume semantics, while the newer attempt time

@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,7 +19,10 @@ import (
 // again reports.
 type sequenceRuntimeProvider struct {
 	infos []domain.SandboxVMInfo
-	calls int
+	// ensureErrs makes the n-th ensure fail, so the start failure path is
+	// observable without a real runtime.
+	ensureErrs []error
+	calls      int
 }
 
 func (p *sequenceRuntimeProvider) ForDriver(string) (SandboxRuntime, error) {
@@ -26,8 +30,12 @@ func (p *sequenceRuntimeProvider) ForDriver(string) (SandboxRuntime, error) {
 	if p.calls < len(p.infos) {
 		info = p.infos[p.calls]
 	}
+	var ensureErr error
+	if p.calls < len(p.ensureErrs) {
+		ensureErr = p.ensureErrs[p.calls]
+	}
 	p.calls++
-	return fakeSessionRuntime{info: info}, nil
+	return fakeSessionRuntime{info: info, ensureErr: ensureErr}, nil
 }
 
 func (p *sequenceRuntimeProvider) ForSession(*domain.Sandbox) (SandboxRuntime, error) {
@@ -230,5 +238,64 @@ func TestSandboxDriverKeepsAnEmptyRecordWhenAReusedRuntimeCarriesNone(t *testing
 	}
 	if vmState.EgressPolicy.Recorded() {
 		t.Fatalf("recorded egress policy after reusing a runtime with no record = %+v, want it left empty so the start reports that the runtime cannot be accounted for", vmState.EgressPolicy)
+	}
+}
+
+// TestSandboxDriverKeepsTheRecordWhenAStartFails is the regression for a start
+// that fails after the runtime was asked to start: the start-attempt fence and
+// the failure path both persist the driver-boundary projection, which does not
+// carry the egress record, so the record has to be restored before either save.
+// Losing it would report a running runtime as unaccounted for.
+func TestSandboxDriverKeepsTheRecordWhenAStartFails(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	config := &appconfig.Config{
+		DataRoot:             root,
+		SandboxRoot:          filepath.Join(root, "sandboxes"),
+		RuntimeDriver:        driverpkg.RuntimeDriverBoxlite,
+		BoxliteHome:          filepath.Join(root, "boxlite"),
+		DefaultImage:         "guest:latest",
+		GuestWorkspacePath:   "/workspace",
+		JupyterGuestPort:     8888,
+		JupyterProxyBasePath: "/agent-compose/session",
+		SandboxStartTimeout:  2 * time.Second,
+	}
+	store, err := sandboxstore.NewWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewWithConfig returned error: %v", err)
+	}
+	session, err := store.CreateSandbox(ctx, "failed start", "", driverpkg.RuntimeDriverBoxlite, "guest:latest", "", domain.SandboxTypeManual, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("CreateSandbox returned error: %v", err)
+	}
+
+	created := domain.SandboxEgressPolicy{Generation: 4242, Applied: string(egress.ApplicationOpen)}
+	provider := &sequenceRuntimeProvider{}
+	provider.infos = append(provider.infos, domain.SandboxVMInfo{BoxID: "container-1", EgressPolicy: created})
+	provider.infos = append(provider.infos, domain.SandboxVMInfo{BoxID: "container-1"})
+	provider.ensureErrs = append(provider.ensureErrs, nil)
+	provider.ensureErrs = append(provider.ensureErrs, errors.New("the runtime refused to start"))
+	driver := newTestSandboxDriver(config, store, nil, provider)
+
+	if err := driver.StartSandboxVM(ctx, session); err != nil {
+		t.Fatalf("first StartSandboxVM returned error: %v", err)
+	}
+	vmState, err := store.GetVMState(session.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetVMState returned error: %v", err)
+	}
+	if vmState.EgressPolicy != created {
+		t.Fatalf("recorded egress policy = %+v, want the one the runtime was created with (%+v)", vmState.EgressPolicy, created)
+	}
+
+	if err := driver.StartSandboxVM(ctx, session); err == nil {
+		t.Fatal("second StartSandboxVM returned no error, want the runtime failure")
+	}
+	vmState, err = store.GetVMState(session.Summary.ID)
+	if err != nil {
+		t.Fatalf("GetVMState returned error: %v", err)
+	}
+	if vmState.EgressPolicy != created {
+		t.Fatalf("recorded egress policy after a failed start = %+v, want it preserved at %+v", vmState.EgressPolicy, created)
 	}
 }
