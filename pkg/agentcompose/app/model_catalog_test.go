@@ -46,7 +46,7 @@ func TestLoadModelCatalogUsesDataRootAndFailsUnresolvedSecrets(t *testing.T) {
 	if _, err := loadModelCatalog(context.Background(), &appconfig.Config{DataRoot: dataRoot}, store); err != nil {
 		t.Fatal(err)
 	}
-	if store.catalog.Default != "custom/literal" || *store.catalog.Providers["custom"].APIKey != "resolved-key" {
+	if store.catalog.Default == nil || *store.catalog.Default != "custom/literal" || *store.catalog.Providers["custom"].APIKey != "resolved-key" {
 		t.Fatalf("catalog = %#v", store.catalog)
 	}
 
@@ -68,7 +68,7 @@ func TestIntegrationLoadModelCatalogRejectsCrossFamilyModelProtocol(t *testing.T
 	if err == nil || !strings.Contains(err.Error(), `incompatible with provider family "openai"`) {
 		t.Fatalf("loadModelCatalog error = %v", err)
 	}
-	if store.catalog.Default != "" || len(store.catalog.Providers) != 0 {
+	if store.catalog.Default != nil || len(store.catalog.Providers) != 0 {
 		t.Fatalf("store received catalog after validation failure: %#v", store.catalog)
 	}
 }

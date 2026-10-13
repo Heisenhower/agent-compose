@@ -41,8 +41,15 @@ func TestDefaultModelMissing(t *testing.T) {
 		wantMissing bool
 	}{
 		{
+			// A deployment that configured no upstream never asked for a
+			// daemon-managed default, so there is nothing to warn about.
 			name:        "no connections at all",
 			store:       &llmConfigStoreFake{},
+			wantMissing: false,
+		},
+		{
+			name:        "a connection is configured but no default resolves",
+			store:       &llmConfigStoreFake{providers: []llms.Provider{{ID: "gateway", Enabled: true}}},
 			wantMissing: true,
 		},
 		{

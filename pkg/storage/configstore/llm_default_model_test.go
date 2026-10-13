@@ -60,7 +60,7 @@ func TestIntegrationDefaultModelLifecycle(t *testing.T) {
 	// A models.json that does declare a default has the last word.
 	baseURL, protocol, apiKey := "https://catalog.example/v1", llms.APIProtocolResponses, "catalog-key"
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "catalog/catalog-model",
+		Default: llms.CatalogDefault("catalog/catalog-model"),
 		Providers: map[string]llms.CatalogProvider{
 			"catalog": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey},
 		},
@@ -347,22 +347,23 @@ func TestIntegrationProviderWriteKeepsTheDefaultModelIdentity(t *testing.T) {
 }
 
 // models.json declaring a default is a claim that a connection the file declares
-// can serve that model. A reference to a connection the file does not control, or
-// to one without a credential, was stored as the effective default while
-// resolution ignored it: GetDefaultModel reported a default no run receives, and
-// a run that named no model was routed by the connection fallback instead.
-func TestIntegrationModelCatalogRejectsAnUnusableDefault(t *testing.T) {
+// can serve that model. The claim can be wrong — the connection is not declared,
+// is owned by another source, or has no credential — but a default the file
+// cannot serve must not stop the daemon: every other declaration in the file is
+// valid, so the projection reports what it did not apply, leaves the effective
+// default usable, and lets the environment fallback serve runs again.
+func TestIntegrationModelCatalogDropsAnUnusableDefault(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	cases := []struct {
-		name      string
-		reference string
-		apiKey    string
-		wantErr   string
+		name       string
+		reference  string
+		apiKey     string
+		wantReason string
 	}{
 		{name: "declared and enabled", reference: "gateway/gpt-4o", apiKey: "gateway-key"},
-		{name: "connection the file does not declare", reference: "ghost/gpt-4o", apiKey: "gateway-key", wantErr: "does not declare"},
-		{name: "connection without a credential and without an explicit enabled", reference: "gateway/gpt-4o", wantErr: `is disabled: declare an apiKey, or "enabled": true`},
-		{name: "not a provider/model reference", reference: "gateway", apiKey: "gateway-key", wantErr: "not a <provider>/<model> reference"},
+		{name: "connection the file does not declare", reference: "ghost/gpt-4o", apiKey: "gateway-key", wantReason: "does not declare"},
+		{name: "connection without a credential and without an explicit enabled", reference: "gateway/gpt-4o", wantReason: "is disabled"},
+		{name: "not a provider/model reference", reference: "gateway", apiKey: "gateway-key", wantReason: "not a <provider>/<model> reference"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -375,10 +376,10 @@ func TestIntegrationModelCatalogRejectsAnUnusableDefault(t *testing.T) {
 				definition.APIKey = &apiKey
 			}
 			err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-				Default:   tc.reference,
+				Default:   llms.CatalogDefault(tc.reference),
 				Providers: map[string]llms.CatalogProvider{"gateway": definition},
 			})
-			if tc.wantErr == "" {
+			if tc.wantReason == "" {
 				if err != nil {
 					t.Fatalf("ApplyModelCatalog error = %v, want success", err)
 				}
@@ -388,19 +389,34 @@ func TestIntegrationModelCatalogRejectsAnUnusableDefault(t *testing.T) {
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("ApplyModelCatalog error = %v, want it to mention %q", err, tc.wantErr)
+			dropped, ok := llms.AsCatalogDefaultDropped(err)
+			if !ok {
+				t.Fatalf("ApplyModelCatalog error = %v, want a dropped default", err)
+			}
+			if dropped.Declared != tc.reference || !strings.Contains(dropped.Reason, tc.wantReason) {
+				t.Fatalf("dropped = %#v, want the declared reference %q and a reason mentioning %q", dropped, tc.reference, tc.wantReason)
 			}
 			if _, _, ok, refErr := store.DefaultLLMModelReference(ctx); refErr != nil || ok {
-				t.Fatalf("default after a rejected reference ok=%v err=%v, want none", ok, refErr)
+				t.Fatalf("default after a dropped reference ok=%v err=%v, want none", ok, refErr)
+			}
+			// The rest of the file still lands: the file's connection keeps the
+			// catalog scope even though its default was refused.
+			var scope string
+			if err := store.DB().QueryRowContext(ctx, `SELECT scope FROM llm_provider WHERE id = 'gateway'`).Scan(&scope); err != nil {
+				t.Fatalf("read connection scope: %v", err)
+			}
+			if scope != llms.ProviderScopeCatalog {
+				t.Fatalf("connection scope = %q, want the file to keep it", scope)
 			}
 		})
 	}
 }
 
-// A connection another source owns is rejected as well: models.json does not
-// control it, so a default written in the file could never be served by it.
-func TestIntegrationModelCatalogRejectsADefaultOwnedByAnotherScope(t *testing.T) {
+// A connection another source owns cannot serve a default models.json writes, but
+// the reference itself can still be the effective default: the file is refused,
+// while the stored reference an operator set through the LLM service keeps
+// serving. Only a stored reference that cannot resolve is removed.
+func TestIntegrationModelCatalogDropsADefaultOwnedByAnotherScope(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := newProjectionTestStore(t)
@@ -411,16 +427,64 @@ func TestIntegrationModelCatalogRejectsADefaultOwnedByAnotherScope(t *testing.T)
 	}); err != nil {
 		t.Fatalf("create api provider: %v", err)
 	}
-	baseURL := "https://gateway.example/v1"
-	fileKey := "gateway-key"
+	baseURL, protocol, fileKey := "https://gateway.example/v1", llms.APIProtocolChatCompletions, "gateway-key"
+	gateway := llms.CatalogProvider{BaseURL: &baseURL, Protocol: &protocol, APIKey: &fileKey, Models: []llms.CatalogModel{{ID: "gpt-4o"}}}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Providers: map[string]llms.CatalogProvider{"gateway": gateway}}); err != nil {
+		t.Fatalf("declare the file connection: %v", err)
+	}
+	if _, err := store.SetDefaultLLMModel(ctx, llms.ModelReference{ProviderID: "gateway", ModelID: "gpt-4o"}); err != nil {
+		t.Fatalf("set the operator default: %v", err)
+	}
+
 	err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "managed/gpt-4o",
-		Providers: map[string]llms.CatalogProvider{
-			"gateway": {BaseURL: &baseURL, APIKey: &fileKey, Models: []llms.CatalogModel{{ID: "gpt-4o"}}},
-		},
+		Default:   llms.CatalogDefault("managed/gpt-4o"),
+		Providers: map[string]llms.CatalogProvider{"gateway": gateway},
 	})
-	if err == nil || !strings.Contains(err.Error(), `which scope "api" owns`) {
-		t.Fatalf("ApplyModelCatalog error = %v, want the api-owned connection rejected", err)
+	dropped, ok := llms.AsCatalogDefaultDropped(err)
+	if !ok {
+		t.Fatalf("ApplyModelCatalog error = %v, want the api-owned declaration refused", err)
+	}
+	if dropped.Declared != "managed/gpt-4o" || dropped.Stored != "" || !strings.Contains(dropped.Reason, `which scope "api" owns`) {
+		t.Fatalf("dropped = %#v, want the declared reference refused while the stored one is kept", dropped)
+	}
+	if providerID, modelID, ok, refErr := store.DefaultLLMModelReference(ctx); refErr != nil || !ok || providerID != "gateway" || modelID != "gpt-4o" {
+		t.Fatalf("stored default = %q/%q ok=%v err=%v, want the operator default kept", providerID, modelID, ok, refErr)
+	}
+}
+
+// The file is the only way to declare that the daemon has no catalog default: an
+// absent key keeps the stored reference so a runtime choice survives a restart,
+// and an explicitly empty one clears it so the environment fallback applies.
+func TestIntegrationModelCatalogClearsTheStoredDefaultOnlyWhenTheFileSaysSo(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol, fileKey := "https://gateway.example/v1", llms.APIProtocolChatCompletions, "gateway-key"
+	providers := map[string]llms.CatalogProvider{
+		"gateway": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &fileKey, Models: []llms.CatalogModel{{ID: "gpt-4o"}}},
+	}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Default: llms.CatalogDefault("gateway/gpt-4o"), Providers: providers}); err != nil {
+		t.Fatalf("ApplyModelCatalog: %v", err)
+	}
+
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Providers: providers}); err != nil {
+		t.Fatalf("ApplyModelCatalog without a default: %v", err)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "gateway" || modelID != "gpt-4o" {
+		t.Fatalf("default after an absent key = %q/%q ok=%v err=%v, want it preserved", providerID, modelID, ok, err)
+	}
+
+	err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{Default: llms.CatalogDefault(""), Providers: providers})
+	dropped, ok := llms.AsCatalogDefaultDropped(err)
+	if !ok {
+		t.Fatalf("ApplyModelCatalog error = %v, want the cleared reference reported", err)
+	}
+	if dropped.Stored != "gateway/gpt-4o" || !strings.Contains(dropped.Reason, "declares no default") {
+		t.Fatalf("dropped = %#v, want the stored reference and the reason", dropped)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || ok {
+		t.Fatalf("default after an explicit clear = %q/%q ok=%v err=%v, want none", providerID, modelID, ok, err)
 	}
 }
 

@@ -17,9 +17,20 @@ var catalogEnvironmentReference = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_
 // ModelCatalog is the daemon-owned provider and model catalog. Models carry
 // optional behavior; they are not an allowlist for upstream model IDs.
 type ModelCatalog struct {
-	Default   string                     `json:"default,omitempty"`
+	// Default is the file's default model reference. An absent key (nil) leaves
+	// the stored reference alone, so a default chosen at runtime survives a
+	// restart. A present but empty value is the file explicitly declaring that it
+	// has no default, which clears the stored reference; any other value must name
+	// a connection the file declares.
+	Default   *string                    `json:"default,omitempty"`
 	Providers map[string]CatalogProvider `json:"providers"`
 }
+
+// CatalogDefault returns the value a ModelCatalog declaration carries for a
+// default model: a non-empty reference declares that default, and an empty one
+// declares that the file has none, which clears the stored reference. A caller
+// that leaves the key absent keeps the stored reference instead.
+func CatalogDefault(reference string) *string { return &reference }
 
 // CatalogProvider defines one upstream provider. Pointer fields distinguish
 // omission from an explicitly empty value during decoding and validation.
@@ -102,8 +113,9 @@ func decodeModelCatalog(reader io.Reader) (ModelCatalog, error) {
 // MergeModelCatalog overlays providers field-by-field and models by ID.
 func MergeModelCatalog(base, overlay ModelCatalog) (ModelCatalog, error) {
 	result := cloneModelCatalog(base)
-	if strings.TrimSpace(overlay.Default) != "" {
-		result.Default = strings.TrimSpace(overlay.Default)
+	if overlay.Default != nil {
+		value := strings.TrimSpace(*overlay.Default)
+		result.Default = &value
 	}
 	providerIDs := make([]string, 0, len(overlay.Providers))
 	for id := range overlay.Providers {
@@ -124,10 +136,10 @@ func MergeModelCatalog(base, overlay ModelCatalog) (ModelCatalog, error) {
 		}
 		result.Providers[id] = provider
 	}
-	if result.Default != "" {
-		providerID, _, ok := SplitProviderModelReference(result.Default)
+	if result.Default != nil && *result.Default != "" {
+		providerID, _, ok := SplitProviderModelReference(*result.Default)
 		if !ok {
-			return ModelCatalog{}, fmt.Errorf("default %q must use provider/model", result.Default)
+			return ModelCatalog{}, fmt.Errorf("default %q must use provider/model", *result.Default)
 		}
 		if _, ok := result.Providers[providerID]; !ok {
 			return ModelCatalog{}, fmt.Errorf("default references unknown provider %q", providerID)
@@ -323,7 +335,11 @@ func resolveCatalogString(value string, lookup func(string) (string, bool)) (str
 }
 
 func cloneModelCatalog(catalog ModelCatalog) ModelCatalog {
-	clone := ModelCatalog{Default: catalog.Default, Providers: make(map[string]CatalogProvider, len(catalog.Providers))}
+	clone := ModelCatalog{Providers: make(map[string]CatalogProvider, len(catalog.Providers))}
+	if catalog.Default != nil {
+		value := *catalog.Default
+		clone.Default = &value
+	}
 	for id, provider := range catalog.Providers {
 		copyProvider := provider
 		if provider.Name != nil {

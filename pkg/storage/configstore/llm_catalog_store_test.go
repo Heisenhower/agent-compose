@@ -61,7 +61,7 @@ func TestIntegrationApplyModelCatalogResolvesLiteralModelsDefaultsAndBehavior(t 
 		t.Fatal(err)
 	}
 	baseURL, protocol, apiKey, limit := "https://gateway.example/api/openai", llms.APIProtocolChatCompletions, "catalog-key", 99999
-	catalog := llms.ModelCatalog{Default: "baizhi/deepseek-v4-flash", Providers: map[string]llms.CatalogProvider{
+	catalog := llms.ModelCatalog{Default: llms.CatalogDefault("baizhi/deepseek-v4-flash"), Providers: map[string]llms.CatalogProvider{
 		"baizhi": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey, Models: []llms.CatalogModel{{ID: "deepseek-v4-flash", MaxOutputTokens: &limit}}},
 	}}
 	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
@@ -127,7 +127,7 @@ func TestIntegrationApplyEmptyModelCatalogClearsCatalogOwnedStateButKeepsTheStor
 
 	baseURL, protocol, apiKey := "https://catalog.example/v1", llms.APIProtocolResponses, "catalog-key"
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "catalog/catalog-model",
+		Default: llms.CatalogDefault("catalog/catalog-model"),
 		Providers: map[string]llms.CatalogProvider{
 			"catalog": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey},
 		},
@@ -178,7 +178,7 @@ func TestIntegrationModelCatalogReleasesWhatTheFileNoLongerDeclares(t *testing.T
 	store := newProjectionTestStore(t)
 
 	declared := catalogWithCredential("gateway", "gpt-4o")
-	declared.Default = "gateway/gpt-4o"
+	declared.Default = llms.CatalogDefault("gateway/gpt-4o")
 	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
 		t.Fatalf("declare the connection: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestIntegrationCatalogProviderServesWithoutACredential(t *testing.T) {
 	baseURL, protocol := "http://127.0.0.1:11434/v1", llms.APIProtocolChatCompletions
 	enabled := true
 	catalog := llms.ModelCatalog{
-		Default: "local/local-model",
+		Default: llms.CatalogDefault("local/local-model"),
 		Providers: map[string]llms.CatalogProvider{
 			"local": {BaseURL: &baseURL, Protocol: &protocol, Enabled: &enabled, Models: []llms.CatalogModel{{ID: "local-model"}}},
 		},

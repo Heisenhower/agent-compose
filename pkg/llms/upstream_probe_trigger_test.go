@@ -141,3 +141,51 @@ func TestProbeConfiguredUpstreamsSkipsDeclaredConnections(t *testing.T) {
 		t.Fatalf("probe requests = %d, want %d: the declared connection must not be probed", got, want)
 	}
 }
+
+// A connection whose declared model has its own endpoint must be probed there.
+// The connection endpoint is unreachable in this test, so a sweep that ignored
+// the model override would report the connection inconclusive and issue no
+// request at all.
+func TestProbeConfiguredUpstreamsProbesTheDeclaredModelEndpoint(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		switch r.URL.Path {
+		case "/v1/models":
+			writeProbeJSON(w, `{"object":"list","data":[{"id":"served-model"}]}`)
+		case "/v1/chat/completions":
+			writeProbeJSON(w, `{"object":"chat.completion","choices":[{"index":0}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	connection := catalogOpenAIConnection("a", "http://127.0.0.1:1/v1")
+	binding := ProviderModelBinding{
+		ProviderID: connection.ID, ModelID: "served-model",
+		Config: ProviderModelConfig{BaseURL: server.URL + "/v1"},
+	}
+	store := fakeCatalogStore{
+		providers:   []Provider{connection},
+		bindings:    []ProviderModelBinding{binding},
+		defProvider: connection.ID,
+		defModel:    "served-model",
+		hasDefault:  true,
+	}
+	prober := NewUpstreamProber(server.Client())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := ProbeConfiguredUpstreams(context.Background(), logger, prober, store); err != nil {
+		t.Fatalf("ProbeConfiguredUpstreams: %v", err)
+	}
+	if got, want := requests.Load(), int64(1+2); got != want {
+		t.Fatalf("probe requests = %d, want %d against the model endpoint", got, want)
+	}
+	verdict, ok := prober.LookupUpstreamProbe(ProviderForModel(connection, []ProviderModelBinding{binding}, "served-model"))
+	if !ok {
+		t.Fatal("no verdict was cached for the model endpoint")
+	}
+	if !verdict.Supports(ProtocolChatCompletions) {
+		t.Fatalf("verdict = %#v, want the model endpoint's chat_completions support", verdict.Protocols)
+	}
+}

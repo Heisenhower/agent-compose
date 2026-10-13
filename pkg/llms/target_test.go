@@ -60,3 +60,37 @@ func TestNewResolvedTargetDropsForbiddenPerModelHeaderCaseAndWhitespaceVariants(
 		})
 	}
 }
+
+// A declared model that overrides the connection's base url is served on its own
+// endpoint, so every diagnostic that names the connection must resolve that
+// model's endpoint first: a probe that used the connection endpoint reported a
+// verdict about an endpoint no request for the model ever reaches.
+func TestProviderForModelResolvesTheDeclaredModelEndpoint(t *testing.T) {
+	provider := Provider{ID: "azure", BaseURL: "https://connection.example/openai"}
+	bindings := []ProviderModelBinding{
+		{ProviderID: "azure", ModelID: "deployed", Config: ProviderModelConfig{BaseURL: "https://deployment.example/openai"}},
+		{ProviderID: "azure", ModelID: "plain"},
+		{ProviderID: "other", ModelID: "shared", Config: ProviderModelConfig{BaseURL: "https://other.example/openai"}},
+	}
+	cases := []struct {
+		name  string
+		model string
+		want  string
+	}{
+		{name: "declared with an override", model: "deployed", want: "https://deployment.example/openai"},
+		{name: "declared without an override", model: "plain", want: provider.BaseURL},
+		{name: "another connection's model", model: "shared", want: provider.BaseURL},
+		{name: "not declared", model: "missing", want: provider.BaseURL},
+		{name: "no model named", model: "", want: provider.BaseURL},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ProviderForModel(provider, bindings, tc.model).BaseURL; got != tc.want {
+				t.Fatalf("ProviderForModel(%q).BaseURL = %q, want %q", tc.model, got, tc.want)
+			}
+			if provider.BaseURL != "https://connection.example/openai" {
+				t.Fatalf("the caller's connection was mutated: %q", provider.BaseURL)
+			}
+		})
+	}
+}

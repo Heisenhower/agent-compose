@@ -81,7 +81,19 @@ func defaultModelMissing(ctx context.Context, store llms.CatalogStore) (bool, er
 	if err != nil {
 		return false, fmt.Errorf("load llm catalog after projection: %w", err)
 	}
-	return strings.TrimSpace(catalog.DefaultModel()) == "", nil
+	if strings.TrimSpace(catalog.DefaultModel()) != "" {
+		return false, nil
+	}
+	// A deployment with no llm connection at all is not misconfigured: it never
+	// asked for daemon-managed models, and warning about a default would be noise
+	// on every start. The warning is for an operator who configured an upstream
+	// but left the default unset, where a run that declares no model has nothing
+	// to fall back to.
+	connections, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		return false, fmt.Errorf("list llm connections after projection: %w", err)
+	}
+	return len(connections) > 0, nil
 }
 
 func loadModelCatalog(ctx context.Context, config *appconfig.Config, store modelCatalogStore) (*llms.ModelReference, error) {
@@ -102,7 +114,19 @@ func loadModelCatalog(ctx context.Context, config *appconfig.Config, store model
 		return nil, fmt.Errorf("read the stored llm default before applying %s: %w", path, err)
 	}
 	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
-		return nil, fmt.Errorf("apply model catalog %s: %w", path, err)
+		dropped, ok := llms.AsCatalogDefaultDropped(err)
+		if !ok {
+			return nil, fmt.Errorf("apply model catalog %s: %w", path, err)
+		}
+		// Every other declaration in the file is applied and the stored reference is
+		// cleared, so the projection is reported rather than treated as a failed
+		// write: refusing to start would take the whole daemon — cleanup, scheduler,
+		// deletion recovery — down over one default the file cannot serve.
+		slog.Warn("models.json default model was not applied",
+			"declared", dropped.Declared, "stored", dropped.Stored, "reason", dropped.Reason)
+		// A dropped reference was removed, not replaced, so the override report
+		// below must not claim the file outranked the stored choice.
+		return nil, nil
 	}
 	// A missing previous reference is not an override, and models.json that
 	// declares no default deliberately leaves the stored reference in place, so

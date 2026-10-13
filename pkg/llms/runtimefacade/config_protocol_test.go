@@ -55,7 +55,7 @@ func TestIntegrationEnsureSessionOpenCodePinsChatIngressIndependentOfUpstream(t 
 	root := t.TempDir()
 	const sessionID = "sandbox-opencode-chat-ingress"
 	config, store := openFacadeCatalogStore(t, ctx, root, llms.ModelCatalog{
-		Default: "gateway/gpt-test",
+		Default: llms.CatalogDefault("gateway/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"gateway": {
 				BaseURL:  catalogStringPointer("https://responses.example.test/v1"),
@@ -125,7 +125,7 @@ func TestIntegrationEnsureSessionOpenCodeResolvesTheServingConnection(t *testing
 	root := t.TempDir()
 	const sessionID = "sandbox-opencode-serving-connection"
 	config, store := openFacadeCatalogStore(t, ctx, root, llms.ModelCatalog{
-		Default: "openai/gpt-test",
+		Default: llms.CatalogDefault("openai/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"openai": {
 				BaseURL:  catalogStringPointer("https://openai.example.test/v1"),

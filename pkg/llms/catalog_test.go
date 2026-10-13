@@ -33,8 +33,8 @@ func TestLoadModelCatalogLoadsDeclaredProvidersAndResolvesSecrets(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadModelCatalog: %v", err)
 	}
-	if catalog.Default != "baizhi/deepseek-v4-flash" {
-		t.Fatalf("default = %q", catalog.Default)
+	if catalog.Default == nil || *catalog.Default != "baizhi/deepseek-v4-flash" {
+		t.Fatalf("default = %v", catalog.Default)
 	}
 	baizhi := catalog.Providers["baizhi"]
 	if pointerStringForTest(baizhi.APIKey) != "baizhi-secret" || len(baizhi.Models) != 1 || baizhi.Models[0].MaxOutputTokens == nil || *baizhi.Models[0].MaxOutputTokens != 99999 {
@@ -75,7 +75,7 @@ func TestLoadModelCatalogMissingFileReturnsEmptyCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModelCatalog: %v", err)
 	}
-	if catalog.Default != "" || len(catalog.Providers) != 0 {
+	if catalog.Default != nil || len(catalog.Providers) != 0 {
 		t.Fatalf("catalog = %#v, want empty catalog", catalog)
 	}
 }

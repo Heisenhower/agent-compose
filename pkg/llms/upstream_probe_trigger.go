@@ -72,7 +72,8 @@ func ProbeConfiguredUpstreams(ctx context.Context, logger *slog.Logger, prober *
 			continue
 		}
 		probed++
-		ProbeUpstreamAndLog(ctx, logger, prober, provider, models[provider.ID])
+		model := models[provider.ID]
+		ProbeUpstreamAndLog(ctx, logger, prober, ProviderForModel(provider, bindings, model), model)
 	}
 	return nil
 }

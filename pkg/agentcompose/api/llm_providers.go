@@ -130,7 +130,8 @@ func (h *LLMHandler) probeUpstream(ctx context.Context, provider llms.Provider, 
 	if h == nil || h.prober == nil || !provider.Enabled {
 		return
 	}
-	h.prober.ProbeConnection(ctx, provider, declaredProbeModel(bindings, provider.ID))
+	model := declaredProbeModel(bindings, provider.ID)
+	h.prober.ProbeConnection(ctx, llms.ProviderForModel(provider, bindings, model), model)
 }
 
 // declaredProbeModel returns the first declared model id in stable order, or ""

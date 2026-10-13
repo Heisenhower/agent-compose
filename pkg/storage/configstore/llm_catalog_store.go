@@ -59,7 +59,8 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 			return err
 		}
 	}
-	if err := applyCatalogDefault(ctx, tx, catalog.Default, now); err != nil {
+	dropped, err := projectCatalogDefault(ctx, tx, catalog.Default, now)
+	if err != nil {
 		return err
 	}
 	// The file may have dropped a model whose binding was the only thing keeping
@@ -75,6 +76,12 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit model catalog transaction: %w", err)
+	}
+	// A dropped reference is reported after the commit, because the projection it
+	// belongs to succeeded: every other declaration in the file is applied, and the
+	// caller must not read this as a failed write.
+	if dropped != nil {
+		return dropped
 	}
 	return nil
 }
@@ -245,65 +252,6 @@ func storedModelScope(ctx context.Context, tx *sql.Tx, modelID string) (string, 
 		return "", fmt.Errorf("read model %q scope: %w", modelID, err)
 	}
 	return strings.TrimSpace(scope), nil
-}
-
-func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now int64) error {
-	reference = strings.TrimSpace(reference)
-	if reference == "" {
-		// A models.json that declares no default leaves the stored reference
-		// alone. The row is the effective default, so an operator's choice made
-		// through the LLM service survives every restart instead of being wiped
-		// by the next projection.
-		return nil
-	}
-	providerID, modelID, ok := llms.SplitProviderModelReference(reference)
-	if !ok {
-		return fmt.Errorf("%w: models.json default %q is not a <provider>/<model> reference", domain.ErrInvalidArgument, reference)
-	}
-	// The default must name a connection models.json itself declared and that can
-	// actually serve a request. A reference to a connection this file lost control
-	// of, or to one without a credential, would otherwise be stored as the
-	// effective default while resolution ignores it: GetDefaultModel would report
-	// a default no run receives, and a run that declares no model would be routed
-	// by the connection fallback instead.
-	var scope, protocol string
-	var enabled int
-	err := tx.QueryRowContext(ctx, `SELECT scope, enabled, default_wire_api FROM llm_provider WHERE id = ?`, providerID).Scan(&scope, &enabled, &protocol)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which models.json does not declare", domain.ErrInvalidArgument, reference, providerID)
-	}
-	if err != nil {
-		return fmt.Errorf("resolve model catalog default provider %q: %w", providerID, err)
-	}
-	// A released row (unset scope) is a connection a previous models.json declared
-	// and this one does not: the row survives so a later file can restore it, but it
-	// cannot serve the default this file is asking for.
-	owner := strings.TrimSpace(scope)
-	if owner == "" {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which models.json does not declare", domain.ErrInvalidArgument, reference, providerID)
-	}
-	if owner != llms.ProviderScopeCatalog {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which scope %q owns", domain.ErrInvalidArgument, reference, providerID, owner)
-	}
-	if enabled == 0 {
-		return fmt.Errorf("%w: models.json default %q names connection %q, which is disabled: declare an apiKey, or \"enabled\": true for a connection that needs no credential", domain.ErrInvalidArgument, reference, providerID)
-	}
-	if err := ensureCatalogModelIdentity(ctx, tx, modelID, now); err != nil {
-		return fmt.Errorf("upsert model catalog default model: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_provider_model(
-		provider_id, model_id, wire_api, weight, base_url, headers_json, max_output_tokens, display_name)
-		VALUES(?, ?, ?, 10, '', '{}', 0, '')
-		ON CONFLICT(provider_id, model_id) DO NOTHING`, providerID, modelID, protocol); err != nil {
-		return fmt.Errorf("bind model catalog default: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
-		return fmt.Errorf("clear model catalog default: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
-		return fmt.Errorf("store model catalog default: %w", err)
-	}
-	return nil
 }
 
 func encodeCatalogHeaders(headers map[string]string) (string, error) {

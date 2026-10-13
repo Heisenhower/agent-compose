@@ -46,6 +46,46 @@ func AsDefaultConfigConflict(err error) (*DefaultConfigConflict, bool) {
 	return nil, false
 }
 
+// ErrCatalogDefaultDropped reports that a models.json projection did not leave
+// the effective default model as the file asked: either the reference it declared
+// could not be applied, or the stored reference could no longer resolve. The
+// projection is diagnosis, not a failed write, so the caller reports it as a
+// warning instead of refusing to start.
+var ErrCatalogDefaultDropped = errors.New("llm catalog default model was dropped")
+
+// CatalogDefaultDropped names the references a models.json projection did not
+// apply, and why. It is returned by a projection that committed every other
+// declaration in the file.
+type CatalogDefaultDropped struct {
+	// Declared is the reference models.json declared, empty when the file declared
+	// no default.
+	Declared string
+	// Stored is the effective default the projection removed, empty when it kept
+	// the stored reference or none was stored.
+	Stored string
+	// Reason explains why the declaration was not applied, or why the stored
+	// reference could not be kept.
+	Reason string
+}
+
+func (d *CatalogDefaultDropped) Error() string {
+	if d.Stored != "" {
+		return fmt.Sprintf("the stored default %q was dropped: %s", d.Stored, d.Reason)
+	}
+	return fmt.Sprintf("models.json default %q was not applied: %s", d.Declared, d.Reason)
+}
+
+func (d *CatalogDefaultDropped) Is(target error) bool { return target == ErrCatalogDefaultDropped }
+
+// AsCatalogDefaultDropped extracts the dropped default reference from err, if any.
+func AsCatalogDefaultDropped(err error) (*CatalogDefaultDropped, bool) {
+	var dropped *CatalogDefaultDropped
+	if errors.As(err, &dropped) {
+		return dropped, true
+	}
+	return nil, false
+}
+
 // EnvProjectionOwnsScope reports whether the daemon environment projection is
 // allowed to maintain a connection or model that already carries scope. Only
 // the scopes the environment bootstrap itself writes qualify: an unset scope

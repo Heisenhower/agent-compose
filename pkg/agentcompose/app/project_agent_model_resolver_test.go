@@ -20,7 +20,7 @@ func newProjectAgentModelResolverFixture(t *testing.T, yaml, catalogDefaultModel
 	if catalogDefaultModel != "" {
 		baseURL, protocol, apiKey := "https://daemon.example.test/v1", llms.APIProtocolResponses, "daemon-key"
 		if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-			Default: "gateway/" + catalogDefaultModel,
+			Default: llms.CatalogDefault("gateway/" + catalogDefaultModel),
 			Providers: map[string]llms.CatalogProvider{
 				"gateway": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey, Models: []llms.CatalogModel{{ID: catalogDefaultModel}}},
 			},
