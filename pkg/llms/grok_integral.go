@@ -296,7 +296,7 @@ func (s *grokArgStreams) rewriteResponsesEventJSON(data []byte) ([]byte, bool) {
 	if err := dec.Decode(&ev); err != nil || ev == nil {
 		return nil, false
 	}
-	changed := false
+	var changed bool
 	switch ev["type"] {
 	case "response.function_call_arguments.delta":
 		delta, ok := ev["delta"].(string)
