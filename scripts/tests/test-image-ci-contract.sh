@@ -318,6 +318,8 @@ if [[ -n $build_job ]]; then
     'per-image/per-architecture GHA cache read'
   require_regex "$build_job" 'cache-to:[[:space:]]*type=gha,mode=max,scope=\$\{\{[[:space:]]*matrix\.name[[:space:]]*\}\}-\$\{\{[[:space:]]*matrix\.platform\.arch' \
     'per-image/per-architecture GHA cache write'
+  require_regex "$build_job" "^    if:[[:space:]]*github\\.event_name[[:space:]]*!=[[:space:]]*[\"']pull_request[\"']" \
+    'build job skipping pull requests'
 
   upload_step=$(step_containing "$build_job" 'actions/upload-artifact@')
   if [[ -z $upload_step ]]; then
@@ -382,6 +384,8 @@ if [[ -n $archlinux_build_job ]]; then
     'Arch Linux guest amd64 GHA cache read'
   require_regex "$archlinux_build_job" 'cache-to:[[:space:]]*type=gha,mode=max,scope=agent-compose-guest-archlinux-amd64' \
     'Arch Linux guest amd64 GHA cache write'
+  require_regex "$archlinux_build_job" "^    if:[[:space:]]*github\\.event_name[[:space:]]*!=[[:space:]]*[\"']pull_request[\"']" \
+    'Arch Linux guest build skipping pull requests'
 
   archlinux_upload_step=$(step_containing "$archlinux_build_job" 'actions/upload-artifact@')
   if [[ -z $archlinux_upload_step ]]; then
@@ -401,6 +405,16 @@ if [[ -n $image_smoke_job ]]; then
     'image-smoke dependency on native builds'
   require_regex "$image_smoke_job" '^[[:space:]]*-[[:space:]]*build-archlinux-guest[[:space:]]*$' \
     'image-smoke dependency on Arch Linux guest build'
+  require_regex "$image_smoke_job" '^[[:space:]]*-[[:space:]]*setup[[:space:]]*$' \
+    'image-smoke dependency on setup'
+  require_regex "$image_smoke_job" 'always\(\)' \
+    'image-smoke running when the native builds are skipped'
+  require_regex "$image_smoke_job" "needs\\.setup\\.result[[:space:]]*==[[:space:]]*[\"']success[\"']" \
+    'image-smoke setup success gate'
+  require_regex "$image_smoke_job" "needs\\.build\\.result[[:space:]]*!=[[:space:]]*[\"']failure[\"']" \
+    'image-smoke failed daemon build gate'
+  require_regex "$image_smoke_job" "needs\\.build-archlinux-guest\\.result[[:space:]]*!=[[:space:]]*[\"']failure[\"']" \
+    'image-smoke failed Arch Linux build gate'
   require_regex "$image_smoke_job" 'runs-on:[[:space:]]*ubuntu-latest' 'image-smoke amd64 runner'
   require_regex "$image_smoke_job" 'linux/amd64' 'image-smoke amd64 platform'
   require_regex "$image_smoke_job" 'go install github\.com/bufbuild/buf/cmd/buf@v1\.68\.1' \
