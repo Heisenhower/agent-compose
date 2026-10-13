@@ -34,12 +34,17 @@ func BridgeProtocol(protocol Protocol) (protocolbridge.Protocol, error) {
 }
 
 // CanConvert reports whether the daemon can turn a request that arrived as
-// inbound into one the upstream accepts. Same-family pairs re-encode through
-// the shared adapters; cross-family pairs need a registered bridge, so the
+// inbound into one the upstream accepts. A pair that already matches re-encodes
+// through the shared adapter; every other pair needs a registered bridge, so the
 // answer is derived from the same lookup the request path uses rather than from
 // a copy of its rules. Asking crossFamilyBridge here, instead of repeating its
 // "look up by family, then check the upstream protocol" shape, is what keeps
 // this preparation-time answer from disagreeing with the request-time bridge.
+//
+// Sharing a family is deliberately not enough. Chat completions and Responses
+// are both OpenAI, but they are different wire formats with different streaming
+// contracts, and only the bridge for that exact pair knows what converting
+// between them costs.
 func CanConvert(inbound, upstream Protocol) bool {
 	inboundBridge, err := BridgeProtocol(inbound)
 	if err != nil {
@@ -49,7 +54,7 @@ func CanConvert(inbound, upstream Protocol) bool {
 	if err != nil {
 		return false
 	}
-	if inboundBridge == upstreamBridge || ProtocolsShareFamily(inboundBridge, upstreamBridge) {
+	if inboundBridge == upstreamBridge {
 		return true
 	}
 	_, err = crossFamilyBridge(inboundBridge, upstreamBridge)
@@ -79,19 +84,4 @@ func UseGenericResponsesTextParts(target ResolvedTarget, upstreamProtocol protoc
 		return false
 	}
 	return target.Provider.UseGenericResponsesTextParts
-}
-
-func ProtocolsShareFamily(left, right protocolbridge.Protocol) bool {
-	return ProtocolFamily(left) != "" && ProtocolFamily(left) == ProtocolFamily(right)
-}
-
-func ProtocolFamily(protocol protocolbridge.Protocol) string {
-	switch protocol {
-	case protocolbridge.ProtocolOpenAIResponses, protocolbridge.ProtocolOpenAIChat:
-		return ProviderFamilyOpenAI
-	case protocolbridge.ProtocolAnthropicMessages:
-		return ProviderFamilyAnthropic
-	default:
-		return ""
-	}
 }
