@@ -80,6 +80,40 @@ export class CodexRunner {
     return this.writer.transcript();
   }
 
+  async runTurn(
+    thread: { runStreamed(input: string, options?: unknown): Promise<{ events: AsyncIterable<unknown> }> },
+    promptText: string,
+    result: AgentResult,
+  ): Promise<void> {
+    this.reconnectMessage = undefined;
+    this.turnCompleted = false;
+    try {
+      const turnOptions = this.options.outputSchema || this.options.abortController
+        ? {
+          ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
+          ...(this.options.abortController ? { signal: this.options.abortController.signal } : {}),
+        }
+        : undefined;
+      const { events } = await thread.runStreamed(promptText, turnOptions);
+      for await (const event of events) {
+        this.handleEvent(event as Record<string, unknown>, result);
+      }
+      if (this.reconnectMessage && !this.turnCompleted && !cancellationRequested(this.options.abortController?.signal)) {
+        const message = `Codex stream ended before turn.completed after ${this.reconnectMessage}`;
+        this.emit({ kind: "error", severity: "fatal", message });
+        throw new Error(message);
+      }
+    } catch (error) {
+      if (!cancellationRequested(this.options.abortController?.signal)) {
+        throw error;
+      }
+      result.stopReason = "cancelled";
+    }
+    if (cancellationRequested(this.options.abortController?.signal)) {
+      result.stopReason = "cancelled";
+    }
+  }
+
   private readonly emittedText = new Map<string, string>();
 
   /** Codex re-sends the whole text on every item update; emit only the delta. */
@@ -413,33 +447,7 @@ export class CodexRunner {
       stderr: "",
     };
 
-    try {
-      this.reconnectMessage = undefined;
-      this.turnCompleted = false;
-      const turnOptions = this.options.outputSchema || this.options.abortController
-        ? {
-          ...(this.options.outputSchema ? { outputSchema: this.options.outputSchema } : {}),
-          ...(this.options.abortController ? { signal: this.options.abortController.signal } : {}),
-        }
-        : undefined;
-      const { events } = await thread.runStreamed(promptText, turnOptions);
-      for await (const event of events) {
-        this.handleEvent(event as Record<string, unknown>, result);
-      }
-      if (this.reconnectMessage && !this.turnCompleted && !cancellationRequested(this.options.abortController?.signal)) {
-        const message = `Codex stream ended before turn.completed after ${this.reconnectMessage}`;
-        this.emit({ kind: "error", severity: "fatal", message });
-        throw new Error(message);
-      }
-    } catch (error) {
-      if (!cancellationRequested(this.options.abortController?.signal)) {
-        throw error;
-      }
-      result.stopReason = "cancelled";
-    }
-    if (cancellationRequested(this.options.abortController?.signal)) {
-      result.stopReason = "cancelled";
-    }
+    await this.runTurn(thread, promptText, result);
     result.threadId = thread.id || result.threadId;
     result.transcript = this.writer.transcript();
     if (!result.finalText && result.transcript) {

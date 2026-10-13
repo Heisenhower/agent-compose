@@ -102,9 +102,12 @@ export async function runStreamCommand(options: RunStreamOptions = {}): Promise<
         }
       } catch (error) {
         emitError(error, frame.seq);
-        if (error instanceof UnsupportedProviderError) {
+        if (error instanceof UnsupportedProviderError || frame.type === "human_message") {
+          // A failed interactive turn leaves the provider session and daemon
+          // turn gate unusable; terminate the stream without a success result.
           finished = true;
           lines.close();
+          break;
         }
       }
     }
