@@ -42,9 +42,17 @@ func NewSnapshot(materials []Material) Snapshot {
 // Lookup returns the material for a handle id. The boolean is false when the
 // snapshot does not hold the handle, which the injection path treats as a
 // denial rather than as a reason to resolve policy itself.
+//
+// The returned material owns its owner list. The stored slice is the
+// snapshot's, so handing it out directly would let a caller that edits an owner
+// in place change what every other reader of this snapshot sees.
 func (s Snapshot) Lookup(handleID string) (Material, bool) {
 	material, ok := s.items[handleID]
-	return material, ok
+	if !ok {
+		return Material{}, false
+	}
+	material.Handle.Scope.Owners = append([]Owner(nil), material.Handle.Scope.Owners...)
+	return material, true
 }
 
 // Len reports how many materials the snapshot holds.

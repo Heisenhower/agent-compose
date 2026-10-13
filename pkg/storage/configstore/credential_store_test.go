@@ -150,6 +150,23 @@ func TestCredentialHandleStoreRevocationTakesEffect(t *testing.T) {
 	if !again.RevokedAt.Equal(firstRevokedAt) {
 		t.Fatalf("second revocation changed the instant from %s to %s", firstRevokedAt, again.RevokedAt)
 	}
+
+	// Re-saving the handle must not clear the revocation either: an upsert that
+	// wrote the incoming zero revoked_at would bring a revoked credential back
+	// to life.
+	if err := store.SaveCredentialHandle(ctx, handle); err != nil {
+		t.Fatalf("SaveCredentialHandle() after revoke error = %v", err)
+	}
+	resaved, err := store.GetCredentialHandle(ctx, token)
+	if err != nil {
+		t.Fatalf("GetCredentialHandle() after re-save error = %v", err)
+	}
+	if resaved.RevokedAt.IsZero() {
+		t.Fatal("re-saving the handle cleared its revocation")
+	}
+	if !resaved.RevokedAt.Equal(firstRevokedAt) {
+		t.Fatalf("re-saving the handle changed the revocation instant from %s to %s", firstRevokedAt, resaved.RevokedAt)
+	}
 }
 
 func TestCredentialHandleStoreSandboxSweepRevokesEveryHandle(t *testing.T) {

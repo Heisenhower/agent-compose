@@ -31,9 +31,12 @@ func (s *credentialStore) SaveCredentialHandle(ctx context.Context, handle crede
 	if err != nil {
 		return fmt.Errorf("save credential handle: %w", err)
 	}
+	// A revocation is not undone by a later save. The CASE keeps the stored
+	// revocation timestamp when the row is already revoked, so an upsert can
+	// never bring a revoked handle back to life.
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO credential_handle(handle_id, kind, token_hash, token_fingerprint, env_name, sandbox_id, run_id, endpoint, owners_json, issued_at, expires_at, revoked_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(handle_id) DO UPDATE SET kind = excluded.kind, token_hash = excluded.token_hash, token_fingerprint = excluded.token_fingerprint, env_name = excluded.env_name, sandbox_id = excluded.sandbox_id, run_id = excluded.run_id, endpoint = excluded.endpoint, owners_json = excluded.owners_json, issued_at = excluded.issued_at, expires_at = excluded.expires_at, revoked_at = excluded.revoked_at`,
+		ON CONFLICT(handle_id) DO UPDATE SET kind = excluded.kind, token_hash = excluded.token_hash, token_fingerprint = excluded.token_fingerprint, env_name = excluded.env_name, sandbox_id = excluded.sandbox_id, run_id = excluded.run_id, endpoint = excluded.endpoint, owners_json = excluded.owners_json, issued_at = excluded.issued_at, expires_at = excluded.expires_at, revoked_at = CASE WHEN credential_handle.revoked_at > 0 THEN credential_handle.revoked_at ELSE excluded.revoked_at END`,
 		handle.ID,
 		string(handle.Kind),
 		handle.TokenHash,

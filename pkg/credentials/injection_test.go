@@ -131,6 +131,17 @@ func TestSnapshotIsFixedAfterConstruction(t *testing.T) {
 	if stored.Handle.Scope.Endpoint != "git.example.com" {
 		t.Fatalf("snapshot endpoint = %q, want the endpoint captured at construction", stored.Handle.Scope.Endpoint)
 	}
+	// The returned material owns its owner list. The stored slice belongs to the
+	// snapshot, so editing an owner in place through a returned copy must not
+	// change what every other reader of this snapshot sees.
+	stored.Handle.Scope.Owners[0].ID = "tampered-through-lookup"
+	again, ok := snapshot.Lookup(handle.ID)
+	if !ok {
+		t.Fatal("snapshot must still hold the handle after a caller edited a returned copy")
+	}
+	if again.Handle.Scope.Owners[0].ID == "tampered-through-lookup" {
+		t.Fatalf("snapshot owners = %+v, want Lookup to return a copy of the owner list", again.Handle.Scope.Owners)
+	}
 	if _, ok := snapshot.Lookup("cred_injected"); ok {
 		t.Fatal("appending to the source slice must not add a handle to the snapshot")
 	}
