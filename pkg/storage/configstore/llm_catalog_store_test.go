@@ -2,6 +2,7 @@ package configstore
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,7 +61,7 @@ func TestIntegrationApplyModelCatalogResolvesLiteralModelsDefaultsAndBehavior(t 
 		t.Fatal(err)
 	}
 	baseURL, protocol, apiKey, limit := "https://gateway.example/api/openai", llms.APIProtocolChatCompletions, "catalog-key", 99999
-	catalog := llms.ModelCatalog{Default: "baizhi/deepseek-v4-flash", Providers: map[string]llms.CatalogProvider{
+	catalog := llms.ModelCatalog{Default: llms.CatalogDefault("baizhi/deepseek-v4-flash"), Providers: map[string]llms.CatalogProvider{
 		"baizhi": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey, Models: []llms.CatalogModel{{ID: "deepseek-v4-flash", MaxOutputTokens: &limit}}},
 	}}
 	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
@@ -108,7 +109,7 @@ func resolveCatalogModel(ctx context.Context, store *ConfigStore, requested stri
 	return snapshot.Resolve("", model, llms.DefaultProtocolPreference())
 }
 
-func TestIntegrationApplyEmptyModelCatalogOnlyClearsCatalogOwnedState(t *testing.T) {
+func TestIntegrationApplyEmptyModelCatalogClearsCatalogOwnedStateButKeepsTheStoredDefault(t *testing.T) {
 	clearLLMTestEnvironment(t)
 	ctx := context.Background()
 	store := FromDB(newMemoryDB(t))
@@ -126,7 +127,7 @@ func TestIntegrationApplyEmptyModelCatalogOnlyClearsCatalogOwnedState(t *testing
 
 	baseURL, protocol, apiKey := "https://catalog.example/v1", llms.APIProtocolResponses, "catalog-key"
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "catalog/catalog-model",
+		Default: llms.CatalogDefault("catalog/catalog-model"),
 		Providers: map[string]llms.CatalogProvider{
 			"catalog": {BaseURL: &baseURL, Protocol: &protocol, APIKey: &apiKey},
 		},
@@ -151,14 +152,294 @@ func TestIntegrationApplyEmptyModelCatalogOnlyClearsCatalogOwnedState(t *testing
 	if len(models) != 1 || models[0].ID != legacyModel.ID || !models[0].DefaultModel || models[0].Scope != llms.ProviderScopeSystem {
 		t.Fatalf("enabled models = %#v, want unchanged legacy default", models)
 	}
-	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || ok {
-		t.Fatalf("catalog default = %q/%q ok=%v err=%v, want cleared", providerID, modelID, ok, err)
+	// A models.json that declares no default leaves the stored reference alone:
+	// removing a declaration must not silently wipe an operator's choice.
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "catalog" || modelID != "catalog-model" {
+		t.Fatalf("catalog default = %q/%q ok=%v err=%v, want the stored reference preserved", providerID, modelID, ok, err)
+	}
+	// The preserved reference now names a connection the empty catalog removed,
+	// so resolution ignores it and the environment default takes over.
+	resolved, err := resolveCatalogModel(ctx, store, "")
+	if err != nil {
+		t.Fatalf("resolve after empty catalog: %v", err)
+	}
+	if resolved.Provider.ID != legacyProvider.ID || resolved.Model.ID != legacyModel.ID {
+		t.Fatalf("resolved default = %#v, want the legacy environment default", resolved)
 	}
 }
 
-func TestIntegrationApplyModelCatalogRejectsNonCatalogProviderCollision(t *testing.T) {
+// A connection the file no longer declares is released: its rows stay (an
+// operator's stored default references the provider row with ON DELETE CASCADE,
+// and a later file may restore the declaration) but they lose the catalog scope,
+// so the id is no longer owned by a source that will never rewrite the row again.
+func TestIntegrationModelCatalogReleasesWhatTheFileNoLongerDeclares(t *testing.T) {
 	clearLLMTestEnvironment(t)
-	for _, scope := range []string{llms.ProviderScopeSystem, llms.ProviderScopeEnvDefault, llms.ProviderScopeAPI} {
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential("gateway", "gpt-4o")
+	declared.Default = llms.CatalogDefault("gateway/gpt-4o")
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), "gateway"); count != 1 {
+		t.Fatalf("bindings after declaring = %d, want 1", count)
+	}
+
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "gateway" || modelID != "gpt-4o" {
+		t.Fatalf("catalog default = %q/%q ok=%v err=%v, want the stored reference preserved", providerID, modelID, ok, err)
+	}
+	providers, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providers) != 0 {
+		t.Fatalf("enabled providers = %#v, want the released connection to serve nothing", providers)
+	}
+	models, err := store.ListEnabledLLMModels(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 0 {
+		t.Fatalf("enabled models = %#v, want the released model to serve nothing", models)
+	}
+	assertReleased(t, ctx, store.DB(), "llm_provider", "gateway")
+	assertReleased(t, ctx, store.DB(), "llm_model", "gpt-4o")
+
+	// Declaring the connection again takes the released rows back, which is what
+	// keeping them instead of deleting them promises.
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("re-declare the connection: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), "gateway", llms.ProviderScopeCatalog, "https://catalog.example/v1")
+	resolved, err := resolveCatalogModel(ctx, store, "")
+	if err != nil {
+		t.Fatalf("resolve the restored default: %v", err)
+	}
+	if resolved.Provider.ID != "gateway" || resolved.Model.ID != "gpt-4o" {
+		t.Fatalf("resolved default = %#v, want the restored catalog connection", resolved)
+	}
+}
+
+// assertReleased checks that a row the file projection stopped declaring kept its
+// data but gave up the scope that made it an owner.
+// A file that stops declaring a model must not leave an API-owned identity
+// behind. The identity is what tells the environment bootstrap that an id already
+// has an owner, so a row no binding and no default reference names any more would
+// make a later LLM_MODEL yield its whole projection.
+func TestIntegrationModelCatalogReleaseSweepsAnIdentityOnlyItsBindingKeptAlive(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+	key := "api-key"
+
+	// An API connection declares the model, and the file binds the same id to a
+	// connection of its own.
+	if _, err := store.CreateLLMProvider(ctx, llms.ProviderReplacement{
+		ID: "api-gateway", BaseURL: "https://api.example/v1", Protocol: llms.APIProtocolResponses, APIKey: &key,
+		Models: declaredModels(llms.ModelSpec{ID: "shared-model"}),
+	}); err != nil {
+		t.Fatalf("create the api connection: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("file-gateway", "shared-model")); err != nil {
+		t.Fatalf("declare the file connection: %v", err)
+	}
+
+	// The API connection goes away. Its model identity stays because the file still
+	// binds the id, which is what keeps the environment bootstrap out of the way.
+	if err := store.DeleteLLMProvider(ctx, "api-gateway"); err != nil {
+		t.Fatalf("delete the api connection: %v", err)
+	}
+	if count := countModelIdentities(t, ctx, store.DB(), "shared-model"); count != 1 {
+		t.Fatalf("model identities after the deletion = %d, want the file binding to keep the identity", count)
+	}
+
+	// The file drops the model too, so nothing references the identity any more.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the file model: %v", err)
+	}
+	if count := countModelIdentities(t, ctx, store.DB(), "shared-model"); count != 0 {
+		t.Fatalf("model identities after the release = %d, want the unreferenced api identity swept", count)
+	}
+}
+
+func countModelIdentities(t *testing.T, ctx context.Context, db *sql.DB, modelID string) int {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM llm_model WHERE id = ?`, modelID).Scan(&count); err != nil {
+		t.Fatalf("count model identities for %q: %v", modelID, err)
+	}
+	return count
+}
+
+func assertReleased(t *testing.T, ctx context.Context, db *sql.DB, table, id string) {
+	t.Helper()
+	var scope string
+	var enabled int
+	if err := db.QueryRowContext(ctx, `SELECT scope, enabled FROM `+table+` WHERE id = ?`, id).Scan(&scope, &enabled); err != nil {
+		t.Fatalf("read released %s %q: %v", table, id, err)
+	}
+	if scope != "" || enabled != 0 {
+		t.Fatalf("%s %q scope = %q enabled = %d, want a released disabled row", table, id, scope, enabled)
+	}
+}
+
+// An id the environment bootstrap materialized is not another source's to keep.
+// The file is the daemon's own declaration and outranks the bootstrap fallback,
+// so declaring the same Provider id takes the row over; the environment
+// projection that follows yields instead of failing startup beside it.
+func TestIntegrationModelCatalogTakesOverEnvironmentOwnedProvider(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	for _, scope := range []string{llms.ProviderScopeSystem, llms.ProviderScopeEnvDefault} {
+		t.Run(scope, func(t *testing.T) {
+			ctx := context.Background()
+			store := newProjectionTestStore(t)
+
+			projected := envProjectionProvider(llms.ProviderIDDefaultOpenAI)
+			projected.Scope = scope
+			projected.Name = scope + " provider"
+			if err := store.UpsertDefaultLLMConfig(ctx, projected, envProjectionModel("env-model")); err != nil {
+				t.Fatalf("project the environment: %v", err)
+			}
+
+			if err := store.ApplyModelCatalog(ctx, catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")); err != nil {
+				t.Fatalf("the file declared an id the environment materialized: %v", err)
+			}
+			assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+
+			// The environment's model kept its default flag but lost the connection
+			// that served it, so the catalog must report no default rather than a
+			// model no run can receive.
+			loaded, err := llms.LoadCatalog(ctx, store)
+			if err != nil {
+				t.Fatalf("load catalog: %v", err)
+			}
+			if got := loaded.DefaultModel(); got != "" {
+				t.Fatalf("DefaultModel() = %q, want no default after the file took the connection over", got)
+			}
+
+			err = store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model"))
+			if _, ok := llms.AsDefaultConfigConflict(err); !ok {
+				t.Fatalf("environment projection error = %v, want it to yield to the file that owns the id", err)
+			}
+		})
+	}
+}
+
+// The model id is the other half of the same ownership rule: an identity the
+// environment bootstrap materialized is reclaimed by the file that declares it,
+// exactly as a Provider id is. While the bootstrap kept owning the identity, the
+// environment projection could not see the file's declaration, materialized a
+// second connection for the same model, and connection selection picked between
+// the two peers at random.
+func TestIntegrationModelCatalogReclaimsTheModelIdentityTheEnvironmentMaterialized(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model")); err != nil {
+		t.Fatalf("project the environment: %v", err)
+	}
+	// The file declares the same model id under a connection of its own.
+	if err := store.ApplyModelCatalog(ctx, catalogWithCredential("gateway", "shared-model")); err != nil {
+		t.Fatalf("the file declared a model id the environment materialized: %v", err)
+	}
+
+	var scope string
+	if err := store.DB().QueryRowContext(ctx, `SELECT scope FROM llm_model WHERE id = ?`, "shared-model").Scan(&scope); err != nil {
+		t.Fatal(err)
+	}
+	if scope != llms.ProviderScopeCatalog {
+		t.Fatalf("model identity scope = %q, want the file to own the id it declares", scope)
+	}
+
+	err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("shared-model"))
+	conflict, ok := llms.AsDefaultConfigConflict(err)
+	if !ok {
+		t.Fatalf("environment projection error = %v, want it to yield to the file that now owns the model id", err)
+	}
+	if conflict.Kind != "model" || conflict.ID != "shared-model" || conflict.Scope != llms.ProviderScopeCatalog {
+		t.Fatalf("conflict = %#v", conflict)
+	}
+}
+
+// Releasing a row is not a claim the file can never take back: once the
+// environment bootstrap has taken the id over, declaring it in models.json again
+// takes the row back instead of failing every later startup.
+func TestIntegrationModelCatalogTakesItsReleasedIDBackFromTheEnvironment(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err != nil {
+		t.Fatalf("the environment takes the released id over: %v", err)
+	}
+
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("the file restores the declaration: %v", err)
+	}
+	assertProviderOwnership(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI, llms.ProviderScopeCatalog, "https://catalog.example/v1")
+}
+
+// A released connection gives its model bindings up with its id. A binding is what
+// makes a connection serve a model and it carries the file's own endpoint and
+// header overrides, so a binding left behind on a released row is inherited by
+// whoever takes the id over — the environment bootstrap reclaims the
+// openai/anthropic ids — and that connection then serves models the file declared
+// under endpoints and headers neither source declared for it.
+func TestIntegrationModelCatalogReleaseDropsTheReleasedBindings(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	declared := catalogWithCredential(llms.ProviderIDDefaultOpenAI, "file-model")
+	provider := declared.Providers[llms.ProviderIDDefaultOpenAI]
+	provider.Models = append(provider.Models, llms.CatalogModel{ID: "second-file-model"})
+	declared.Providers[llms.ProviderIDDefaultOpenAI] = provider
+	if err := store.ApplyModelCatalog(ctx, declared); err != nil {
+		t.Fatalf("declare the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 2 {
+		t.Fatalf("bindings after declaring = %d, want both declared models", count)
+	}
+
+	// The operator removes the connection from models.json.
+	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{}); err != nil {
+		t.Fatalf("drop the connection: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 0 {
+		t.Fatalf("bindings after the release = %d, want the released connection to give them up", count)
+	}
+
+	// The environment bootstrap reclaims the released id and declares its own model.
+	if err := store.UpsertDefaultLLMConfig(ctx, envProjectionProvider(llms.ProviderIDDefaultOpenAI), envProjectionModel("env-model")); err != nil {
+		t.Fatalf("the environment takes the released id over: %v", err)
+	}
+	if count := countProviderModelBindings(t, ctx, store.DB(), llms.ProviderIDDefaultOpenAI); count != 1 {
+		t.Fatalf("bindings after the environment reclaimed the id = %d, want only the model the environment declares", count)
+	}
+	var boundModel string
+	if err := store.DB().QueryRowContext(ctx, `SELECT model_id FROM llm_provider_model WHERE provider_id = ?`, llms.ProviderIDDefaultOpenAI).Scan(&boundModel); err != nil {
+		t.Fatal(err)
+	}
+	if boundModel != "env-model" {
+		t.Fatalf("reclaimed connection serves %q, want the environment model only", boundModel)
+	}
+}
+
+func TestIntegrationApplyModelCatalogRejectsConnectionsAnotherSourceOwns(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	for _, scope := range []string{llms.ProviderScopeAPI, llms.ProviderScopeDeclared} {
 		t.Run(scope, func(t *testing.T) {
 			ctx := context.Background()
 			store := FromDB(newMemoryDB(t))
@@ -247,5 +528,53 @@ func clearLLMTestEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{"LLM_API_ENDPOINT", "LLM_API_PROTOCOL", "LLM_API_KEY", "LLM_API_HEADERS", "LLM_MODEL", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_ENDPOINT", "ANTHROPIC_MODEL", "CLAUDE_MODEL"} {
 		t.Setenv(key, "")
+	}
+}
+
+// A local endpoint needs no credential. Declaring "enabled": true must make the
+// file's connection usable and its default resolvable instead of failing the
+// daemon start because the row was persisted disabled.
+func TestIntegrationCatalogProviderServesWithoutACredential(t *testing.T) {
+	clearLLMTestEnvironment(t)
+	ctx := context.Background()
+	store := newProjectionTestStore(t)
+
+	baseURL, protocol := "http://127.0.0.1:11434/v1", llms.APIProtocolChatCompletions
+	enabled := true
+	catalog := llms.ModelCatalog{
+		Default: llms.CatalogDefault("local/local-model"),
+		Providers: map[string]llms.CatalogProvider{
+			"local": {BaseURL: &baseURL, Protocol: &protocol, Enabled: &enabled, Models: []llms.CatalogModel{{ID: "local-model"}}},
+		},
+	}
+	if err := store.ApplyModelCatalog(ctx, catalog); err != nil {
+		t.Fatalf("ApplyModelCatalog: %v", err)
+	}
+
+	providers, err := store.ListEnabledLLMProviders(ctx)
+	if err != nil {
+		t.Fatalf("ListEnabledLLMProviders: %v", err)
+	}
+	if len(providers) != 1 || providers[0].ID != "local" {
+		t.Fatalf("enabled connections = %#v, want the credential-less local connection", providers)
+	}
+	if providerID, modelID, ok, err := store.DefaultLLMModelReference(ctx); err != nil || !ok || providerID != "local" || modelID != "local-model" {
+		t.Fatalf("default reference = %q/%q ok=%v err=%v, want local/local-model", providerID, modelID, ok, err)
+	}
+
+	loaded, err := llms.LoadCatalog(ctx, store)
+	if err != nil {
+		t.Fatalf("LoadCatalog: %v", err)
+	}
+	selected, err := loaded.SelectModel("")
+	if err != nil {
+		t.Fatalf("SelectModel: %v", err)
+	}
+	target, err := loaded.Resolve("", selected, nil)
+	if err != nil {
+		t.Fatalf("Resolve(%q): %v", selected, err)
+	}
+	if target.Provider.ID != "local" || target.Model.ID != "local-model" {
+		t.Fatalf("resolved %s/%s, want local/local-model", target.Provider.ID, target.Model.ID)
 	}
 }

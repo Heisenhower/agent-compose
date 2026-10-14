@@ -92,7 +92,7 @@ Provider 支持以下字段：
 - `baseUrl`：可选的模型级 endpoint 覆盖。
 - `protocol`：可选的模型级 Protocol 覆盖。
 - `headers`：可选的模型级上游 Header。
-- `maxOutputTokens`：可选的正整数输出 Token 上限。
+- `maxOutputTokens`：可选的正整数输出 Token 上限，最大 2147483647（公开契约以 32 位整数上报）。
 
 模型级 `protocol` 必须与 Provider 的协议族兼容：OpenAI Provider（`responses` 或 `chat_completions`）只允许模型覆盖为 `responses` 或 `chat_completions`，Anthropic Provider（`anthropic_messages`）只允许 `anthropic_messages`。
 
@@ -125,16 +125,20 @@ catalog Provider 只有在最终定义包含非空 API Key 时才可用。
 
 ```text
 agent 声明的 model
-> models.json default / daemon 环境声明的默认模型
+> models.json default（文件声明时优先）
+> 通过 LLMService.SetDefaultModel 设置的默认模型（文件未声明时生效，重启保留）
+> daemon 环境声明的默认模型（兜底，且必须有已启用连接服务该模型）
 > 配置前置条件错误
 ```
+
+环境默认模型（`llm_model.default_model`）只有在有已启用连接真正服务该模型时才成立：连接被其他来源接管后遗留的标记不代表任何 run 能拿到该模型，此时按「无默认」处理并在启动时给出告警，而不是报告一个解析不到的默认值。
 
 连接选择的优先级为：
 
 ```text
 agent 声明凭据被吸收成的 declared 连接
 > 声明了该模型的连接（按调用方协议偏好排序）
-> models.json default 命名的连接（当 default 模型正是本次模型）
+> 默认引用（`llm_catalog_default`：models.json default 或 SetDefaultModel）命名的连接（当默认模型正是本次模型）
 > 唯一的已配置连接
 > 其余全部已配置连接（同样按协议偏好排序）
 ```
@@ -144,7 +148,7 @@ agent 声明凭据被吸收成的 declared 连接
 1. run/session 环境里声明的凭据，如果 daemon 能识别**且能代理**，会被吸收成一条 scope 为 `declared` 的连接（ID 为 `session-env:<sandbox-id>:<family>:<declaration-digest>`，digest 是声明内容的摘要，见 §声明的第一方凭据），再用 Catalog 正常解析它的 endpoint、protocol、key 和选定模型；缺失值不能从 catalog 或 daemon 环境借用。识别不了的 `*_API_KEY` 不参与连接解析，原样下发到 sandbox 环境。
 2. 没有声明凭据时，daemon 先在声明了该模型的连接中选择；同一模型被多个连接声明时，按调用方协议偏好优先 passthrough，同协议候选随机择一。
 3. `models.json` 顶层 `default` 用 `provider/model` 指定默认连接与默认模型；agent 的 `model` 不会被再次拆分。没有连接声明该模型时，它优先于其他兜底规则。
-4. agent 未声明模型时，使用 catalog default 模型（`models.json.default` 的右侧，或 daemon 环境声明的默认模型）。
+4. agent 未声明模型时使用 catalog default 模型。优先级即代码事实：`models.json.default`（`llm_catalog_default`）在文件声明时优先；文件未声明 `default` 时，同一个单行表里由 `LLMService.SetDefaultModel` 写入的引用生效并在重启后保留；只有该表为空时才轮到 daemon 环境声明的默认模型（`llm_model.default_model`）兜底。引用指向的连接已不存在时按「无默认」处理，继续走兜底；而通过 RPC 删除或禁用该连接时会直接移除引用（与启动投影保留引用的规则不同），避免 `GetDefaultModel` 报告一个没有 run 会使用的默认值。
 5. 所有来源都无法得到可用连接和模型时，以配置前置条件错误失败。
 
 继续兼容的环境变量包括：
@@ -302,22 +306,28 @@ llm_provider_model.max_output_tokens
 llm_provider_model.display_name
 ```
 
-同时增加单行表 `llm_catalog_default`，保存精确的默认 Provider 和模型。Catalog default 不写入或清除全局 `llm_model.default_model`；该字段继续归已有 system/env 配置所有。
+同时增加单行表 `llm_catalog_default`，保存精确的默认 Provider 和模型。该表保存的是**生效中的默认引用**，写入者包括：`models.json` 的顶层 `default`（启动投影）、`LLMService.SetDefaultModel` / `ClearDefaultModel`，以及删除或禁用某连接时对指向它的引用的清理。Catalog default 不写入或清除全局 `llm_model.default_model`；该字段继续归已有 system/env 配置所有。
 
 每次 daemon 启动时，文件中的有效 catalog 会被事务化投影：
 
-1. 禁用已失效的 catalog-owned Provider 和模型；
+1. 释放（清空 scope 并禁用）文件不再声明的 catalog-owned Provider 和模型；
 2. 替换当前 Provider 定义与模型绑定；
-3. 原子更新 catalog default；
+3. 文件声明了顶层 `default` 时原子替换 catalog default；未声明时保留已存储的引用，避免抹掉通过 RPC 设置的默认模型（需要清除时调用 `ClearDefaultModel`）；
 4. 完整的环境 Provider 在 resolver 使用时按兼容规则物化。
 
-所有更新只允许修改 catalog-owned 行。与非 catalog Provider 同 ID 时整个事务失败并回滚。文件不存在或显式为空都会清除 catalog-owned 的有效状态，但不能修改 system/env Provider、模型或默认选择。
+所有更新只允许修改 catalog-owned 行。与非 catalog Provider 同 ID 时整个事务失败并回滚。文件不存在或显式为空都会释放 catalog-owned 的有效状态，但不能修改 system/env Provider 或模型，也不再清除已存储的默认引用：没有 `default` 声明不等于声明了「没有默认」。
+
+顶层 `default` 必须指向文件自己声明且可服务的连接：引用格式非法、Provider 缺失、Provider 已被释放、Provider 无 API Key 而被禁用、或该 ID 归其他 scope 所有时，投影整体失败并回滚，而不是存成一个没有任何 run 会拿到的默认引用。这样 `GetDefaultModel` 报告的引用与解析实际使用的引用始终一致。
+
+归属判定只有一条轴：行是否仍带声明者的 scope。Provider ID 只要仍由 `models.json` 声明就归文件所有，即使该声明因缺少 `apiKey` 而被持久化为 disabled。反过来，文件按优先级收回环境引导物化的行：文件是 daemon 自己的声明，环境引导是兜底，因此文件重新声明一个 `env_default`（或遗留 `system`、或上一次投影释放的）ID 时直接改写该行（`CatalogProjectionOwnsScope`），随后的环境投影按既有规则让位并打出一条告警，而不是让每次启动都失败、丢掉清理/Scheduler/删除恢复等后台管理器。这正是「文件以后可以收回自己释放的 ID」这条承诺的实现方式：环境接管过某个被释放的 ID 之后，文件把它写回 models.json 仍然生效。真正属于其他显式来源的 ID 仍是硬错误：与 LLMService 管理的 `api` 连接或 run 声明的 `declared` 连接同 ID 时整个事务回滚，原配置保持不变。因此文件停止声明某个 ID 时必须释放它：投影把该行置为 disabled 并清空 scope（`EnvProjectionOwnsScope` 视空 scope 为环境可维护），于是 ID 重新可被环境引导接管。行本身保留而不删除，因为 `llm_catalog_default` 以 `ON DELETE CASCADE` 引用 Provider，操作者通过 RPC 设置的默认引用必须在声明消失后继续存活（引用指向已释放的连接时按「无默认」处理）。Model 身份行两个方向都遵循同一条规则。释放方向与 Provider 行一致：绑定 `llm_provider_model` 与身份行一起被释放，所以被删除连接留下的身份行不会永久阻止环境投影接管其 ID。收回方向也一致：`ensureCatalogModelIdentity` 用同一个 `CatalogProjectionOwnsScope` 判定，因此文件声明一个环境（`env_default`、遗留 `system`、或上一次释放）已物化的 model ID 时会收回该身份行。身份行正是环境投影判断「要声明的模型是否已有其他来源在服务」的依据；身份行留在环境手上时，文件的声明对它不可见，环境会再物化一个服务同一模型的连接，随后连接选择在这两个对等连接之间随机挑一个。属于其他显式来源（`api`/`declared`）的身份行仍不改写，只追加调用方的绑定。环境投影在让位时同样释放自己物化的连接：`UpsertDefaultLLMConfig` 判定冲突后把该 `env_default` Provider 行置为禁用并清空 scope，再返回冲突，否则上一轮启动物化的那一行会继续作为对等连接服务同一个模型。释放不是永久性的：文件不再声明该 ID 后，下一次投影会重新物化该连接。相应地，任何替换或移除已存储默认引用的写入（删除连接、禁用连接、替换连接声明的模型集合、`SetDefaultLLMModel` / `ClearDefaultLLMModel`、以及文件声明 `default` 覆盖已存储引用）都会清理既无绑定、也未被默认引用命名的 api-scope `llm_model` 身份行；catalog 与 env scope 的行归各自的投影管理。
 
 ## 失败行为
 
 - `models.json` 不存在：继续启动，catalog-owned 状态为空，system/env 配置和默认模型保持不变。
 - 文件非法或 Secret 环境变量无法解析：启动失败。
-- Provider ID 与已有非 catalog Provider 冲突：启动失败，原配置保持不变。
+- Provider ID 与已有 LLMService 管理的 `api` 连接或 run 声明的 `declared` 连接冲突：启动失败，原配置保持不变；与 `system`、`env_default` 或已释放的行同 ID 时由文件接管。
+- 顶层 `default` 指向文件未声明、已被释放、无凭据或归其他 scope 所有的连接：启动失败，原配置保持不变。
+- 顶层 `default` 替换了已存储的不同引用：投影生效，并打出告警说明文件覆盖了该引用。
 - 显式指定的连接未知：失败，不使用默认连接。
 - 目标连接没有 API Key：以不可用失败。
 - 目标连接未声明该模型：原样转发 literal 模型 ID。

@@ -43,7 +43,7 @@ func TestEnsureSessionLLMFacadeConfigCreatesCodexEnvAndToken(t *testing.T) {
 	// The agent facade resolves against the model catalog, not the legacy
 	// daemon-environment provider, so the test declares its connection there.
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "openai/gpt-test",
+		Default: llms.CatalogDefault("openai/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"openai": {
 				BaseURL:  catalogStringPointer("https://llm.example.test/v1"),
@@ -390,7 +390,7 @@ func TestEnsureSessionLLMFacadeConfigRejectsManagedCodexWithoutReachableFacade(t
 		t.Fatalf("NewConfigStore returned error: %v", err)
 	}
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "openai/gpt-test",
+		Default: llms.CatalogDefault("openai/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"openai": {
 				BaseURL:  catalogStringPointer("https://llm.example.test/v1"),
@@ -471,7 +471,7 @@ func TestEnsureSessionAgentRuntimeConfigClaudeAndOpenCodeWorkflows(t *testing.T)
 	// The agent facade resolves against the model catalog; a bare model is
 	// selected by the catalog default or by the one connection that serves it.
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "openai/gpt-test",
+		Default: llms.CatalogDefault("openai/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"openai": {
 				BaseURL:  catalogStringPointer("https://openai.example.test/v1"),
@@ -636,7 +636,7 @@ func TestEnsureSessionAgentRuntimeConfigReportsResolvedGuestModel(t *testing.T) 
 		t.Fatalf("NewConfigStore returned error: %v", err)
 	}
 	if err := store.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "openai/gpt-test",
+		Default: llms.CatalogDefault("openai/gpt-test"),
 		Providers: map[string]llms.CatalogProvider{
 			"openai": {
 				BaseURL:  catalogStringPointer("https://openai.example.test/v1"),

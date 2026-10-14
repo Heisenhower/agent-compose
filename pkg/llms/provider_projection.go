@@ -2,6 +2,8 @@ package llms
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -13,6 +15,104 @@ import (
 // once at startup, and afterwards every request reads the catalog.
 type DefaultConfigStore interface {
 	UpsertDefaultLLMConfig(ctx context.Context, provider Provider, model Model) error
+}
+
+// ErrDefaultConfigConflict reports that materializing the daemon environment
+// would take over an id another configuration source already owns, such as a
+// models.json connection or an RPC-created one. The environment is a bootstrap
+// fallback, so the existing owner keeps the id and startup continues.
+var ErrDefaultConfigConflict = errors.New("llm default configuration conflicts with an existing owner")
+
+// DefaultConfigConflict names the provider or model id the daemon environment
+// tried to take over and the scope that already owns it.
+type DefaultConfigConflict struct {
+	Kind  string
+	ID    string
+	Scope string
+}
+
+func (c *DefaultConfigConflict) Error() string {
+	return fmt.Sprintf("llm default configuration %s %q is owned by scope %q", c.Kind, c.ID, c.Scope)
+}
+
+func (c *DefaultConfigConflict) Is(target error) bool { return target == ErrDefaultConfigConflict }
+
+// AsDefaultConfigConflict extracts the ownership conflict from err, if any.
+func AsDefaultConfigConflict(err error) (*DefaultConfigConflict, bool) {
+	var conflict *DefaultConfigConflict
+	if errors.As(err, &conflict) {
+		return conflict, true
+	}
+	return nil, false
+}
+
+// ErrCatalogDefaultDropped reports that a models.json projection did not leave
+// the effective default model as the file asked: either the reference it declared
+// could not be applied, or the stored reference could no longer resolve. The
+// projection is diagnosis, not a failed write, so the caller reports it as a
+// warning instead of refusing to start.
+var ErrCatalogDefaultDropped = errors.New("llm catalog default model was dropped")
+
+// CatalogDefaultDropped names the references a models.json projection did not
+// apply, and why. It is returned by a projection that committed every other
+// declaration in the file.
+type CatalogDefaultDropped struct {
+	// Declared is the reference models.json declared, empty when the file declared
+	// no default.
+	Declared string
+	// Stored is the effective default the projection removed, empty when it kept
+	// the stored reference or none was stored.
+	Stored string
+	// Reason explains why the declaration was not applied, or why the stored
+	// reference could not be kept.
+	Reason string
+}
+
+func (d *CatalogDefaultDropped) Error() string {
+	if d.Stored != "" {
+		return fmt.Sprintf("the stored default %q was dropped: %s", d.Stored, d.Reason)
+	}
+	return fmt.Sprintf("models.json default %q was not applied: %s", d.Declared, d.Reason)
+}
+
+func (d *CatalogDefaultDropped) Is(target error) bool { return target == ErrCatalogDefaultDropped }
+
+// AsCatalogDefaultDropped extracts the dropped default reference from err, if any.
+func AsCatalogDefaultDropped(err error) (*CatalogDefaultDropped, bool) {
+	var dropped *CatalogDefaultDropped
+	if errors.As(err, &dropped) {
+		return dropped, true
+	}
+	return nil, false
+}
+
+// EnvProjectionOwnsScope reports whether the daemon environment projection is
+// allowed to maintain a connection or model that already carries scope. Only
+// the scopes the environment bootstrap itself writes qualify: an unset scope
+// and the legacy "system" default. Every other scope names an owner that
+// declared the id explicitly, so the environment must not rewrite it.
+//
+// An unset scope is also what a models.json projection leaves on the rows it
+// stops declaring: releasing them keeps the row (a stored default reference
+// depends on it) while handing the id back to the bootstrap.
+func EnvProjectionOwnsScope(scope string) bool {
+	switch strings.TrimSpace(scope) {
+	case "", ProviderScopeSystem, ProviderScopeEnvDefault:
+		return true
+	default:
+		return false
+	}
+}
+
+// CatalogProjectionOwnsScope reports whether the models.json projection is
+// allowed to rewrite a connection that already carries scope. Besides its own
+// rows it accepts the ones the environment bootstrap maintains: the file is the
+// daemon's own declaration and outranks the bootstrap fallback, so declaring an
+// id the bootstrap already materialized takes the row over instead of failing
+// startup beside it. A row an explicit source owns — an LLM-service connection
+// or a run-scoped declared one — is not the file's to rewrite.
+func CatalogProjectionOwnsScope(scope string) bool {
+	return strings.TrimSpace(scope) == ProviderScopeCatalog || EnvProjectionOwnsScope(scope)
 }
 
 // EnvProviderLookup resolves an environment value for LLM connection

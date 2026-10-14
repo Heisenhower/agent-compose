@@ -32,6 +32,11 @@ func (s *llmStore) HasLLMProvider(ctx context.Context, providerID string) (bool,
 	return exists, nil
 }
 
+// UpsertDefaultLLMConfig materializes the daemon environment's LLM connection. A
+// projection that yields to another configuration source releases the connection
+// it materialized first, so yielding leaves nothing behind: the id it would have
+// claimed keeps its existing owner, and no row stays enabled beside it to serve
+// the same model as a peer in connection selection.
 func (s *llmStore) UpsertDefaultLLMConfig(ctx context.Context, provider llms.Provider, model llms.Model) error {
 	now := time.Now().UTC().Unix()
 	var ok bool
@@ -44,6 +49,29 @@ func (s *llmStore) UpsertDefaultLLMConfig(ctx context.Context, provider llms.Pro
 		return fmt.Errorf("begin llm default config tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The environment is a bootstrap fallback, not an owner of last resort: a
+	// connection or model another source declared (models.json, an API-managed
+	// connection) keeps its id and its metadata. Without this guard the
+	// projection rewrote the scope of a same-id catalog row and silently
+	// replaced the operator's configuration.
+	if conflict, err := envProjectionConflict(ctx, tx, provider.ID, model.ID); err != nil {
+		return err
+	} else if conflict != nil {
+		// The projection yields, so the connection this bootstrap materialized in
+		// an earlier run must stop serving. Left enabled, it would be a peer of the
+		// declaring source for the conflicting model, and connection selection would
+		// choose between the two at random. Only a row this projection owns —
+		// env_default, or the legacy system scope it wrote before that value
+		// existed — is released; an id another source owns is not the bootstrap's
+		// to release.
+		if err := releaseEnvProjectionConnection(ctx, tx, provider.ID, now); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit released llm default config: %w", err)
+		}
+		return conflict
+	}
 	// The bootstrap presentation can come from the environment (for example an
 	// Anthropic bearer token), so record it with the same intent rule the
 	// migration used: only a presentation that differs from the protocol
@@ -97,6 +125,31 @@ func (s *llmStore) UpsertDeclaredConnection(ctx context.Context, provider llms.P
 		return err
 	}
 	return tx.Commit()
+}
+
+// releaseEnvProjectionConnection disables a connection the environment bootstrap
+// materialized and gives its id back, so a later projection can declare it again.
+//
+// The released scope is the one the stored row carries, and only the scopes the
+// bootstrap itself writes qualify (see EnvProjectionOwnsScope): the env_default
+// this projection writes today, the legacy system default older versions wrote,
+// and the unset scope of a row an earlier projection already released. Reading
+// the scope first also keeps the update a compare-and-swap: a row another writer
+// re-scoped in the meantime no longer matches, so its configuration stays with
+// the source that now owns it.
+func releaseEnvProjectionConnection(ctx context.Context, tx *sql.Tx, providerID string, now int64) error {
+	scope, err := storedProviderScope(ctx, tx, providerID)
+	if err != nil {
+		return err
+	}
+	if !llms.EnvProjectionOwnsScope(scope) {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE id = ? AND scope = ?`,
+		now, providerID, scope); err != nil {
+		return fmt.Errorf("release environment connection %q: %w", providerID, err)
+	}
+	return nil
 }
 
 func upsertLLMProvider(ctx context.Context, tx *sql.Tx, provider llms.Provider, auth llms.ProviderAuth, now int64) error {

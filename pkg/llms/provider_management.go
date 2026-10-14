@@ -2,11 +2,13 @@ package llms
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
 
 	domain "github.com/chaitin/agent-compose/pkg/model"
+	"golang.org/x/net/http/httpguts"
 )
 
 // ProviderScopeAPI identifies providers managed through the public LLM service.
@@ -31,6 +33,36 @@ type ProviderReplacement struct {
 	// stored override. A non-nil empty presentation clears an override so the
 	// connection follows the protocol convention again.
 	Auth *ProviderAuth
+	// Models is the connection's declared model set. Nil means unspecified: a
+	// create declares none and an update preserves the stored set. A non-nil
+	// empty set clears it, which is why this is a pointer rather than a slice.
+	Models *[]ModelSpec
+}
+
+// ModelSpec declares one model a connection serves. Model IDs are literals the
+// operator types; the daemon never needs them enumerated to route a request.
+type ModelSpec struct {
+	ID   string
+	Name string
+	// Protocol overrides the connection protocol for this model. Empty inherits
+	// it, and a set value must stay in the connection's protocol family.
+	Protocol string
+	// BaseURL overrides the upstream endpoint for this model.
+	BaseURL string
+	Headers map[string]string
+	// MaxOutputTokens caps the model's output. Zero inherits.
+	MaxOutputTokens int
+}
+
+// MaxModelOutputTokens is the largest output cap a model may declare. The public
+// contract carries the cap as a 32-bit integer, so a larger declared value could
+// only be truncated into a different number than the one an operator typed.
+const MaxModelOutputTokens = math.MaxInt32
+
+// ModelReference names one model on one connection.
+type ModelReference struct {
+	ProviderID string
+	ModelID    string
 }
 
 // ValidateManagedProviderID rejects IDs reserved for environment bootstrap.
@@ -65,6 +97,9 @@ func NormalizeProviderReplacement(input ProviderReplacement) (ProviderReplacemen
 	if err := normalizeProviderAuth(&normalized); err != nil {
 		return ProviderReplacement{}, err
 	}
+	if err := normalizeProviderModels(&normalized); err != nil {
+		return ProviderReplacement{}, err
+	}
 	if normalized.Enabled == nil {
 		enabled := true
 		normalized.Enabled = &enabled
@@ -91,6 +126,9 @@ func NormalizeProviderUpdate(input ProviderReplacement) (ProviderReplacement, er
 		return ProviderReplacement{}, err
 	}
 	if err := normalizeProviderAuth(&normalized); err != nil {
+		return ProviderReplacement{}, err
+	}
+	if err := normalizeProviderModels(&normalized); err != nil {
 		return ProviderReplacement{}, err
 	}
 	return normalized, nil
@@ -173,4 +211,87 @@ func ManagedProviderHeadersJSON(protocol string) string {
 		return AnthropicVersionHeadersJSON
 	}
 	return "{}"
+}
+
+// normalizeProviderModels validates and copies a declared model set. A nil set
+// stays nil so storage can tell "unspecified" from "empty".
+func normalizeProviderModels(input *ProviderReplacement) error {
+	if input.Models == nil {
+		return nil
+	}
+	models := make([]ModelSpec, 0, len(*input.Models))
+	seen := make(map[string]struct{}, len(*input.Models))
+	for _, model := range *input.Models {
+		normalized, err := normalizeModelSpec(model)
+		if err != nil {
+			return err
+		}
+		if _, ok := seen[normalized.ID]; ok {
+			return fmt.Errorf("%w: model %q is declared more than once", domain.ErrInvalidArgument, normalized.ID)
+		}
+		seen[normalized.ID] = struct{}{}
+		models = append(models, normalized)
+	}
+	input.Models = &models
+	return nil
+}
+
+func normalizeModelSpec(model ModelSpec) (ModelSpec, error) {
+	model.ID = strings.TrimSpace(model.ID)
+	if model.ID == "" || strings.ContainsAny(model.ID, "\r\n") {
+		return ModelSpec{}, fmt.Errorf("%w: model id is required and must contain no line breaks", domain.ErrInvalidArgument)
+	}
+	model.Name = strings.TrimSpace(model.Name)
+	model.BaseURL = strings.TrimSpace(model.BaseURL)
+	if model.BaseURL != "" {
+		endpoint, err := url.Parse(model.BaseURL)
+		if err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+			return ModelSpec{}, fmt.Errorf("%w: model %q base_url must be an absolute HTTP(S) URL without credentials, query or fragment", domain.ErrInvalidArgument, model.ID)
+		}
+	}
+	model.Protocol = strings.TrimSpace(model.Protocol)
+	if model.Protocol != "" && catalogProtocolFamily(model.Protocol) == "" {
+		return ModelSpec{}, fmt.Errorf("%w: model %q has an unsupported protocol", domain.ErrInvalidArgument, model.ID)
+	}
+	if model.MaxOutputTokens < 0 {
+		return ModelSpec{}, fmt.Errorf("%w: model %q max_output_tokens must not be negative", domain.ErrInvalidArgument, model.ID)
+	}
+	if model.MaxOutputTokens > MaxModelOutputTokens {
+		return ModelSpec{}, fmt.Errorf("%w: model %q max_output_tokens must not exceed %d", domain.ErrInvalidArgument, model.ID, MaxModelOutputTokens)
+	}
+	if err := checkHeaderNames(model.Headers); err != nil {
+		return ModelSpec{}, fmt.Errorf("%w: model %q: %w", domain.ErrInvalidArgument, model.ID, err)
+	}
+	return model, nil
+}
+
+// checkHeaderNames reports the first declared header the HTTP transport would
+// refuse: a name outside the field-name grammar, or a value it cannot send. The
+// transport rejects both when a request is finally made, so checking here turns a
+// configuration mistake into an invalid-argument answer instead of a failure on
+// every run that uses the connection.
+func checkHeaderNames(headers map[string]string) error {
+	for name, value := range headers {
+		if name != strings.TrimSpace(name) || !httpguts.ValidHeaderFieldName(name) {
+			return fmt.Errorf("header %q is not a valid HTTP field name", name)
+		}
+		if !httpguts.ValidHeaderFieldValue(value) {
+			return fmt.Errorf("header %q has an invalid value", name)
+		}
+	}
+	return nil
+}
+
+// ValidateModelSpecProtocol reports whether a model protocol fits the connection
+// family. An empty model protocol inherits the connection protocol; a set one
+// must stay in the same family, so an OpenAI connection cannot declare an
+// Anthropic model and the reverse.
+func ValidateModelSpecProtocol(providerProtocol, modelProtocol string) error {
+	if strings.TrimSpace(modelProtocol) == "" {
+		return nil
+	}
+	if catalogProtocolFamily(modelProtocol) != catalogProtocolFamily(providerProtocol) {
+		return fmt.Errorf("%w: model protocol %q is incompatible with the provider protocol family", domain.ErrInvalidArgument, modelProtocol)
+	}
+	return nil
 }

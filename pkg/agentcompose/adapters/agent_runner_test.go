@@ -699,7 +699,7 @@ func TestAgentRunnerExecuteAgentRunUsesResolvedOpenCodeFacadeModel(t *testing.T)
 	protocol := llms.APIProtocolChatCompletions
 	apiKey := "catalog-key"
 	if err := configDB.ApplyModelCatalog(ctx, llms.ModelCatalog{
-		Default: "baizhi/deepseek-v4-flash",
+		Default: llms.CatalogDefault("baizhi/deepseek-v4-flash"),
 		Providers: map[string]llms.CatalogProvider{
 			"baizhi": {
 				BaseURL:  &baseURL,

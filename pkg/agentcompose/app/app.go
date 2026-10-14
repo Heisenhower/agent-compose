@@ -67,6 +67,7 @@ func RegisterDependencies(di do.Injector) {
 	do.Provide(di, NewEgressProxy)
 	do.Provide(di, NewSandboxEgressMediation)
 	do.Provide(di, NewLLMClient)
+	do.Provide(di, NewLLMUpstreamProber)
 	do.Provide(di, NewProjectOctoBusTargetResolver)
 	do.Provide(di, NewCapabilityProvider)
 	do.Provide(di, NewEngineCapabilitySnapshot)
@@ -173,7 +174,7 @@ func RegisterRoutes(di do.Injector) {
 	app.Any(path+"*", echo.WrapHandler(handler))
 	path, handler = agentcomposev2connect.NewEngineServiceHandler(api.NewEngineCapabilitiesV2Handler(do.MustInvoke[capmatrix.Snapshot](di)))
 	app.Any(path+"*", echo.WrapHandler(handler))
-	path, handler = agentcomposev2connect.NewLLMServiceHandler(api.NewLLMHandler(do.MustInvoke[*adapters.LLMClient](di), do.MustInvoke[*configstore.ConfigStore](di)))
+	path, handler = agentcomposev2connect.NewLLMServiceHandler(api.NewLLMHandler(do.MustInvoke[*adapters.LLMClient](di), do.MustInvoke[*configstore.ConfigStore](di)).WithUpstreamProbe(do.MustInvoke[*adapters.LLMUpstreamProber](di)))
 	app.Any(path+"*", echo.WrapHandler(handler))
 	resourceHandler := api.NewResourceHandler(do.MustInvoke[*resources.Locator](di))
 	path, handler = agentcomposev2connect.NewResourceServiceHandler(resourceHandler)
@@ -270,6 +271,11 @@ func StartBackground(di do.Injector) error {
 	if err := loadLLMConfig(ctx, do.MustInvoke[*appconfig.Config](di), do.MustInvoke[*configstore.ConfigStore](di)); err != nil {
 		return fmt.Errorf("load llm configuration: %w", err)
 	}
+	// The sweep runs in the background and shares one LLM_PROBE_TIMEOUT budget
+	// (15s by default). Probing only produces diagnostic log lines, so recovery
+	// and the managers below must not wait for a slow or unreachable upstream;
+	// StopBackground waits for the sweep so it cannot outlive the store it reads.
+	do.MustInvoke[*adapters.LLMUpstreamProber](di).StartProbeConfigured(ctx, do.MustInvoke[*configstore.ConfigStore](di))
 	for _, warning := range do.MustInvoke[*adapters.SandboxRPCBridge](di).RecoverStoppedRuntimeReleases(ctx) {
 		slog.Warn("failed to recover stopped runtime release", "warning", warning)
 	}
@@ -318,6 +324,20 @@ func StopBackground(ctx context.Context, di do.Injector) error {
 		setupErrors = append(setupErrors, fmt.Errorf("resolve cleanup runner: %w", runnerErr))
 	} else {
 		components = append(components, backgroundComponent{name: "cleanup runner", shutdown: runner.Shutdown})
+	}
+	// The startup probe sweep reads the catalog store, so it must finish before
+	// shutdown proceeds past the stores. Cancelling the sweep is not something the
+	// callback can rely on the caller for: only the signal shutdown path has
+	// already cancelled the startup context, while a server error or a failed
+	// StartBackground leaves it live and the sweep would probe until its own
+	// budget ran out. The wait therefore ends the sweep itself and honors the
+	// shutdown deadline.
+	if prober, proberErr := do.Invoke[*adapters.LLMUpstreamProber](di); proberErr != nil {
+		setupErrors = append(setupErrors, fmt.Errorf("resolve llm upstream prober: %w", proberErr))
+	} else {
+		components = append(components, backgroundComponent{name: "llm upstream probe", shutdown: func(ctx context.Context) error {
+			return prober.WaitProbeConfigured(ctx)
+		}})
 	}
 	return stopBackgroundComponents(ctx, components, setupErrors...)
 }
@@ -451,6 +471,12 @@ func NewSandboxEgressMediation(di do.Injector) (*adapters.SandboxEgressProxy, er
 
 func NewLLMClient(di do.Injector) (*adapters.LLMClient, error) {
 	return adapters.NewLLMClient(do.MustInvoke[*appconfig.Config](di), do.MustInvoke[*configstore.ConfigStore](di)), nil
+}
+
+// NewLLMUpstreamProber builds the shared upstream protocol prober used by the
+// startup sweep and by the LLM service after a provider write.
+func NewLLMUpstreamProber(di do.Injector) (*adapters.LLMUpstreamProber, error) {
+	return adapters.NewLLMUpstreamProber(do.MustInvoke[*appconfig.Config](di), do.MustInvoke[*slog.Logger](di)), nil
 }
 
 func NewSandboxDriver(di do.Injector) (*adapters.SandboxDriver, error) {

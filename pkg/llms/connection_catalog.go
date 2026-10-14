@@ -64,6 +64,12 @@ type CatalogStore interface {
 //  4. the only configured connection, when exactly one exists;
 //  5. otherwise every configured connection, ranked the same way: a model id is
 //     opaque, so a connection that never declared the model may still serve it.
+//
+// Configuration source is deliberately not a ranking axis. "The daemon
+// environment is a bootstrap fallback" governs the default model reference
+// above, not this lookup: when an environment connection and a models.json
+// connection both serve the model over the preferred protocol they are peers,
+// and the random tie-break decides between them.
 type Catalog struct {
 	providers         map[string]Provider
 	bindings          map[string]map[string]ProviderModelConfig
@@ -176,10 +182,19 @@ func (c *Catalog) indexBindings(bindings []ProviderModelBinding) {
 // explicitly through llm_catalog_default; the daemon environment declares it
 // through the llm_model default flag, whose owning connection is the only
 // connection that serves the model.
+//
+// A stored reference can outlive the catalog that declared it, because a
+// models.json without a default leaves the stored reference in place. A
+// reference whose connection is gone is therefore treated as absent, which lets
+// the environment fallback take its documented turn instead of leaving the
+// daemon with a default it cannot serve.
 func (c *Catalog) setDefault(providerID, modelID string, hasReference bool, models []Model) {
 	if hasReference {
 		c.defaultConnection = strings.TrimSpace(providerID)
 		c.defaultModel = strings.TrimSpace(modelID)
+		if _, ok := c.providers[c.defaultConnection]; !ok {
+			c.defaultConnection, c.defaultModel = "", ""
+		}
 	}
 	if c.defaultModel == "" {
 		c.defaultConnection, c.defaultModel = c.defaultFromModelFlag(models)
@@ -198,7 +213,14 @@ func (c *Catalog) defaultFromModelFlag(models []Model) (string, string) {
 		if modelID == "" {
 			continue
 		}
-		if serving := c.serving[modelID]; len(serving) == 1 {
+		// A flagged model no enabled connection serves cannot be resolved, so it is
+		// not a default: reporting it would name a model no run receives instead of
+		// leaving the daemon with no default.
+		serving := c.serving[modelID]
+		if len(serving) == 0 {
+			continue
+		}
+		if len(serving) == 1 {
 			return serving[0], modelID
 		}
 		return "", modelID

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chaitin/agent-compose/pkg/llms"
+	domain "github.com/chaitin/agent-compose/pkg/model"
 )
 
 // ApplyModelCatalog atomically projects models.json into the runtime
@@ -23,11 +24,28 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
-		return fmt.Errorf("disable stale model catalog providers: %w", err)
+	// Release every catalog row before re-declaring what the file declares. A row
+	// the file still declares is rewritten below and gets the catalog scope back; a
+	// row the file no longer declares stays released (scope unset) and disabled, so
+	// it stops owning an id the file has moved on from. The row itself is kept
+	// because deleting it would break two promises: llm_catalog_default references
+	// the provider row with ON DELETE CASCADE, so an operator's stored default must
+	// survive a declaration that no longer serves it, and a later file must be able
+	// to restore the id.
+	//
+	// The released connections give up their model bindings with the id. A binding
+	// is what makes a connection serve a model, and it carries the file's own
+	// endpoint and header overrides, so a connection that later takes the released
+	// id over — the environment bootstrap reclaims the openai/anthropic ids, and
+	// that path is supported — must not inherit models it never declared.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_provider_model WHERE provider_id IN (SELECT id FROM llm_provider WHERE scope = ?)`, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog bindings: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE llm_model SET enabled = 0, updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
-		return fmt.Errorf("disable stale model catalog models: %w", err)
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_provider SET enabled = 0, scope = '', updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog providers: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE llm_model SET enabled = 0, scope = '', updated_at = ? WHERE scope = ?`, now, llms.ProviderScopeCatalog); err != nil {
+		return fmt.Errorf("release stale model catalog models: %w", err)
 	}
 	providerIDs := make([]string, 0, len(catalog.Providers))
 	for id := range catalog.Providers {
@@ -41,13 +59,45 @@ func (s *llmStore) ApplyModelCatalog(ctx context.Context, catalog llms.ModelCata
 			return err
 		}
 	}
-	if err := applyCatalogDefault(ctx, tx, catalog.Default, now); err != nil {
+	dropped, err := projectCatalogDefault(ctx, tx, catalog.Default, now)
+	if err != nil {
+		return err
+	}
+	// The file may have dropped a model whose binding was the only thing keeping
+	// an API-owned identity alive, and a default reference it replaced may have
+	// been the same for a literal model an operator chose. An unreferenced
+	// identity still claims the id: the environment bootstrap treats a row that
+	// belongs to another source as an owner and yields its whole projection, so a
+	// leftover would silently disable LLM_MODEL. The sweep runs here rather than
+	// beside each release because only the fully projected state says which ids
+	// are still referenced.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit model catalog transaction: %w", err)
 	}
+	// A dropped reference is reported after the commit, because the projection it
+	// belongs to succeeded: every other declaration in the file is applied, and the
+	// caller must not read this as a failed write.
+	if dropped != nil {
+		return dropped
+	}
 	return nil
+}
+
+// storedProviderScope reads the scope of the stored connection carrying
+// providerID, or "" when no row declares that id.
+func storedProviderScope(ctx context.Context, tx *sql.Tx, providerID string) (string, error) {
+	var scope string
+	err := tx.QueryRowContext(ctx, `SELECT scope FROM llm_provider WHERE id = ?`, providerID).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read provider %q scope: %w", providerID, err)
+	}
+	return strings.TrimSpace(scope), nil
 }
 
 // catalogProviderUpsert bundles one provider catalog entry and the apply timestamp.
@@ -71,6 +121,25 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		return fmt.Errorf("encode provider %q headers: %w", providerID, err)
 	}
 	enabled := apiKey != ""
+	if definition.Enabled != nil {
+		// A connection that needs no credential — a local endpoint, for example —
+		// says so explicitly; the file is otherwise the source of truth for
+		// whether the connection can serve a default.
+		enabled = *definition.Enabled
+	}
+	// The row may be the file's own, one a previous projection released, or one the
+	// environment bootstrap materialized. An id an explicit source owns (an
+	// LLM-service connection or a run-scoped declared one) is not the file's to
+	// rewrite, and neither is a row another writer changed while this transaction
+	// ran: the upsert below matches only the scope accepted here, so both fail as a
+	// conflict instead of overwriting configuration the file does not control.
+	scope, err := storedProviderScope(ctx, tx, providerID)
+	if err != nil {
+		return err
+	}
+	if !llms.CatalogProjectionOwnsScope(scope) {
+		return fmt.Errorf("model catalog provider %q conflicts with an existing non-catalog provider", providerID)
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO llm_provider(
 		id, name, provider_type, default_wire_api, base_url, api_key, auth_header, auth_scheme, headers_json,
 		use_generic_responses_text_parts, weight, enabled, scope, created_at, updated_at)
@@ -82,7 +151,7 @@ func applyCatalogProvider(ctx context.Context, tx *sql.Tx, upsert catalogProvide
 		scope = excluded.scope, updated_at = excluded.updated_at
 		WHERE llm_provider.scope = ?`,
 		providerID, name, providerType, protocol, strings.TrimSpace(pointerString(definition.BaseURL)), apiKey,
-		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now, llms.ProviderScopeCatalog)
+		authHeader, authScheme, headersJSON, BoolToInt(enabled), llms.ProviderScopeCatalog, now, now, scope)
 	if err != nil {
 		return fmt.Errorf("upsert model catalog provider %q: %w", providerID, err)
 	}
@@ -140,39 +209,49 @@ func applyCatalogModel(ctx context.Context, tx *sql.Tx, upsert catalogModelUpser
 	return nil
 }
 
+// ensureCatalogModelIdentity declares a model identity the file references, and
+// reclaims the identity a previous projection released.
+//
+// It follows the same ownership rule the provider upsert applies
+// (CatalogProjectionOwnsScope) rather than accepting only its own rows. The
+// identity row is what the environment projection reads to decide whether another
+// source already serves the model it names, so a row the bootstrap kept owning
+// made the file's declaration invisible to it: the environment materialized a
+// second connection for the same model, and connection selection picked between
+// the two peers at random. Reclaiming the row is also what the manual promises
+// for an id the environment materialized on its own.
+//
+// An identity an explicit source owns is left alone. Model identities are shared
+// by id and the binding written by the caller is what makes the model servable, so
+// a model an LLM-service or run-scoped writer declared keeps its scope and its
+// metadata.
 func ensureCatalogModelIdentity(ctx context.Context, tx *sql.Tx, modelID string, now int64) error {
-	_, err := tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
+	scope, err := storedModelScope(ctx, tx, modelID)
+	if err != nil {
+		return err
+	}
+	if !llms.CatalogProjectionOwnsScope(scope) {
+		return nil
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
 		VALUES(?, ?, '', 0, 1, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET enabled = 1, updated_at = excluded.updated_at
-		WHERE llm_model.scope = ?`, modelID, modelID, llms.ProviderScopeCatalog, now, now, llms.ProviderScopeCatalog)
+		ON CONFLICT(id) DO UPDATE SET enabled = 1, scope = excluded.scope, updated_at = excluded.updated_at
+		WHERE llm_model.scope = ?`, modelID, modelID, llms.ProviderScopeCatalog, now, now, scope)
 	return err
 }
 
-func applyCatalogDefault(ctx context.Context, tx *sql.Tx, reference string, now int64) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
-		return fmt.Errorf("clear model catalog default: %w", err)
+// storedModelScope reads the scope of the stored model identity carrying modelID,
+// or "" when no row declares that id.
+func storedModelScope(ctx context.Context, tx *sql.Tx, modelID string) (string, error) {
+	var scope string
+	err := tx.QueryRowContext(ctx, `SELECT scope FROM llm_model WHERE id = ?`, modelID).Scan(&scope)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	providerID, modelID, ok := llms.SplitProviderModelReference(reference)
-	if !ok {
-		return nil
+	if err != nil {
+		return "", fmt.Errorf("read model %q scope: %w", modelID, err)
 	}
-	var protocol string
-	if err := tx.QueryRowContext(ctx, `SELECT default_wire_api FROM llm_provider WHERE id = ?`, providerID).Scan(&protocol); err != nil {
-		return fmt.Errorf("resolve model catalog default provider %q: %w", providerID, err)
-	}
-	if err := ensureCatalogModelIdentity(ctx, tx, modelID, now); err != nil {
-		return fmt.Errorf("upsert model catalog default model: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_provider_model(
-		provider_id, model_id, wire_api, weight, base_url, headers_json, max_output_tokens, display_name)
-		VALUES(?, ?, ?, 10, '', '{}', 0, '')
-		ON CONFLICT(provider_id, model_id) DO NOTHING`, providerID, modelID, protocol); err != nil {
-		return fmt.Errorf("bind model catalog default: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
-		return fmt.Errorf("store model catalog default: %w", err)
-	}
-	return nil
+	return strings.TrimSpace(scope), nil
 }
 
 func encodeCatalogHeaders(headers map[string]string) (string, error) {
@@ -199,8 +278,14 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
-// DefaultLLMModelReference returns the exact provider/model default declared
-// by models.json.
+// DefaultLLMModelReference returns the effective default model: the reference
+// models.json declared, or the one an operator set through the LLM service when
+// models.json declares none.
+//
+// The row is the operator's stored choice, not a promise that it can be served:
+// a connection removed by a models.json projection leaves the reference in place
+// so a later projection can restore it, and resolution treats it as absent until
+// then. The reference's own connection is therefore not checked here.
 func (s *llmStore) DefaultLLMModelReference(ctx context.Context) (providerID, modelID string, ok bool, err error) {
 	err = s.db.QueryRowContext(ctx, `SELECT provider_id, model_id FROM llm_catalog_default WHERE singleton = 1`).Scan(&providerID, &modelID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -210,6 +295,99 @@ func (s *llmStore) DefaultLLMModelReference(ctx context.Context) (providerID, mo
 		return "", "", false, fmt.Errorf("query model catalog default: %w", err)
 	}
 	return providerID, modelID, true, nil
+}
+
+// clearDefaultReferenceForProvider removes a stored default naming a connection
+// the LLM service just deleted or disabled. Unlike a models.json projection,
+// which preserves the reference so a later file can restore it, an operator
+// action on the connection is deliberate: leaving the row would make
+// GetDefaultModel report a default that resolution ignores and no run receives.
+func clearDefaultReferenceForProvider(ctx context.Context, tx *sql.Tx, providerID string) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default WHERE provider_id = ?`, providerID); err != nil {
+		return fmt.Errorf("clear default model of provider %q: %w", providerID, err)
+	}
+	return nil
+}
+
+// SetDefaultLLMModel records the effective default model, replacing any earlier
+// reference. The connection must exist and be enabled, because the reference is
+// what the daemon falls back to for runs that declare no model; the model
+// itself may be a literal the connection does not enumerate, so only its
+// identity row is ensured and no binding is invented.
+func (s *llmStore) SetDefaultLLMModel(ctx context.Context, reference llms.ModelReference) (llms.ModelReference, error) {
+	providerID := strings.TrimSpace(reference.ProviderID)
+	modelID := strings.TrimSpace(reference.ModelID)
+	if providerID == "" || modelID == "" {
+		return llms.ModelReference{}, fmt.Errorf("%w: provider_id and model_id are required", domain.ErrInvalidArgument)
+	}
+	if llms.IsDeclaredConnectionID(providerID) {
+		// A declared connection carries one sandbox's own credential and is
+		// addressable only by the run that declared it. Making it the daemon
+		// default would offer that credential to every run that names the model.
+		return llms.ModelReference{}, fmt.Errorf("%w: provider %q is a run-scoped declared connection", domain.ErrInvalidArgument, providerID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return llms.ModelReference{}, fmt.Errorf("begin default model update: %w", err)
+	}
+	// Rollback after commit is harmless; on errors it releases the transaction.
+	defer func() { _ = tx.Rollback() }()
+	var enabled int
+	err = tx.QueryRowContext(ctx, `SELECT enabled FROM llm_provider WHERE id = ?`, providerID).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return llms.ModelReference{}, fmt.Errorf("%w: llm provider not found", domain.ErrNotFound)
+	}
+	if err != nil {
+		return llms.ModelReference{}, fmt.Errorf("read default model provider: %w", err)
+	}
+	if enabled == 0 {
+		return llms.ModelReference{}, fmt.Errorf("%w: provider %q is disabled", domain.ErrFailedPrecondition, providerID)
+	}
+	now := time.Now().UTC().Unix()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_model(id, name, description, default_model, enabled, scope, created_at, updated_at)
+		VALUES(?, ?, '', 0, 1, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING`, modelID, modelID, llms.ProviderScopeAPI, now, now); err != nil {
+		return llms.ModelReference{}, fmt.Errorf("record default model identity: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
+		return llms.ModelReference{}, fmt.Errorf("clear llm default model: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO llm_catalog_default(singleton, provider_id, model_id, updated_at) VALUES(1, ?, ?, ?)`, providerID, modelID, now); err != nil {
+		return llms.ModelReference{}, fmt.Errorf("store llm default model: %w", err)
+	}
+	// The reference just stored protects this model's identity row, so a previous
+	// default whose identity nothing else uses is swept here rather than left to
+	// claim its id against the environment bootstrap.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return llms.ModelReference{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return llms.ModelReference{}, fmt.Errorf("commit default model update: %w", err)
+	}
+	return llms.ModelReference{ProviderID: providerID, ModelID: modelID}, nil
+}
+
+// ClearDefaultLLMModel removes the effective default model. A models.json that
+// declares its own default restores that reference at the next startup.
+func (s *llmStore) ClearDefaultLLMModel(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin default model clear: %w", err)
+	}
+	// Rollback after commit is harmless; on errors it releases the transaction.
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM llm_catalog_default`); err != nil {
+		return fmt.Errorf("clear llm default model: %w", err)
+	}
+	// Removing the reference can be what makes a literal model's identity row
+	// unreferenced, so the sweep belongs in this transaction too.
+	if err := sweepUnreferencedAPIModels(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit default model clear: %w", err)
+	}
+	return nil
 }
 
 // LLMProviderModelConfig returns all effective model-binding overrides.

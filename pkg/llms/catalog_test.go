@@ -33,8 +33,8 @@ func TestLoadModelCatalogLoadsDeclaredProvidersAndResolvesSecrets(t *testing.T) 
 	if err != nil {
 		t.Fatalf("LoadModelCatalog: %v", err)
 	}
-	if catalog.Default != "baizhi/deepseek-v4-flash" {
-		t.Fatalf("default = %q", catalog.Default)
+	if catalog.Default == nil || *catalog.Default != "baizhi/deepseek-v4-flash" {
+		t.Fatalf("default = %v", catalog.Default)
 	}
 	baizhi := catalog.Providers["baizhi"]
 	if pointerStringForTest(baizhi.APIKey) != "baizhi-secret" || len(baizhi.Models) != 1 || baizhi.Models[0].MaxOutputTokens == nil || *baizhi.Models[0].MaxOutputTokens != 99999 {
@@ -75,7 +75,7 @@ func TestLoadModelCatalogMissingFileReturnsEmptyCatalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModelCatalog: %v", err)
 	}
-	if catalog.Default != "" || len(catalog.Providers) != 0 {
+	if catalog.Default != nil || len(catalog.Providers) != 0 {
 		t.Fatalf("catalog = %#v, want empty catalog", catalog)
 	}
 }
@@ -90,6 +90,10 @@ func TestLoadModelCatalogRejectsIncompleteProvidersAndInvalidModels(t *testing.T
 		{name: "duplicate model", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"same"},{"id":"same"}]}}}`, want: "more than once"},
 		{name: "anthropic model protocol on openai provider", data: `{"providers":{"gateway":{"baseUrl":"https://example.test/v1","protocol":"responses","models":[{"id":"model","protocol":"anthropic_messages"}]}}}`, want: `protocol "anthropic_messages" is incompatible with provider family "openai"`},
 		{name: "openai model protocol on anthropic provider", data: `{"providers":{"gateway":{"baseUrl":"https://example.test/v1","protocol":"anthropic_messages","models":[{"id":"model","protocol":"chat_completions"}]}}}`, want: `protocol "chat_completions" is incompatible with provider family "anthropic"`},
+		{name: "non-positive max output tokens", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"model","maxOutputTokens":0}]}}}`, want: "must be positive"},
+		{name: "max output tokens above the reportable range", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"model","maxOutputTokens":2147483648}]}}}`, want: "must not exceed 2147483647"},
+		{name: "provider header name with a space", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","headers":{"X Tier":"batch"}}}}`, want: "is not a valid HTTP field name"},
+		{name: "model header value with a newline", data: `{"providers":{"custom":{"baseUrl":"https://example.test","protocol":"responses","models":[{"id":"model","headers":{"x-tier":"batch\nx-key: injected"}}]}}}`, want: "has an invalid value"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), ModelsCatalogFilename)
@@ -121,4 +125,44 @@ func pointerStringForTest(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// A connection that needs no credential must be able to say so, otherwise
+// models.json cannot declare a local endpoint at all: a declaration without an
+// apiKey used to be persisted disabled, so the file could neither serve a model
+// from it nor name it as the default.
+func TestLoadModelCatalogReadsTheDeclaredEnabledFlag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ModelsCatalogFilename)
+	data := `{
+  "providers": {
+    "local": {
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "protocol": "chat_completions",
+      "enabled": true,
+      "models": [{"id":"local-model"}]
+    },
+    "batch": {
+      "baseUrl": "https://gateway.example/v1",
+      "protocol": "responses",
+      "apiKey": "secret",
+      "enabled": false,
+      "models": [{"id":"batch-model"}]
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write catalog: %v", err)
+	}
+	catalog, err := LoadModelCatalog(path, nil)
+	if err != nil {
+		t.Fatalf("LoadModelCatalog: %v", err)
+	}
+	local := catalog.Providers["local"]
+	if local.Enabled == nil || !*local.Enabled {
+		t.Fatalf("local enabled = %v, want an explicit true", local.Enabled)
+	}
+	batch := catalog.Providers["batch"]
+	if batch.Enabled == nil || *batch.Enabled {
+		t.Fatalf("batch enabled = %v, want an explicit false", batch.Enabled)
+	}
 }
