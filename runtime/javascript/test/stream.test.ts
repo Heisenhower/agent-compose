@@ -159,13 +159,14 @@ describe("runStreamCommand", () => {
   });
 
   it.each([
-    [1, false, false],
-    [3, false, false],
-    [3, true, false],
-    [3, true, true],
-  ])("terminates an unfinished interactive retry %s with partial output %s after a completed turn %s", async (attempt, partialOutput, previousTurn) => {
+    ["Reconnecting... 1/3 (connection timed out)", false, false],
+    ["Reconnecting... 3/3 (connection timed out)", false, false],
+    ["Reconnecting... 3/3 (connection timed out)", true, false],
+    ["Reconnecting... 3/3 (connection timed out)", true, true],
+    ["Reconnecting... waiting for network (connection refused)", true, false],
+    ["Reconnecting... waiting for network (connection refused)", true, true],
+  ])("terminates an unfinished interactive %s with partial output %s after a completed turn %s", async (message, partialOutput, previousTurn) => {
     await withTempSession(async (root) => {
-      const message = `Reconnecting... ${attempt}/3 (connection timed out)`;
       codexEventFactory = (turn) => {
         if (previousTurn && turn === 1) {
           return [
@@ -204,11 +205,11 @@ describe("runStreamCommand", () => {
     });
   });
 
-  it("keeps a Codex interactive turn alive when reconnecting completes", async () => {
+  it.each(["Reconnecting... 1/3 (connection timed out)", "Reconnecting... waiting for network"])("keeps a Codex interactive turn alive when %s completes", async (message) => {
     await withTempSession(async (root) => {
       codexEventFactory = () => [
         { type: "thread.started", thread_id: "thread-1" },
-        { type: "error", message: "Reconnecting... 1/3 (connection timed out)" },
+        { type: "error", message },
         { type: "item.completed", item: { id: "msg-1", type: "agent_message", text: "recovered" } },
         { type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } },
       ];
@@ -238,12 +239,16 @@ describe("runStreamCommand", () => {
     });
   });
 
-  it.each([false, true])("preserves cancellation during an interactive Codex reconnect with buffered input %s", async (bufferedInput) => {
+  it.each([
+    ["Reconnecting... 3/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", true],
+    ["Reconnecting... waiting for network", true],
+  ])("preserves cancellation during %s with buffered input %s", async (message, bufferedInput) => {
     await withTempSession(async (root) => {
       const abortController = new AbortController();
       codexEventFactory = () => {
         abortController.abort();
-        return [{ type: "error", message: "Reconnecting... 3/3 (connection timed out)" }];
+        return [{ type: "error", message }];
       };
       const stdout = new MemoryWritable();
       await runStreamCommand({
@@ -263,6 +268,35 @@ describe("runStreamCommand", () => {
       expect(runInputs).toEqual(["first"]);
       expect(frames.at(-1)).toMatchObject({ type: "result", stopReason: "cancelled" });
       expect(frames.some((entry) => entry.type === "error" || (entry.event as { kind?: string })?.kind === "error")).toBe(false);
+    });
+  });
+
+  it("counts unbounded Codex reconnect notices per turn without inventing a retry limit", async () => {
+    await withTempSession(async (root) => {
+      codexEventFactory = (turn) => [
+        { type: "error", message: "Reconnecting... waiting for network" },
+        { type: "error", message: "Reconnecting... waiting for network" },
+        { type: "item.completed", item: { id: `msg-${turn}`, type: "agent_message", text: `answer ${turn}` } },
+        { type: "turn.completed" },
+      ];
+      const stdout = new MemoryWritable();
+      await runStreamCommand({
+        stdin: Readable.from([
+          frame({ seq: 0, type: "start", provider: "codex", stateRoot: `${root}/state`, workspace: `${root}/workspace`, home: `${root}/home` }),
+          frame({ seq: 1, type: "human_message", message: "first" }),
+          frame({ seq: 2, type: "human_message", message: "second" }),
+          frame({ seq: 3, type: "eof" }),
+        ]),
+        stdout,
+        stderr: new MemoryWritable(),
+      });
+      const frames = parseOutput(stdout.text);
+      const retries = frames.filter((entry) => (entry.event as { kind?: string })?.kind === "retry");
+      expect(retries.map((entry) => (entry.event as { attempt: number }).attempt)).toEqual([1, 2, 1, 2]);
+      expect(retries.every((entry) => !("maxAttempts" in (entry.event as object)))).toBe(true);
+      expect(frames.filter((entry) => entry.type === "agent_turn_completed")).toHaveLength(2);
+      expect(frames.some((entry) => entry.type === "error")).toBe(false);
+      expect(frames.at(-1)).toMatchObject({ type: "result", finalText: "answer 2", stopReason: "eof" });
     });
   });
 

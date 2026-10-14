@@ -45,8 +45,9 @@ function webSearchQuery(item: Record<string, unknown>): string {
   return "";
 }
 
-function reconnectEvent(message: string): Extract<AgentEvent, { kind: "retry" }> | null {
-  const match = /^Reconnecting\.\.\.\s+(\d+)\/(\d+)(?:\s|$)/.exec(message);
+function reconnectEvent(message: string, previousAttempt: number): Extract<AgentEvent, { kind: "retry" }> | null {
+  // The exec JSONL stream omits will_retry; recognize both upstream retry formats.
+  const match = /^Reconnecting\.\.\.\s+(?:(\d+)\/(\d+)|waiting for network)(?:\s|$)/.exec(message);
   if (!match) {
     return null;
   }
@@ -60,8 +61,9 @@ function reconnectEvent(message: string): Extract<AgentEvent, { kind: "retry" }>
   return {
     kind: "retry",
     reason,
-    attempt: Number(match[1]),
-    maxAttempts: Number(match[2]),
+    // Unbounded network retries have no wire count; count observed notifications.
+    attempt: match[1] ? Number(match[1]) : previousAttempt + 1,
+    maxAttempts: match[2] ? Number(match[2]) : undefined,
     message,
   };
 }
@@ -69,6 +71,7 @@ function reconnectEvent(message: string): Extract<AgentEvent, { kind: "retry" }>
 export class CodexRunner {
   private readonly itemState = new Map<string, string | CodexItemState>();
   private reconnectMessage?: string;
+  private reconnectAttempt = 0;
   private turnCompleted = false;
 
   constructor(
@@ -86,6 +89,7 @@ export class CodexRunner {
     result: AgentResult,
   ): Promise<void> {
     this.reconnectMessage = undefined;
+    this.reconnectAttempt = 0;
     this.turnCompleted = false;
     try {
       const turnOptions = this.options.outputSchema || this.options.abortController
@@ -337,9 +341,10 @@ export class CodexRunner {
       const message = String(event.message || "codex stream error");
       // Codex reports its own reconnect attempts as error events while the
       // streamed turn is still running; let the SDK finish or report turn.failed.
-      const retry = reconnectEvent(message);
+      const retry = reconnectEvent(message, this.reconnectAttempt);
       if (retry) {
         this.reconnectMessage = message;
+        this.reconnectAttempt = retry.attempt;
         this.emit(retry);
         return;
       }

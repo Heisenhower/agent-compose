@@ -290,12 +290,14 @@ describe("runner execution", () => {
   });
 
   it.each([
-    ["Reconnecting... 1/3 (We're currently experiencing high demand, which may cause temporary errors.)", "overloaded", 1],
-    ["Reconnecting... 1/3 (unexpected status 429 Too Many Requests)", "rate_limit", 1],
-    ["Reconnecting... 1/3 (connection timed out)", "network", 1],
-    ["Reconnecting... 1/3", "other", 1],
-    ["Reconnecting... 3/3 (connection timed out)", "network", 3],
-  ])("keeps consuming Codex events after %s", async (reconnectMessage, reason, attempt) => {
+    ["Reconnecting... 1/3 (We're currently experiencing high demand, which may cause temporary errors.)", "overloaded", 1, 3],
+    ["Reconnecting... 1/3 (unexpected status 429 Too Many Requests)", "rate_limit", 1, 3],
+    ["Reconnecting... 1/3 (connection timed out)", "network", 1, 3],
+    ["Reconnecting... 1/3", "other", 1, 3],
+    ["Reconnecting... 3/3 (connection timed out)", "network", 3, 3],
+    ["Reconnecting... waiting for network", "network", 1, undefined],
+    ["Reconnecting... waiting for network (connection refused)", "network", 1, undefined],
+  ])("keeps consuming Codex events after %s", async (reconnectMessage, reason, attempt, maxAttempts) => {
     const { CodexRunner } = await import("../src/runners/codex.js");
     await withTempSession(async (root) => {
       const emitted: Array<Record<string, unknown>> = [];
@@ -315,7 +317,7 @@ describe("runner execution", () => {
         kind: "retry",
         reason,
         attempt,
-        maxAttempts: 3,
+        maxAttempts,
         message: reconnectMessage,
       });
       expect(emitted.some((event) => event.kind === "error")).toBe(false);
@@ -323,13 +325,13 @@ describe("runner execution", () => {
   });
 
   it.each([
-    [1, false],
-    [3, false],
-    [3, true],
-  ])("rejects an unfinished Codex stream after retry %s with partial output %s", async (attempt, partialOutput) => {
+    ["Reconnecting... 1/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", false],
+    ["Reconnecting... 3/3 (connection timed out)", true],
+    ["Reconnecting... waiting for network (connection refused)", true],
+  ])("rejects an unfinished Codex stream after %s with partial output %s", async (message, partialOutput) => {
     const { CodexRunner } = await import("../src/runners/codex.js");
     await withTempSession(async (root) => {
-      const message = `Reconnecting... ${attempt}/3 (connection timed out)`;
       const emitted: Array<Record<string, unknown>> = [];
       codexState.events = [{ type: "error", message }];
       if (partialOutput) {
@@ -345,12 +347,12 @@ describe("runner execution", () => {
     });
   });
 
-  it("keeps a cancelled Codex reconnect stream cancelled", async () => {
+  it.each(["Reconnecting... 3/3 (connection timed out)", "Reconnecting... waiting for network"])("keeps a cancelled Codex reconnect stream cancelled after %s", async (message) => {
     const { CodexRunner } = await import("../src/runners/codex.js");
     await withTempSession(async (root) => {
       const abortController = new AbortController();
       abortController.abort();
-      codexState.events = [{ type: "error", message: "Reconnecting... 3/3 (connection timed out)" }];
+      codexState.events = [{ type: "error", message }];
       const emitted: Array<Record<string, unknown>> = [];
 
       const result = await new CodexRunner({
